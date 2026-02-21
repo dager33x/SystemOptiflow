@@ -1,7 +1,7 @@
 # views/forgot_password_page.py
 import tkinter as tk
 from tkinter import messagebox
-from .styles import Colors
+from .styles import Colors, WidgetStyles
 
 
 class ForgotPasswordPage(tk.Frame):
@@ -76,20 +76,13 @@ class ForgotPasswordPage(tk.Frame):
         self.email_placeholder = "Email Address"
         
         # Send code button
-        reset_button = tk.Button(
+        reset_button = WidgetStyles.create_modern_button(
             form_container,
             text="SEND RESET CODE",
-            font=("Segoe UI", 11, "bold"),
-            bg=Colors.PRIMARY,
-            fg="white",
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
-            activebackground=Colors.PRIMARY_DARK,
-            activeforeground="white",
-            command=self.handle_reset
+            command=self.handle_reset,
+            style='primary'
         )
-        reset_button.pack(fill=tk.X, ipady=10)
+        reset_button.pack(fill=tk.X, ipady=2)
         
     def create_styled_entry(self, parent, placeholder, is_password=False):
         """Create a styled entry with placeholder text"""

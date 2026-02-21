@@ -7,7 +7,7 @@ from views.email_verification_page import EmailVerificationPage
 from views.password_reset_verification_page import PasswordResetVerificationPage
 from views.admin_dashboard import AdminDashboard
 from views.operator_dashboard import OperatorDashboard
-from views.styles import Colors
+from views.styles import Colors, ModernStyles
 from controllers.main_controller import MainController
 from controllers.auth_controller import AuthController
 from controllers.violation_controller import ViolationController
@@ -40,6 +40,9 @@ class AppManager:
     def setup_window(self):
         """Configure root window"""
         self.root.title("OptiFlow - Traffic Management System")
+        
+        # Configure modern TTK styles
+        ModernStyles.configure_ttk_styles(self.root)
         
         # Set window size to 851x545 for auth pages
         window_width = 851

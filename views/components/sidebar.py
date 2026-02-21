@@ -31,7 +31,6 @@ class Sidebar:
             ("📊 Dashboard", "dashboard"),
             ("⚠️ Issue Reports", "issue_reports"),
             ("🚦 Traffic Reports", "traffic_reports"),
-            ("📈 Analytics", "analytics"),
             ("📜 Incident History", "incident_history"),
             ("📋 Violation Logs", "violation_logs"),
             ("⚙️ Settings", "settings")

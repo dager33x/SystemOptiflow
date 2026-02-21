@@ -1,7 +1,7 @@
 # views/login_page.py
 import tkinter as tk
 from tkinter import messagebox
-from .styles import Colors
+from .styles import Colors, WidgetStyles
 
 
 class LoginPage(tk.Frame):
@@ -148,20 +148,13 @@ class LoginPage(tk.Frame):
         self.password_placeholder = "Password"
 
         # Login button
-        self.login_button = tk.Button(
+        self.login_button = WidgetStyles.create_modern_button(
             self.form_container,
             text="Sign In",
-            font=("Segoe UI", 11, "bold"),
-            bg=Colors.PRIMARY,
-            fg="white",
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
-            activebackground=Colors.PRIMARY_DARK,
-            activeforeground="white",
-            command=self.handle_login
+            command=self.handle_login,
+            style='primary'
         )
-        self.login_button.pack(fill=tk.X, pady=(0, 20), ipady=10)
+        self.login_button.pack(fill=tk.X, pady=(0, 20), ipady=2)
         
         # Footer
         footer_frame = tk.Frame(self.form_container, bg=Colors.CARD_BG)

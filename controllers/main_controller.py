@@ -11,7 +11,7 @@ from detection.traffic_controller import TrafficLightController
 from detection.yolo_detector import YOLODetector
 from views.pages import (
     DashboardPage, TrafficReportsPage, IncidentHistoryPage,
-    ViolationLogsPage, AnalyticsPage, SettingsPage, IssueReportsPage, AdminUsersPage
+    ViolationLogsPage, SettingsPage, IssueReportsPage, AdminUsersPage
 )
 
 from views.components.notification import NotificationManager
@@ -81,6 +81,9 @@ class MainController:
         
         self.logger.info("Initial traffic state: NORTH → GREEN (30s)")
         
+        # specific counters
+        self.session_violations = 0
+        
         # Threading
         self.camera_thread = None
         self.is_running = True
@@ -95,7 +98,6 @@ class MainController:
             self.pages['traffic_reports'] = TrafficReportsPage(self.view.content_area)
             self.pages['incident_history'] = IncidentHistoryPage(self.view.content_area, self.accident_controller)
             self.pages['violation_logs'] = ViolationLogsPage(self.view.content_area, self.violation_controller)
-            self.pages['analytics'] = AnalyticsPage(self.view.content_area)
             self.pages['settings'] = SettingsPage(self.view.content_area)
             
             # Admin Pages
@@ -332,6 +334,7 @@ class MainController:
                                         last_log = getattr(self, 'last_violation_log', 0)
                                         if current_time - last_log > 5.0:
                                             self.violation_controller.save_violation(lane=lane_id, violation_type="Red Light Violation")
+                                            self.session_violations += 1 # Increment Session Counter
                                             self.last_violation_log = current_time
                                             self.logger.info(f"Simulated Violation recorded for {direction}")
                                             # Notify
@@ -424,6 +427,7 @@ class MainController:
                                                     last_log = getattr(self, 'last_violation_log', 0)
                                                     if current_time - last_log > 5.0:
                                                         self.violation_controller.save_violation(lane=lane_id, violation_type="Red Light Violation")
+                                                        self.session_violations += 1 # Increment Session Counter
                                                         self.last_violation_log = current_time
                                                         self.logger.info(f"Violation recorded for {direction}")
                                                         # Notify
@@ -517,15 +521,19 @@ class MainController:
                     self.logger.error(f"Error processing camera ({direction}): {e}", exc_info=True)
                     all_lane_counts.append(0)
             
-            # Update Analytics Page (if active)
-            # We do this once per cycle to keep graph time-aligned
-            if self.current_page and hasattr(self.current_page, 'update_analytics'):
-                analytics_data = {
-                    d: self.states[d]['vehicle_count'] for d in self.directions
+            
+            # NEW: Update Traffic Reports Page (Bar Graph)
+            if self.current_page and hasattr(self.current_page, 'update_report'):
+                # Collect traffic report data
+                report_data = {
+                    'lane_data': {d: self.states[d]['vehicle_count'] for d in self.directions},
+                    'active_cameras': sum(1 for d in self.directions if self.camera_managers[d].is_running),
+                    'violations': self.session_violations
                 }
-                self.root.after(0, lambda d=analytics_data: 
-                    self.current_page.update_analytics(d) 
-                    if self.current_page and hasattr(self.current_page, 'update_analytics') else None
+                
+                self.root.after(0, lambda d=report_data: 
+                    self.current_page.update_report(d) 
+                    if self.current_page and hasattr(self.current_page, 'update_report') else None
                 )
 
             # Step 2: Simple traffic light state machine

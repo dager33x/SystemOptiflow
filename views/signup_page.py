@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import messagebox
 import re
-from .styles import Colors
+from .styles import Colors, WidgetStyles
 
 
 class SignupPage(tk.Frame):
@@ -105,20 +105,13 @@ class SignupPage(tk.Frame):
         self.confirm_password_placeholder = "Repeat Password"
         
         # Signup button
-        signup_button = tk.Button(
+        signup_button = WidgetStyles.create_modern_button(
             form_card,
             text="Sign up",
-            font=("Segoe UI", 11, "bold"),
-            bg=Colors.PRIMARY,
-            fg="white",
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
-            activebackground=Colors.PRIMARY_DARK,
-            activeforeground=Colors.WHITE,
-            command=self.handle_signup
+            command=self.handle_signup,
+            style='primary'
         )
-        signup_button.pack(fill=tk.X, ipady=10)
+        signup_button.pack(fill=tk.X, ipady=2)
 
 
 

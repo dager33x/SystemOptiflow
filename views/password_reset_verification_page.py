@@ -1,7 +1,7 @@
 # views/password_reset_verification_page.py
 import tkinter as tk
 from tkinter import messagebox
-from .styles import Colors, Fonts
+from .styles import Colors, Fonts, WidgetStyles
 
 
 class PasswordResetVerificationPage(tk.Frame):
@@ -191,20 +191,13 @@ class PasswordResetVerificationPage(tk.Frame):
         self.code_entry.bind("<FocusOut>", on_code_focus_out)
         
         # Verify button - using primary blue color
-        verify_button = tk.Button(
+        verify_button = WidgetStyles.create_modern_button(
             form_container,
             text="Reset Password",
-            font=("Segoe UI", 11, "bold"),
-            bg=Colors.PRIMARY,  # Blue for consistency
-            fg="white",
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
-            activebackground=Colors.PRIMARY_DARK,
-            activeforeground="white",
-            command=self.verify_code
+            command=self.verify_code,
+            style='primary'
         )
-        verify_button.pack(fill=tk.X, pady=(0, 20), ipady=10)
+        verify_button.pack(fill=tk.X, pady=(0, 20), ipady=2)
         
         # Footer
         footer_frame = tk.Frame(form_container, bg=Colors.CARD_BG)
