@@ -1,7 +1,7 @@
 # views/admin_dashboard.py
 import tkinter as tk
 from tkinter import ttk, messagebox
-from .styles import Colors, Fonts
+from .styles import Colors, Fonts, WidgetStyles
 
 
 class AdminDashboard(tk.Frame):
@@ -125,77 +125,50 @@ class AdminDashboard(tk.Frame):
         buttons_frame = tk.Frame(title_section, bg=Colors.BACKGROUND)
         buttons_frame.pack(side=tk.RIGHT)
         
-        add_button = tk.Button(
+        add_button = WidgetStyles.create_modern_button(
             buttons_frame,
             text="+ Add User",
-            font=("Arial", 10, "bold"),
-            bg=Colors.SUCCESS,
-            fg="white",
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
             command=self.show_add_user_dialog,
-            padx=15,
-            pady=8
+            style='success'
         )
         add_button.pack(side=tk.LEFT, padx=5)
         
-        edit_button = tk.Button(
+        edit_button = WidgetStyles.create_modern_button(
             buttons_frame,
             text="✏️ Edit",
-            font=("Arial", 10, "bold"),
-            bg=Colors.INFO,
-            fg="white",
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
             command=self.show_edit_user_dialog,
-            padx=15,
-            pady=8
+            style='info'
         )
         edit_button.pack(side=tk.LEFT, padx=5)
         
-        delete_button = tk.Button(
+        delete_button = WidgetStyles.create_modern_button(
             buttons_frame,
             text="🗑️ Delete",
-            font=("Arial", 10, "bold"),
-            bg=Colors.DANGER,
-            fg="white",
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
             command=self.delete_selected_user,
-            padx=15,
-            pady=8
+            style='danger'
         )
         delete_button.pack(side=tk.LEFT, padx=5)
         
-        refresh_button = tk.Button(
+        refresh_button = WidgetStyles.create_modern_button(
             buttons_frame,
             text="🔄 Refresh",
-            font=("Arial", 10, "bold"),
-            bg=Colors.SECONDARY,
-            fg="white",
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
             command=self.load_users,
-            padx=15,
-            pady=8
+            style='secondary'
         )
         refresh_button.pack(side=tk.LEFT, padx=5)
         
         # Table frame
-        table_frame = tk.Frame(content_area, bg=Colors.CARD_BG)
+        table_frame = tk.Frame(content_area, bg=Colors.CARD_BG, padx=2, pady=2)
         table_frame.grid(row=1, column=0, sticky="nsew")
         
-        # Create treeview for users
+        # Create treeview for users with modern styling
         columns = ("ID", "Username", "Email", "Role", "Status", "Created")
         self.users_tree = ttk.Treeview(
             table_frame,
             columns=columns,
             height=15,
-            show="headings"
+            show="headings",
+            style='Modern.Treeview'
         )
         
         # Define column headings and width
@@ -212,11 +185,12 @@ class AdminDashboard(tk.Frame):
             self.users_tree.heading(col, text=col)
             self.users_tree.column(col, width=width)
         
-        # Scrollbar
+        # Scrollbar with modern styling
         scrollbar = ttk.Scrollbar(
             table_frame,
             orient=tk.VERTICAL,
-            command=self.users_tree.yview
+            command=self.users_tree.yview,
+            style='Modern.Vertical.TScrollbar'
         )
         self.users_tree.configure(yscroll=scrollbar.set)
         

@@ -67,24 +67,33 @@ class Header:
         
         # User Profile
         if self.current_user:
-            user_frame = tk.Frame(right_frame, bg=Colors.PRIMARY_DARK, padx=15, pady=8)
+            user_frame = tk.Frame(right_frame, bg=Colors.PRIMARY_DARK, padx=15, pady=8, cursor="hand2")
             user_frame.pack(side=tk.LEFT, padx=(0, 15))
+            
+            # Use a class variable or helper to bind events easily
+            user_frame.bind("<Button-1>", self.show_profile_info)
             
             # Role Badge
             role = self.current_user.get('role', 'operator').upper()
             role_fg = Colors.WARNING if role == 'ADMIN' else Colors.INFO
             
-            tk.Label(user_frame, 
+            name_label = tk.Label(user_frame, 
                     text=f"👤 {self.current_user.get('username')}", 
                     font=("Segoe UI", 11, "bold"),
                     bg=Colors.PRIMARY_DARK,
-                    fg="white").pack(side=tk.LEFT, padx=(0, 10))
+                    fg="white",
+                    cursor="hand2")
+            name_label.pack(side=tk.LEFT, padx=(0, 10))
+            name_label.bind("<Button-1>", self.show_profile_info)
             
-            tk.Label(user_frame, 
+            role_label = tk.Label(user_frame, 
                     text=role, 
                     font=("Segoe UI", 9, "bold"),
                     bg=Colors.PRIMARY_DARK,
-                    fg=role_fg).pack(side=tk.LEFT)
+                    fg=role_fg,
+                    cursor="hand2")
+            role_label.pack(side=tk.LEFT)
+            role_label.bind("<Button-1>", self.show_profile_info)
         
         # Logout Button
         if self.on_logout:
@@ -109,6 +118,105 @@ class Header:
                 logout_btn.config(bg=Colors.DANGER)
             logout_btn.bind("<Enter>", on_enter)
             logout_btn.bind("<Leave>", on_leave)
+
+    def show_profile_info(self, event=None):
+        """Show dialog with full user information"""
+        if not self.current_user:
+            return
+            
+        dialog = tk.Toplevel(self.parent)
+        dialog.title("User Profile")
+        dialog.geometry("400x500")
+        dialog.configure(bg=Colors.BACKGROUND)
+        dialog.transient(self.parent.winfo_toplevel())
+        
+        # Center dialog
+        screen_width = dialog.winfo_screenwidth()
+        screen_height = dialog.winfo_screenheight()
+        x = (screen_width - 400) // 2
+        y = (screen_height - 500) // 2
+        dialog.geometry(f"+{x}+{y}")
+        
+        # Header
+        header = tk.Frame(dialog, bg=Colors.PRIMARY, height=100)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        
+        
+        # Manual centering of icon
+        icon_cont = tk.Frame(header, bg=Colors.PRIMARY)
+        icon_cont.pack(expand=True)
+        tk.Label(
+            icon_cont,
+            text="👤",
+            font=("Segoe UI", 48),
+            bg=Colors.PRIMARY,
+            fg="white"
+        ).pack()
+        
+        # Content
+        content = tk.Frame(dialog, bg=Colors.BACKGROUND, padx=30, pady=30)
+        content.pack(fill=tk.BOTH, expand=True)
+        
+        # Helper for fields
+        def add_field(label, value, is_bold=False):
+            frame = tk.Frame(content, bg=Colors.BACKGROUND)
+            frame.pack(fill=tk.X, pady=8)
+            
+            tk.Label(
+                frame,
+                text=label.upper(),
+                font=("Segoe UI", 8, "bold"),
+                bg=Colors.BACKGROUND,
+                fg=Colors.TEXT_LIGHT
+            ).pack(anchor=tk.W)
+            
+            val_font = ("Segoe UI", 12, "bold") if is_bold else ("Segoe UI", 11)
+            tk.Label(
+                frame,
+                text=value if value else "Not set",
+                font=val_font,
+                bg=Colors.BACKGROUND,
+                fg=Colors.TEXT
+            ).pack(anchor=tk.W)
+            
+            tk.Frame(frame, height=1, bg=Colors.SECONDARY).pack(fill=tk.X, pady=(5, 0))
+
+        # Full Name
+        first = self.current_user.get('first_name', '')
+        last = self.current_user.get('last_name', '')
+        full_name = f"{first} {last}".strip() or self.current_user.get('username')
+        
+        add_field("Full Name", full_name, is_bold=True)
+        add_field("Username", self.current_user.get('username'))
+        add_field("Email", self.current_user.get('email'))
+        add_field("Role", self.current_user.get('role', '').upper())
+        
+        created = self.current_user.get('created_at', '')
+        if created:
+            try:
+                # Basic parsing if string, or just show as is
+                created = created.split('T')[0]
+            except:
+                pass
+        add_field("Member Since", created)
+        
+        
+        tk.Frame(content, bg=Colors.BACKGROUND, height=20).pack() # Spacer
+        
+        tk.Button(
+            content,
+            text="Close",
+            font=("Segoe UI", 10),
+            bg=Colors.SECONDARY,
+            fg="white",
+            relief=tk.FLAT,
+            command=dialog.destroy,
+            cursor="hand2",
+            pady=8
+        ).pack(fill=tk.X)
+        
+
     
     def update_time(self):
         current_time = datetime.now().strftime("%H:%M:%S")

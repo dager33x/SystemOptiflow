@@ -31,7 +31,6 @@ class Sidebar:
             ("📊 Dashboard", "dashboard"),
             ("⚠️ Issue Reports", "issue_reports"),
             ("🚦 Traffic Reports", "traffic_reports"),
-            ("📈 Analytics", "analytics"),
             ("📜 Incident History", "incident_history"),
             ("📋 Violation Logs", "violation_logs"),
             ("⚙️ Settings", "settings")
@@ -55,9 +54,24 @@ class Sidebar:
                                 fg=Colors.TEXT_LIGHT)
         cameras_title.pack(anchor=tk.W, pady=(0, 10), padx=20)
         
-        # Camera list
+        # Container for camera list to allow updates
+        self.camera_list_container = tk.Frame(self.frame, bg=Colors.CARD_BG)
+        self.camera_list_container.pack(fill=tk.BOTH, expand=False)
+        
+        self.render_cameras()
+            
+    def render_cameras(self):
+        """Render the list of cameras"""
+        for widget in self.camera_list_container.winfo_children():
+            widget.destroy()
+            
         for camera in self.cameras_data:
             self.create_camera_card(camera)
+
+    def update_cameras(self, new_data):
+        """Update camera list dynamically"""
+        self.cameras_data = new_data
+        self.render_cameras()
 
     def create_nav_button(self, text, page_name):
         """Create a hoverable navigation button"""
@@ -70,7 +84,7 @@ class Sidebar:
                        activeforeground=Colors.WHITE,
                        anchor=tk.W,
                        padx=20,
-                       pady=12,
+                       pady=8, # Reduced from 12
                        relief=tk.FLAT,
                        bd=0,
                        cursor="hand2",
@@ -89,8 +103,10 @@ class Sidebar:
     def create_camera_card(self, camera):
         """Create a card for each camera"""
         # Outer container for minimal border effect
-        card = tk.Frame(self.frame, bg=Colors.SECONDARY, padx=1, pady=1)
-        card.pack(fill=tk.X, pady=5, padx=15)
+        # FIX: Use camera_list_container if available, else fallback (though container should exist)
+        parent = getattr(self, 'camera_list_container', self.frame)
+        card = tk.Frame(parent, bg=Colors.SECONDARY, padx=1, pady=1)
+        card.pack(fill=tk.X, pady=3, padx=15) # Reduced pady from 5 to 3
         
         # Inner content
         content = tk.Frame(card, bg=Colors.SECONDARY)
@@ -99,7 +115,7 @@ class Sidebar:
         # Camera name
         name_label = tk.Label(content, text=camera.get('name', 'Camera'),
                             font=Fonts.BODY_BOLD, bg=Colors.SECONDARY, fg=Colors.TEXT)
-        name_label.pack(anchor=tk.W, padx=10, pady=(8, 2))
+        name_label.pack(anchor=tk.W, padx=10, pady=(6, 1)) # Reduced from (8, 2)
         
         # Status
         status = camera.get('status', 'unknown')
@@ -107,7 +123,7 @@ class Sidebar:
         
         # Status indicator (Circle + Text) frame
         status_frame = tk.Frame(content, bg=Colors.SECONDARY)
-        status_frame.pack(anchor=tk.W, padx=10, pady=(0, 8))
+        status_frame.pack(anchor=tk.W, padx=10, pady=(0, 6)) # Reduced from (0, 8)
         
         # Canvas for dot
         canv = tk.Canvas(status_frame, width=10, height=10, bg=Colors.SECONDARY, highlightthickness=0)

@@ -18,6 +18,15 @@ class YOLODetector:
             5: "bus", 7: "truck", 8: "boat", 9: "traffic light",
             10: "fire hydrant", 11: "stop sign", 12: "parking meter"
         }
+        self.color_map = {
+            "car": (0, 255, 0),       # Green
+            "motorcycle": (0, 255, 255), # Yellow
+            "bus": (255, 255, 0),     # Cyan
+            "truck": (0, 165, 255),   # Orange
+            "bicycle": (255, 0, 255), # Magenta
+            "person": (255, 255, 255),# White
+            "traffic light": (0, 0, 255) # Red (default)
+        }
         self.load_model()
     
     def load_model(self) -> bool:
@@ -41,7 +50,6 @@ class YOLODetector:
         try:
             results = self.model(frame, verbose=False)
             detections = []
-            annotated_frame = frame.copy()
             
             if results and len(results) > 0:
                 result = results[0]
@@ -62,12 +70,8 @@ class YOLODetector:
                             "center": ((x1 + x2) // 2, (y1 + y2) // 2)
                         }
                         detections.append(detection)
-                        
-                        # Draw bounding box and label
-                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        label = f"{class_name} {conf:.2f}"
-                        cv2.putText(annotated_frame, label, (x1, y1 - 10),
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            
+            annotated_frame = self.draw_detections(frame, detections)
             
             return {
                 "detections": detections,
@@ -78,6 +82,32 @@ class YOLODetector:
             self.logger.error(f"Detection error: {e}")
             return {"detections": [], "annotated_frame": frame, "success": False}
     
+    def draw_detections(self, frame: np.ndarray, detections: List[Dict]) -> np.ndarray:
+        """Draw detections on a frame"""
+        annotated_frame = frame.copy()
+        
+        for detection in detections:
+            bbox = detection['bbox']
+            x1, y1, x2, y2 = bbox
+            class_name = detection['class_name']
+            conf = detection.get('confidence', 1.0)
+            
+            # Get color based on class name (Default to Green)
+            color = self.color_map.get(class_name, (0, 255, 0))
+            
+            # Draw bounding box
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+            
+            label = f"{class_name} {conf:.2f}"
+            
+            # Text background for better visibility
+            (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+            cv2.rectangle(annotated_frame, (x1, y1 - 20), (x1 + w, y1), color, -1)
+            cv2.putText(annotated_frame, label, (x1, y1 - 5),
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                      
+        return annotated_frame
+
     def detect_vehicles(self, frame: np.ndarray) -> List[Dict]:
         """Detect vehicles specifically"""
         result = self.detect(frame)

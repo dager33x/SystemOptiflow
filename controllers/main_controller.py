@@ -11,19 +11,26 @@ from detection.traffic_controller import TrafficLightController
 from detection.yolo_detector import YOLODetector
 from views.pages import (
     DashboardPage, TrafficReportsPage, IncidentHistoryPage,
-    ViolationLogsPage, AnalyticsPage, SettingsPage, IssueReportsPage, AdminUsersPage
+    ViolationLogsPage, SettingsPage, IssueReportsPage, AdminUsersPage
 )
+
+from views.components.notification import NotificationManager
 
 class MainController:
     """Main application controller with 4-way camera and AI integration"""
     
-    def __init__(self, root, view, db=None, current_user=None, auth_controller=None, on_logout_callback=None):
+    def __init__(self, root, view, db=None, current_user=None, auth_controller=None, on_logout_callback=None, violation_controller=None, accident_controller=None):
         self.root = root
         self.view = view
         self.db = db
         self.current_user = current_user
         self.auth_controller = auth_controller
+        self.violation_controller = violation_controller
+        self.accident_controller = accident_controller
         self.on_logout_callback = on_logout_callback
+        
+        # Initialize Notification System
+        self.notification_manager = NotificationManager(root)
         
         # Setup logging
         self.logger = logging.getLogger(__name__)
@@ -63,7 +70,9 @@ class MainController:
                 'last_update_time': time.time(),
                 'vehicle_count': 0,
                 'detections': [],
-                'phase_start_time': time.time()
+                'phase_start_time': time.time(),
+                'last_ai_time': 0,
+                'cached_detections': []
             }
         
         # North starts green (will be managed by camera_loop state machine)
@@ -71,6 +80,9 @@ class MainController:
         self.states['north']['time_remaining'] = 30
         
         self.logger.info("Initial traffic state: NORTH → GREEN (30s)")
+        
+        # specific counters
+        self.session_violations = 0
         
         # Threading
         self.camera_thread = None
@@ -84,15 +96,51 @@ class MainController:
             self.pages['dashboard'] = DashboardPage(self.view.content_area)
             self.pages['issue_reports'] = IssueReportsPage(self.view.content_area, self.db, self.current_user)
             self.pages['traffic_reports'] = TrafficReportsPage(self.view.content_area)
-            self.pages['incident_history'] = IncidentHistoryPage(self.view.content_area)
-            self.pages['violation_logs'] = ViolationLogsPage(self.view.content_area)
-            self.pages['analytics'] = AnalyticsPage(self.view.content_area)
+            self.pages['incident_history'] = IncidentHistoryPage(self.view.content_area, self.accident_controller)
+            self.pages['violation_logs'] = ViolationLogsPage(self.view.content_area, self.violation_controller)
             self.pages['settings'] = SettingsPage(self.view.content_area)
             
             # Admin Pages
             if self.current_user and self.current_user.get('role') == 'admin':
                 if self.auth_controller:
                     self.pages['admin_users'] = AdminUsersPage(self.view.content_area, self.auth_controller)
+    
+    def get_active_cameras(self):
+        """Get list of active cameras for the sidebar"""
+        # Map logical directions to display names
+        name_map = {
+            'north': 'North Gate',
+            'south': 'South Junction',
+            'east': 'East Portal',
+            'west': 'West Avenue'
+        }
+        
+        cameras_data = []
+        for direction in self.directions:
+            manager = self.camera_managers.get(direction)
+            
+            # If camera is running (Real), status is 'active' (Green)
+            # If not running, we fall back to Simulation, so it's 'simulated' (Blue/Amber)
+            # Use 'active' for both if you want them to look 'Working', or distinct if preferred.
+            # Given user complaint "its inactive even the camera is working", they likely want 'active' or 'simulated'
+            
+            if manager and manager.is_running:
+                status = "active"
+                display_name = name_map.get(direction, direction.title())
+            else:
+                # Fallback to simulation
+                # Check if we should mark it as "Simulated" or just "Active"
+                # Let's use "simulated" which we will map to a color (INFO/Blue) or WARNING/Amber
+                status = "simulated" 
+                display_name = f"{name_map.get(direction, direction.title())}"
+
+            cameras_data.append({
+                "name": display_name,
+                "status": status,
+                "id": direction
+            })
+            
+        return cameras_data
     
     def update_sidebar_navigation(self):
         """Update sidebar with proper navigation callback after view is ready"""
@@ -136,7 +184,6 @@ class MainController:
             'current_lane': 0,  # 0=north, 1=south, 2=east, 3=west
             'phase': 'green',   # green, yellow, all_red
             'phase_start': time.time(),
-            'phase_start': time.time(),
             'phase_duration': 15,  # Start with 15s green (observation period)
             'green_check_done': False, # Flag for observation check
         }
@@ -159,6 +206,15 @@ class MainController:
                     f"Lane: {self.directions[cycle_state['current_lane']].upper()} | "
                     f"Remaining: {remaining:.1f}s"
                 )
+                
+                # Update sidebar active camera status
+                if self.view and hasattr(self.view, 'sidebar') and self.view.sidebar:
+                    try:
+                        active_cams = self.get_active_cameras()
+                        self.root.after(0, lambda d=active_cams: self.view.sidebar.update_cameras(d))
+                    except Exception as e:
+                        print(f"Error updating sidebar: {e}")
+
                 last_status_time = current_time
 
             
@@ -168,6 +224,18 @@ class MainController:
                 try:
                     state = self.states[direction]
                     lane_id = self.direction_to_lane[direction]
+                    
+                    # ---------------------------
+                    # READ GLOBAL SETTINGS
+                    # ---------------------------
+                    # We check the dict inside the loop for real-time updates
+                    from utils.app_config import SETTINGS
+                    
+                    enable_detection = SETTINGS.get("enable_detection", True)
+                    show_boxes = SETTINGS.get("show_bounding_boxes", True)
+                    show_confidence = SETTINGS.get("show_confidence", True)
+                    show_sim_text = SETTINGS.get("show_simulation_text", True)
+                    dark_mode_cam = SETTINGS.get("dark_mode_cam", False)
                     
                     # Get Frame
                     frame = self.camera_managers[direction].get_frame()
@@ -183,27 +251,241 @@ class MainController:
                             base_count = {'north': 15, 'south': 8, 'east': 12}.get(direction, 0)
                             count = max(0, base_count + random.randint(-2, 2))
                             
-                            # Create fake detections
+                            # Create fake detections (Simulator always creates them, but we might not draw them)
+                            # Create fake detections (Simulator always creates them, but we might not draw them)
                             for _ in range(count):
-                                detections.append({
-                                    'class_name': 'car', 
+                                cx, cy = random.randint(100, 500), random.randint(100, 400)
+                                w, h = 60, 40 # Approx car size
+                                x1, y1 = cx - w//2, cy - h//2
+                                x2, y2 = cx + w//2, cy + h//2
+                                
+                                # Randomize types? For now mostly cars
+                                v_type = random.choice(['car', 'car', 'car', 'truck', 'bus', 'motorcycle'])
+                                
+                                det = {
+                                    'class_name': v_type, 
                                     'confidence': 0.95,
-                                    'box': [0, 0, 50, 50],
-                                    'center': (random.randint(100, 500), random.randint(100, 400))
-                                })
+                                    'bbox': [x1, y1, x2, y2],
+                                    'center': (cx, cy)
+                                }
+                                detections.append(det)
+                                
+                                # Draw if enabled
+                                if show_boxes:
+                                    color = getattr(self.yolo_detector, 'color_map', {}).get(v_type, (0, 255, 0))
+                                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                                    # Simple label
+                                    # cv2.putText(frame, v_type, (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                             
-                            cv2.putText(frame, f"SIMULATION: {count} vehicles", (50, 240), 
-                                      cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                            # -------------------------------------------------------------
+                            # AI EVENT SIMULATION (Accidents & Violations)
+                            # -------------------------------------------------------------
+                            # Check settings
+                            enable_sim = SETTINGS.get("enable_sim_events", True)
+                            
+                            if enable_sim:
+                                # 1. Simulate ACCIDENT (Random low probability)
+                                # We create 2 overlapping boxes to simulate a crash
+                                if random.random() < 0.02: # 2% chance per frame
+                                    cx, cy = 320, 240
+                                    detections.append({
+                                        'class_name': 'accident', 
+                                        'confidence': 0.99,
+                                        'box': [cx-40, cy-40, cx+20, cy+20],
+                                        'center': (cx, cy)
+                                    })
+                                    detections.append({
+                                        'class_name': 'car', 
+                                        'confidence': 0.90,
+                                        'box': [cx-20, cy-20, cx+40, cy+40],
+                                        'center': (cx+10, cy+10)
+                                    })
+                                    
+                                    # Save Simulate Accident
+                                    current_time = time.time()
+                                    last_acc = getattr(self, 'last_accident_log', 0)
+                                    if hasattr(self, 'accident_controller') and self.accident_controller:
+                                         if current_time - last_acc > 10.0:
+                                            self.accident_controller.report_accident(lane=lane_id, severity="High", description="Simulated Multi-Vehicle Crash")
+                                            self.last_accident_log = current_time
+                                            self.logger.info(f"Simulated Accident recorded for {direction}")
+                                            # Notify
+                                            self.root.after(0, lambda: self.notification_manager.show("Crash Detected", f"Accident simulated on Lane {lane_id}", "error"))
+
+                                    cv2.putText(frame, "⚠️ ACCIDENT DETECTED!", (150, 100), 
+                                              cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+                                
+                                # 2. Simulate VIOLATION (If Light is RED)
+                                # We simulate a car moving fast through the frame
+                                if state['signal_state'] == 'RED' and random.random() < 0.03: # 3% chance when Red
+                                    # Force a "detection" that represents a runner
+                                    detections.append({
+                                        'class_name': 'violation', 
+                                        'confidence': 0.98,
+                                        'box': [100, 100, 200, 200], # Arbitrary box
+                                        'center': (150, 150)
+                                    })
+                                    cv2.putText(frame, "🚫 RED LIGHT VIOLATION!", (100, 150), 
+                                              cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 165, 255), 3)
+                                    
+                                    # Save simulated violation
+                                    current_time = time.time()
+                                    if hasattr(self, 'violation_controller') and self.violation_controller:
+                                        last_log = getattr(self, 'last_violation_log', 0)
+                                        if current_time - last_log > 5.0:
+                                            self.violation_controller.save_violation(lane=lane_id, violation_type="Red Light Violation")
+                                            self.session_violations += 1 # Increment Session Counter
+                                            self.last_violation_log = current_time
+                                            self.logger.info(f"Simulated Violation recorded for {direction}")
+                                            # Notify
+                                            self.root.after(0, lambda: self.notification_manager.show("Violation Alert", f"Red Light Violation on Lane {lane_id}", "violation"))
+
+                            # -------------------------------------------------------------
+                            
+                            if show_sim_text:
+                                cv2.putText(frame, f"SIMULATION: {count} vehicles", (50, 240), 
+                                          cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                         else:
-                             cv2.putText(frame, "No Signal - No Traffic", (150, 240), 
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                             if show_sim_text:
+                                 cv2.putText(frame, "No Signal - No Traffic", (150, 240), 
+                                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
                         
                         annotated_frame = frame
                     else:
-                        # Run YOLO detection ONCE
-                        detection_result = self.yolo_detector.detect(frame)
-                        detections = detection_result.get("detections", [])
-                        annotated_frame = detection_result.get('annotated_frame', frame)
+                        # REAL CAMERA
+                        detections = []
+                        annotated_frame = frame
+                        
+                        if enable_detection:
+                            # ---------------------------
+                            # PERFORMANCE OPTIMIZATION
+                            # Throttle AI to ~10 FPS (every 0.1s)
+                            # ---------------------------
+                            current_ai_time = time.time()
+                            last_ai_time = state.get('last_ai_time', 0)
+                            
+                            # Determine if we should run fresh detection
+                            should_detect = (current_ai_time - last_ai_time) > 0.1
+                            
+                            if should_detect:
+                                # Run YOLO detection
+                                detection_result = self.yolo_detector.detect(frame)
+                                detections = detection_result.get("detections", [])
+                                annotated_frame = detection_result.get('annotated_frame', frame)
+                                
+                                # Update cache
+                                state['last_ai_time'] = current_ai_time
+                                state['cached_detections'] = detections
+                            else:
+                                # Reuse cached detections but redraw on NEW frame to prevent "ghosting"
+                                # This ensures the video background is smooth (30fps) while boxes update at 10fps
+                                detections = state.get('cached_detections', [])
+                                
+                                if show_boxes and detections:
+                                    try:
+                                        annotated_frame = self.yolo_detector.draw_detections(frame, detections)
+                                    except AttributeError:
+                                        # Fallback if method missing (shouldn't happen)
+                                        annotated_frame = frame
+                                else:
+                                    annotated_frame = frame
+                            
+                            if not show_boxes:
+                                annotated_frame = frame
+
+                            # -------------------------------------------------------------
+                            # REAL AI LOGIC: Violation & Accident Detection
+                            # -------------------------------------------------------------
+                            enable_sim = SETTINGS.get("enable_sim_events", True)
+                            
+                            if enable_sim: # Using same toggle for "Enable Events" on real cam
+                                
+                                # 1. Red Light Violation (Real Logic)
+                                # Define Intersection Zone (Center of image)
+                                h, w, _ = frame.shape
+                                # Zone: x1, y1, x2, y2 (Central box)
+                                zone_x1, zone_y1 = int(w*0.3), int(h*0.3)
+                                zone_x2, zone_y2 = int(w*0.7), int(h*0.7)
+                                
+                                # Draw zone for debugging/visual
+                                if state['signal_state'] == 'RED':
+                                    color = (0, 0, 255) # Red Zone
+                                    # cv2.rectangle(annotated_frame, (zone_x1, zone_y1), (zone_x2, zone_y2), color, 2)
+                                    
+                                    # Check if any car is INSIDE this zone while RED
+                                    for det in detections:
+                                        if det['class_name'] in ['car', 'truck', 'bus', 'motorcycle']:
+                                            cx, cy = det['center']
+                                            if zone_x1 < cx < zone_x2 and zone_y1 < cy < zone_y2:
+                                                # VIOLATION CONFIRMED
+                                                cv2.putText(annotated_frame, "🚫 RED LIGHT VIOLATION!", (50, 100), 
+                                                          cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+                                                
+                                                # Save violation (Simple Throttle: max 1 per 5 seconds per camera)
+                                                current_time = time.time()
+                                                if hasattr(self, 'violation_controller') and self.violation_controller:
+                                                    last_log = getattr(self, 'last_violation_log', 0)
+                                                    if current_time - last_log > 5.0:
+                                                        self.violation_controller.save_violation(lane=lane_id, violation_type="Red Light Violation")
+                                                        self.session_violations += 1 # Increment Session Counter
+                                                        self.last_violation_log = current_time
+                                                        self.logger.info(f"Violation recorded for {direction}")
+                                                        # Notify
+                                                        self.root.after(0, lambda: self.notification_manager.show("Violation Alert", f"Red Light Violation on Lane {lane_id}", "violation"))
+                                                
+                                                break
+
+                                # 2. Accident Detection (Real Logic - Box Overlap)
+                                # Simple heuristic: overlapping boxes of high confidence
+                                for i, d1 in enumerate(detections):
+                                    for j, d2 in enumerate(detections):
+                                        if i >= j: continue # Avoid double check
+                                        
+                                        # Only check vehicles
+                                        vehicles = ['car', 'truck', 'bus', 'motorcycle']
+                                        if d1['class_name'] in vehicles and d2['class_name'] in vehicles:
+                                            # Box 1
+                                            x1a, y1a, x2a, y2a = d1['bbox']
+                                            # Box 2
+                                            x1b, y1b, x2b, y2b = d2['bbox']
+                                            
+                                            # IoU / Overlap Check
+                                            xi1 = max(x1a, x1b)
+                                            yi1 = max(y1a, y1b)
+                                            xi2 = min(x2a, x2b)
+                                            yi2 = min(y2a, y2b)
+                                            
+                                            inter_area = max(0, xi2 - xi1) * max(0, yi2 - yi1)
+                                            
+                                            if inter_area > 0:
+                                                box1_area = (x2a - x1a) * (y2a - y1a)
+                                                box2_area = (x2b - x1b) * (y2b - y1b)
+                                                union_area = box1_area + box2_area - inter_area
+                                                iou = inter_area / union_area
+                                                
+                                                # If Overlap is significant, flag as potential accident (Medium Sensitivity)
+                                                # Threshold raised to 0.35 (35% overlap) to avoid false positives from perspective
+                                                if iou > 0.35:
+                                                    cv2.putText(annotated_frame, "⚠️ ACCIDENT ALERT!", (50, 150), 
+                                                              cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 165, 255), 3)
+                                                    # Draw connecting line
+                                                    c1 = d1['center']
+                                                    c2 = d2['center']
+                                                    cv2.line(annotated_frame, c1, c2, (0, 0, 255), 3)
+                                                    
+                                                    # Notify and Save (Throttled)
+                                                    current_time = time.time()
+                                                    last_acc = getattr(self, 'last_accident_log', 0)
+                                                    if hasattr(self, 'accident_controller') and self.accident_controller:
+                                                        if current_time - last_acc > 10.0:
+                                                            self.accident_controller.report_accident(lane=lane_id, severity="Severe", description=f"Collision detected ({iou:.2f} IoU)")
+                                                            self.last_accident_log = current_time
+                                                            self.root.after(0, lambda: self.notification_manager.show("Accident Alert", f"Collision detected on Lane {lane_id}", "error"))
+                            # -------------------------------------------------------------
+                        
+                    # Apply final filters (Dark Mode)
+                    if dark_mode_cam and annotated_frame is not None:
+                        annotated_frame = cv2.bitwise_not(annotated_frame)
                     
                     # Store detections
                     state['detections'] = detections
@@ -239,15 +521,19 @@ class MainController:
                     self.logger.error(f"Error processing camera ({direction}): {e}", exc_info=True)
                     all_lane_counts.append(0)
             
-            # Update Analytics Page (if active)
-            # We do this once per cycle to keep graph time-aligned
-            if self.current_page and hasattr(self.current_page, 'update_analytics'):
-                analytics_data = {
-                    d: self.states[d]['vehicle_count'] for d in self.directions
+            
+            # NEW: Update Traffic Reports Page (Bar Graph)
+            if self.current_page and hasattr(self.current_page, 'update_report'):
+                # Collect traffic report data
+                report_data = {
+                    'lane_data': {d: self.states[d]['vehicle_count'] for d in self.directions},
+                    'active_cameras': sum(1 for d in self.directions if self.camera_managers[d].is_running),
+                    'violations': self.session_violations
                 }
-                self.root.after(0, lambda d=analytics_data: 
-                    self.current_page.update_analytics(d) 
-                    if self.current_page and hasattr(self.current_page, 'update_analytics') else None
+                
+                self.root.after(0, lambda d=report_data: 
+                    self.current_page.update_report(d) 
+                    if self.current_page and hasattr(self.current_page, 'update_report') else None
                 )
 
             # Step 2: Simple traffic light state machine
@@ -255,7 +541,20 @@ class MainController:
                 elapsed = current_time - cycle_state['phase_start']
                 
                 # Dynamic adjustment removed - Using strict High/Low logic instead
-                # (Block removed)
+                # REAL-TIME ADAPTIVE LOGIC: Early Cutoff
+                # If currently GREEN and lane is empty, cut short to save time
+                if cycle_state['phase'] == 'green':
+                    current_idx = cycle_state['current_lane']
+                    # Check current vehicle count for this lane
+                    if len(all_lane_counts) > current_idx:
+                        current_vol = all_lane_counts[current_idx]
+                        
+                        # If lane is empty AND we have given at least 5s of green (Safety min)
+                        if current_vol == 0 and elapsed > 5.0:
+                            self.logger.info(f"⚡ FAST TRACK: Lane {self.directions[current_idx].upper()} is empty! Cutting green light short.")
+                            # Force Phase End immediately
+                            cycle_state['phase_duration'] = elapsed
+                            # Ensure we don't wait -> Logic below will catch 'elapsed >= duration'
 
                 # Check if phase should change
                 if elapsed >= cycle_state['phase_duration']:

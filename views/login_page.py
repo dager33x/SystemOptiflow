@@ -1,7 +1,7 @@
 # views/login_page.py
 import tkinter as tk
 from tkinter import messagebox
-from .styles import Colors
+from .styles import Colors, WidgetStyles
 
 
 class LoginPage(tk.Frame):
@@ -136,87 +136,25 @@ class LoginPage(tk.Frame):
         self.subtitle_login.pack(pady=(0, 30), anchor=tk.W)
         
         # Username field
-        tk.Label(
-            self.form_container,
-            text="Username",
-            font=("Segoe UI", 10, "bold"),
-            bg=Colors.CARD_BG,
-            fg=Colors.TEXT
-        ).pack(anchor=tk.W, pady=(0, 8))
-        
-        username_wrap = tk.Frame(self.form_container, bg=Colors.BACKGROUND, pady=1, padx=1) # Border wrapper
-        username_wrap.pack(fill=tk.X, pady=(0, 20))
-        
-        self.username_entry = tk.Entry(
-            username_wrap,
-            font=("Segoe UI", 11),
-            bg=Colors.BACKGROUND,
-            fg=Colors.TEXT,
-            relief=tk.FLAT,
-            bd=0,
-            insertbackground=Colors.PRIMARY
-        )
-        self.username_entry.pack(fill=tk.X, padx=10, ipady=8)
+        user_wrap = self.create_styled_entry(self.form_container, "Username")
+        user_wrap.pack(fill=tk.X, pady=(0, 20))
+        self.username_entry = user_wrap.entry
+        self.username_placeholder = "Username"
         
         # Password field
-        tk.Label(
-            self.form_container,
-            text="Password",
-            font=("Segoe UI", 10, "bold"),
-            bg=Colors.CARD_BG,
-            fg=Colors.TEXT
-        ).pack(anchor=tk.W, pady=(0, 8))
-        
-        password_wrap = tk.Frame(self.form_container, bg=Colors.BACKGROUND, pady=1, padx=1)
-        password_wrap.pack(fill=tk.X, pady=(0, 25))
-        
-        password_inner = tk.Frame(password_wrap, bg=Colors.BACKGROUND)
-        password_inner.pack(fill=tk.X, padx=10)
-        
-        self.password_entry = tk.Entry(
-            password_inner,
-            font=("Segoe UI", 11),
-            bg=Colors.BACKGROUND,
-            fg=Colors.TEXT,
-            relief=tk.FLAT,
-            bd=0,
-            show="*",
-            insertbackground=Colors.PRIMARY
-        )
-        self.password_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=8)
-        
-        # Eye icon
-        self.show_password = False
-        self.eye_button = tk.Button(
-            password_inner,
-            text="👁️",
-            font=("Segoe UI", 12),
-            bg=Colors.BACKGROUND,
-            fg=Colors.TEXT_LIGHT,
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
-            activebackground=Colors.BACKGROUND,
-            activeforeground=Colors.PRIMARY,
-            command=self.toggle_password_visibility
-        )
-        self.eye_button.pack(side=tk.RIGHT)
+        pass_wrap = self.create_styled_entry(self.form_container, "Password", is_password=True)
+        pass_wrap.pack(fill=tk.X, pady=(0, 25))
+        self.password_entry = pass_wrap.entry
+        self.password_placeholder = "Password"
 
         # Login button
-        self.login_button = tk.Button(
+        self.login_button = WidgetStyles.create_modern_button(
             self.form_container,
             text="Sign In",
-            font=("Segoe UI", 11, "bold"),
-            bg=Colors.PRIMARY,
-            fg="white",
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
-            activebackground=Colors.PRIMARY_DARK,
-            activeforeground="white",
-            command=self.handle_login
+            command=self.handle_login,
+            style='primary'
         )
-        self.login_button.pack(fill=tk.X, pady=(0, 20), ipady=10)
+        self.login_button.pack(fill=tk.X, pady=(0, 20), ipady=2)
         
         # Footer
         footer_frame = tk.Frame(self.form_container, bg=Colors.CARD_BG)
@@ -252,15 +190,91 @@ class LoginPage(tk.Frame):
         )
         signup_btn.pack(side=tk.RIGHT)
 
-    def toggle_password_visibility(self):
-        """Toggle password visibility"""
-        self.show_password = not self.show_password
-        self.password_entry.config(show="" if self.show_password else "*")
-    
+    def create_styled_entry(self, parent, placeholder, is_password=False):
+        """Create a styled entry with placeholder text and optional eye icon"""
+        container = tk.Frame(parent, bg=Colors.BACKGROUND, padx=1, pady=1)
+        
+        inner_frame = tk.Frame(container, bg=Colors.BACKGROUND)
+        inner_frame.pack(fill=tk.BOTH, expand=True)
+        
+        entry = tk.Entry(
+            inner_frame,
+            font=("Segoe UI", 11),
+            bg=Colors.BACKGROUND,
+            fg=Colors.TEXT_LIGHT,
+            relief=tk.FLAT,
+            bd=0,
+            insertbackground=Colors.PRIMARY
+        )
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=8, padx=(10, 5))
+        
+        entry.insert(0, placeholder)
+        
+        entry.placeholder_text = placeholder
+        entry.password_visible = False
+        
+        def on_focus_in(event):
+            if entry.get() == placeholder:
+                entry.delete(0, tk.END)
+                entry.config(fg=Colors.TEXT)
+                if is_password and not entry.password_visible:
+                    entry.config(show="*")
+
+        def on_focus_out(event):
+            if not entry.get():
+                if is_password:
+                    entry.config(show="")
+                entry.insert(0, placeholder)
+                entry.config(fg=Colors.TEXT_LIGHT)
+        
+        entry.bind("<FocusIn>", on_focus_in)
+        entry.bind("<FocusOut>", on_focus_out)
+        
+        if is_password:
+            def toggle_visibility():
+                if entry.get() == placeholder: return
+                entry.password_visible = not entry.password_visible
+                if entry.password_visible:
+                    entry.config(show="")
+                else:
+                    entry.config(show="*")
+            
+            eye_btn = tk.Button(
+                inner_frame,
+                text="👁️",
+                font=("Segoe UI", 12),
+                bg=Colors.BACKGROUND,
+                fg=Colors.TEXT_LIGHT,
+                relief=tk.FLAT,
+                bd=0,
+                cursor="hand2",
+                activebackground=Colors.BACKGROUND,
+                activeforeground=Colors.PRIMARY,
+                command=toggle_visibility
+            )
+            eye_btn.pack(side=tk.RIGHT, padx=5)
+            
+            def on_enter(e): eye_btn.config(fg=Colors.PRIMARY)
+            def on_leave(e): eye_btn.config(fg=Colors.TEXT_LIGHT)
+            eye_btn.bind("<Enter>", on_enter)
+            eye_btn.bind("<Leave>", on_leave)
+
+        container.entry = entry
+        return container
+
     def handle_login(self):
         """Handle login button click"""
         username = self.username_entry.get().strip()
         password = self.password_entry.get().strip()
+        
+        # Filter placeholders
+        if username == getattr(self, 'username_placeholder', ''):
+            username = ""
+        
+        # For password, if show is empty (text mode) AND it equals placeholder, treat as empty
+        # Or simpler: check against placeholder
+        if password == getattr(self, 'password_placeholder', ''):
+            password = ""
         
         if not username:
             messagebox.showwarning("Input Error", "Please enter username")

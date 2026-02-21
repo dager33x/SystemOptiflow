@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import messagebox
 import re
-from .styles import Colors
+from .styles import Colors, WidgetStyles
 
 
 class SignupPage(tk.Frame):
@@ -21,188 +21,223 @@ class SignupPage(tk.Frame):
         main_container = tk.Frame(self, bg=Colors.BACKGROUND)
         main_container.pack(fill=tk.BOTH, expand=True)
         
-        # Header with back button
-        header_frame = tk.Frame(main_container, bg=Colors.BACKGROUND, height=60)
-        header_frame.pack(fill=tk.X, pady=(10, 0))
-        header_frame.pack_propagate(False)
+        # Center container
+        center_frame = tk.Frame(main_container, bg=Colors.BACKGROUND)
+        center_frame.pack(expand=True, fill=tk.BOTH)
         
-        back_button = tk.Button(
-            header_frame,
-            text="← Back",
-            font=("Segoe UI", 10, "bold"),
-            bg=Colors.BACKGROUND,
-            fg=Colors.TEXT,
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
-            activebackground=Colors.BACKGROUND,
-            activeforeground=Colors.PRIMARY,
-            command=self.on_back_callback
-        )
-        back_button.pack(side=tk.LEFT, padx=20, pady=12)
-        
-        # Form container - centered card
-        form_container = tk.Frame(main_container, bg=Colors.CARD_BG, padx=40, pady=20)
-        form_container.pack(expand=True)
+        # Form card - centered
+        form_card = tk.Frame(center_frame, bg=Colors.CARD_BG, padx=40, pady=30)
+        form_card.pack(expand=True)
         
         # Title
         title_label = tk.Label(
-            form_container,
+            form_card,
             text="Create Account",
             font=("Segoe UI", 24, "bold"),
             bg=Colors.CARD_BG,
             fg=Colors.TEXT
         )
-        title_label.pack(pady=(0, 5))
+        title_label.pack(pady=(0, 15))
         
-        subtitle_label = tk.Label(
-            form_container,
-            text="Join OptiFlow System",
+        # Subtitle with "Sign in" link
+        subtitle_frame = tk.Frame(form_card, bg=Colors.CARD_BG)
+        subtitle_frame.pack(pady=(0, 30))
+        
+        tk.Label(
+            subtitle_frame,
+            text="Have an account already? ",
             font=("Segoe UI", 10),
             bg=Colors.CARD_BG,
             fg=Colors.TEXT_LIGHT
-        )
-        subtitle_label.pack(pady=(0, 15))
+        ).pack(side=tk.LEFT)
         
-        # Username field
-        tk.Label(
-            form_container,
-            text="Username",
+        signin_link = tk.Label(
+            subtitle_frame,
+            text="Sign in",
             font=("Segoe UI", 10, "bold"),
             bg=Colors.CARD_BG,
-            fg=Colors.TEXT
-        ).pack(anchor=tk.W, pady=(0, 5))
-        
-        username_wrap = tk.Frame(form_container, bg=Colors.BACKGROUND, padx=1, pady=1)
-        username_wrap.pack(fill=tk.X, pady=(0, 10))
-        
-        self.username_entry = tk.Entry(
-            username_wrap,
-            font=("Segoe UI", 11),
-            bg=Colors.BACKGROUND,
-            fg=Colors.TEXT,
-            relief=tk.FLAT,
-            bd=0,
-            insertbackground=Colors.PRIMARY
+            fg=Colors.PRIMARY,
+            cursor="hand2"
         )
-        self.username_entry.pack(fill=tk.X, ipady=8, padx=10)
+        signin_link.pack(side=tk.LEFT)
+        signin_link.bind("<Button-1>", lambda e: self.on_back_callback())
         
-        # Email field
-        tk.Label(
-            form_container,
-            text="Email",
-            font=("Segoe UI", 10, "bold"),
-            bg=Colors.CARD_BG,
-            fg=Colors.TEXT
-        ).pack(anchor=tk.W, pady=(0, 5))
+        # --- Form Fields ---
         
-        email_wrap = tk.Frame(form_container, bg=Colors.BACKGROUND, padx=1, pady=1)
-        email_wrap.pack(fill=tk.X, pady=(0, 10))
+        # Name Row (First Name | Last Name)
+        name_row = tk.Frame(form_card, bg=Colors.CARD_BG)
+        name_row.pack(fill=tk.X, pady=(0, 20))
         
-        self.email_entry = tk.Entry(
-            email_wrap,
-            font=("Segoe UI", 11),
-            bg=Colors.BACKGROUND,
-            fg=Colors.TEXT,
-            relief=tk.FLAT,
-            bd=0,
-            insertbackground=Colors.PRIMARY
-        )
-        self.email_entry.pack(fill=tk.X, ipady=8, padx=10)
+        # First Name
+        fn_wrap = self.create_styled_entry(name_row, "First Name")
+        fn_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        self.first_name_entry = fn_wrap.entry
+        self.first_name_placeholder = "First Name"
         
-        # Password field
-        tk.Label(
-            form_container,
-            text="Password",
-            font=("Segoe UI", 10, "bold"),
-            bg=Colors.CARD_BG,
-            fg=Colors.TEXT
-        ).pack(anchor=tk.W, pady=(0, 5))
+        # Last Name
+        ln_wrap = self.create_styled_entry(name_row, "Last Name")
+        ln_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+        self.last_name_entry = ln_wrap.entry
+        self.last_name_placeholder = "Last Name"
         
-        password_wrap = tk.Frame(form_container, bg=Colors.BACKGROUND, padx=1, pady=1)
-        password_wrap.pack(fill=tk.X, pady=(0, 10))
+        # Username
+        user_wrap = self.create_styled_entry(form_card, "Username")
+        user_wrap.pack(fill=tk.X, pady=(0, 20))
+        self.username_entry = user_wrap.entry
+        self.username_placeholder = "Username"
         
-        self.password_entry = tk.Entry(
-            password_wrap,
-            font=("Segoe UI", 11),
-            bg=Colors.BACKGROUND,
-            fg=Colors.TEXT,
-            relief=tk.FLAT,
-            bd=0,
-            show="*",
-            insertbackground=Colors.PRIMARY
-        )
-        self.password_entry.pack(fill=tk.X, ipady=8, padx=10)
+        # Email
+        email_wrap = self.create_styled_entry(form_card, "Email")
+        email_wrap.pack(fill=tk.X, pady=(0, 20))
+        self.email_entry = email_wrap.entry
+        self.email_placeholder = "Email"
         
-        # Confirm password field
-        tk.Label(
-            form_container,
-            text="Confirm Password",
-            font=("Segoe UI", 10, "bold"),
-            bg=Colors.CARD_BG,
-            fg=Colors.TEXT
-        ).pack(anchor=tk.W, pady=(0, 5))
+        # Password
+        pass_wrap = self.create_styled_entry(form_card, "Password", is_password=True)
+        pass_wrap.pack(fill=tk.X, pady=(0, 20))
+        self.password_entry = pass_wrap.entry
+        self.password_placeholder = "Password"
         
-        confirm_wrap = tk.Frame(form_container, bg=Colors.BACKGROUND, padx=1, pady=1)
-        confirm_wrap.pack(fill=tk.X, pady=(0, 15))
-        
-        self.confirm_password_entry = tk.Entry(
-            confirm_wrap,
-            font=("Segoe UI", 11),
-            bg=Colors.BACKGROUND,
-            fg=Colors.TEXT,
-            relief=tk.FLAT,
-            bd=0,
-            show="*",
-            insertbackground=Colors.PRIMARY
-        )
-        self.confirm_password_entry.pack(fill=tk.X, ipady=8, padx=10)
+        # Confirm Password
+        confirm_wrap = self.create_styled_entry(form_card, "Repeat Password", is_password=True)
+        confirm_wrap.pack(fill=tk.X, pady=(0, 30))
+        self.confirm_password_entry = confirm_wrap.entry
+        self.confirm_password_placeholder = "Repeat Password"
         
         # Signup button
-        signup_button = tk.Button(
-            form_container,
-            text="CREATE ACCOUNT",
-            font=("Segoe UI", 11, "bold"),
-            bg=Colors.PRIMARY,
-            fg="white",
+        signup_button = WidgetStyles.create_modern_button(
+            form_card,
+            text="Sign up",
+            command=self.handle_signup,
+            style='primary'
+        )
+        signup_button.pack(fill=tk.X, ipady=2)
+
+
+
+    def create_styled_entry(self, parent, placeholder, is_password=False):
+        """Create a styled entry with placeholder text and optional eye icon"""
+        # Outer container (Border/Background)
+        container = tk.Frame(parent, bg=Colors.BACKGROUND, padx=1, pady=1)
+        
+        # Inner frame (Content)
+        inner_frame = tk.Frame(container, bg=Colors.BACKGROUND)
+        inner_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Entry widget
+        entry = tk.Entry(
+            inner_frame,
+            font=("Segoe UI", 11),
+            bg=Colors.BACKGROUND,
+            fg=Colors.TEXT_LIGHT, # Placeholder color
             relief=tk.FLAT,
             bd=0,
-            cursor="hand2",
-            activebackground=Colors.PRIMARY_DARK,
-            activeforeground=Colors.WHITE,
-            command=self.handle_signup
+            insertbackground=Colors.PRIMARY
         )
-        signup_button.pack(fill=tk.X, ipady=10)
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=8, padx=(10, 5))
+        
+        # Set placeholder
+        entry.insert(0, placeholder)
+        
+        # State tracking
+        entry.placeholder_text = placeholder
+        entry.password_visible = False
+        
+        def on_focus_in(event):
+            if entry.get() == placeholder:
+                entry.delete(0, tk.END)
+                entry.config(fg=Colors.TEXT)
+                if is_password and not entry.password_visible:
+                    entry.config(show="*")
 
-        # Exit button
-        exit_btn = tk.Button(
-            form_container,
-            text="Exit Application",
-            font=("Segoe UI", 9),
-            bg=Colors.CARD_BG,
-            fg=Colors.DANGER, 
-            activebackground=Colors.CARD_BG,
-            activeforeground="#dc2626",
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
-            command=self.quit_app
-        )
-        exit_btn.pack(pady=(15, 0), fill=tk.X)
+        def on_focus_out(event):
+            if not entry.get():
+                if is_password:
+                    entry.config(show="")
+                entry.insert(0, placeholder)
+                entry.config(fg=Colors.TEXT_LIGHT)
+        
+        entry.bind("<FocusIn>", on_focus_in)
+        entry.bind("<FocusOut>", on_focus_out)
+        
+        # Eye Icon for Password
+        if is_password:
+            def toggle_visibility():
+                # Don't toggle if placeholder is showing
+                if entry.get() == placeholder:
+                    return
 
-    def quit_app(self):
-        """Exit the application"""
-        if messagebox.askyesno("Confirm Exit", "Are you sure you want to exit?"):
-             self.quit()
+                entry.password_visible = not entry.password_visible
+                if entry.password_visible:
+                    entry.config(show="")
+                else:
+                    entry.config(show="*")
+            
+            eye_btn = tk.Button(
+                inner_frame,
+                text="👁️",
+                font=("Segoe UI", 12),
+                bg=Colors.BACKGROUND,
+                fg=Colors.TEXT_LIGHT,
+                relief=tk.FLAT,
+                bd=0,
+                cursor="hand2",
+                activebackground=Colors.BACKGROUND,
+                activeforeground=Colors.PRIMARY,
+                command=toggle_visibility
+            )
+            eye_btn.pack(side=tk.RIGHT, padx=5)
+            
+            # Update eye button color on hover for better UX
+            def on_enter(e): eye_btn.config(fg=Colors.PRIMARY)
+            def on_leave(e): eye_btn.config(fg=Colors.TEXT_LIGHT)
+            eye_btn.bind("<Enter>", on_enter)
+            eye_btn.bind("<Leave>", on_leave)
+
+        container.entry = entry
+        return container
+
+
+
     
     def handle_signup(self):
         """Handle signup button click"""
+        first_name = self.first_name_entry.get().strip()
+        last_name = self.last_name_entry.get().strip()
         username = self.username_entry.get().strip()
         email = self.email_entry.get().strip()
         password = self.password_entry.get()
         confirm_password = self.confirm_password_entry.get()
         
+        # Filter placeholders
+        if first_name == getattr(self, 'first_name_placeholder', ''):
+            first_name = ""
+        if last_name == getattr(self, 'last_name_placeholder', ''):
+            last_name = ""
+        if username == getattr(self, 'username_placeholder', ''):
+            username = ""
+        if email == getattr(self, 'email_placeholder', ''):
+            email = ""
+        
+        # Passwords might be "Password" or "Repeat Password" if type is text, but for show="*" entries 
+        # the .get() usually returns the actual text. 
+        # However, my placeholder logic toggles show="*" depending on focus.
+        # If the user hasn't typed anything, it shows "Password" (text mode). 
+        # So .get() will return "Password".
+        if password == getattr(self, 'password_placeholder', ''):
+            password = ""
+        if confirm_password == getattr(self, 'confirm_password_placeholder', ''):
+            confirm_password = ""
+        
         # Validation
+        if not first_name:
+            messagebox.showwarning("Input Error", "Please enter first name")
+            return
+            
+        if not last_name:
+            messagebox.showwarning("Input Error", "Please enter last name")
+            return
+
         if not username:
             messagebox.showwarning("Input Error", "Please enter username")
             return
@@ -234,4 +269,4 @@ class SignupPage(tk.Frame):
             return
         
         if self.on_signup_callback:
-            self.on_signup_callback(username, email, password)
+            self.on_signup_callback(first_name, last_name, username, email, password)

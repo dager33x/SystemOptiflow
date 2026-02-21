@@ -1,7 +1,7 @@
 # views/forgot_password_page.py
 import tkinter as tk
 from tkinter import messagebox
-from .styles import Colors
+from .styles import Colors, WidgetStyles
 
 
 class ForgotPasswordPage(tk.Frame):
@@ -64,71 +64,76 @@ class ForgotPasswordPage(tk.Frame):
         subtitle_label.pack(pady=(0, 25))
         
         # Username field
-        tk.Label(
-            form_container,
-            text="Username",
-            font=("Segoe UI", 10, "bold"),
-            bg=Colors.CARD_BG,
-            fg=Colors.TEXT
-        ).pack(anchor=tk.W, pady=(0, 5))
-        
-        username_wrap = tk.Frame(form_container, bg=Colors.BACKGROUND, padx=1, pady=1)
-        username_wrap.pack(fill=tk.X, pady=(0, 15))
-        
-        self.username_entry = tk.Entry(
-            username_wrap,
-            font=("Segoe UI", 11),
-            bg=Colors.BACKGROUND,
-            fg=Colors.TEXT,
-            relief=tk.FLAT,
-            bd=0,
-            insertbackground=Colors.PRIMARY
-        )
-        self.username_entry.pack(fill=tk.X, ipady=8, padx=10)
+        user_wrap = self.create_styled_entry(form_container, "Username")
+        user_wrap.pack(fill=tk.X, pady=(0, 20))
+        self.username_entry = user_wrap.entry
+        self.username_placeholder = "Username"
         
         # Email field
-        tk.Label(
-            form_container,
-            text="Email Address",
-            font=("Segoe UI", 10, "bold"),
-            bg=Colors.CARD_BG,
-            fg=Colors.TEXT
-        ).pack(anchor=tk.W, pady=(0, 5))
-        
-        email_wrap = tk.Frame(form_container, bg=Colors.BACKGROUND, padx=1, pady=1)
+        email_wrap = self.create_styled_entry(form_container, "Email Address")
         email_wrap.pack(fill=tk.X, pady=(0, 25))
+        self.email_entry = email_wrap.entry
+        self.email_placeholder = "Email Address"
         
-        self.email_entry = tk.Entry(
-            email_wrap,
+        # Send code button
+        reset_button = WidgetStyles.create_modern_button(
+            form_container,
+            text="SEND RESET CODE",
+            command=self.handle_reset,
+            style='primary'
+        )
+        reset_button.pack(fill=tk.X, ipady=2)
+        
+    def create_styled_entry(self, parent, placeholder, is_password=False):
+        """Create a styled entry with placeholder text"""
+        container = tk.Frame(parent, bg=Colors.BACKGROUND, padx=1, pady=1)
+        
+        inner_frame = tk.Frame(container, bg=Colors.BACKGROUND)
+        inner_frame.pack(fill=tk.BOTH, expand=True)
+        
+        entry = tk.Entry(
+            inner_frame,
             font=("Segoe UI", 11),
             bg=Colors.BACKGROUND,
-            fg=Colors.TEXT,
+            fg=Colors.TEXT_LIGHT,
             relief=tk.FLAT,
             bd=0,
             insertbackground=Colors.PRIMARY
         )
-        self.email_entry.pack(fill=tk.X, ipady=8, padx=10)
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=8, padx=10)
         
-        # Send code button
-        reset_button = tk.Button(
-            form_container,
-            text="SEND RESET CODE",
-            font=("Segoe UI", 11, "bold"),
-            bg=Colors.PRIMARY,
-            fg="white",
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
-            activebackground=Colors.PRIMARY_DARK,
-            activeforeground="white",
-            command=self.handle_reset
-        )
-        reset_button.pack(fill=tk.X, ipady=10)
+        entry.insert(0, placeholder)
+        
+        def on_focus_in(event):
+            if entry.get() == placeholder:
+                entry.delete(0, tk.END)
+                entry.config(fg=Colors.TEXT)
+                if is_password:
+                    entry.config(show="*")
+
+        def on_focus_out(event):
+            if not entry.get():
+                if is_password:
+                    entry.config(show="")
+                entry.insert(0, placeholder)
+                entry.config(fg=Colors.TEXT_LIGHT)
+        
+        entry.bind("<FocusIn>", on_focus_in)
+        entry.bind("<FocusOut>", on_focus_out)
+        
+        container.entry = entry
+        return container
     
     def handle_reset(self):
         """Handle password reset request"""
         username = self.username_entry.get().strip()
         email = self.email_entry.get().strip()
+        
+        # Filter placeholders
+        if username == getattr(self, 'username_placeholder', ''):
+            username = ""
+        if email == getattr(self, 'email_placeholder', ''):
+            email = ""
         
         if not username:
             messagebox.showwarning("Input Error", "Please enter username")

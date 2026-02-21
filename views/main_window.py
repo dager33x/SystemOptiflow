@@ -51,12 +51,22 @@ class MainWindow:
         main_container.pack(fill=tk.BOTH, expand=True)
         
         # Sidebar (left)
-        cameras_data = [
-            {"name": "Main Intersection", "status": "active"},
-            {"name": "North Gate", "status": "active"},
-            {"name": "South Junction", "status": "warning"},
-            {"name": "East Portal", "status": "active"}
-        ]
+        # Sidebar (left)
+        cameras_data = []
+        if self.controllers and 'main' in self.controllers:
+            try:
+                cameras_data = self.controllers['main'].get_active_cameras()
+            except AttributeError:
+                pass
+        
+        if not cameras_data:
+            # Fallback if controller not ready or method missing
+            cameras_data = [
+                {"name": "North Gate", "status": "inactive"},
+                {"name": "South Junction", "status": "inactive"},
+                {"name": "East Portal", "status": "inactive"},
+                {"name": "West Avenue", "status": "inactive"}
+            ]
         
         sidebar_frame = tk.Frame(main_container, bg=Colors.PRIMARY)
         sidebar_frame.pack(side=tk.LEFT, fill=tk.Y)

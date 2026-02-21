@@ -125,8 +125,8 @@ class DashboardPage:
                 return
 
             if frame is not None:
-                # Resize for grid display (smaller than full screen)
-                frame = cv2.resize(frame, (320, 240))
+                # Resize for grid display (Larger view as requested)
+                frame = cv2.resize(frame, (560, 420))
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 img = Image.fromarray(frame_rgb)
                 photo = ImageTk.PhotoImage(img)

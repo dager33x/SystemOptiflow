@@ -14,11 +14,11 @@ class AuthController:
         self.email_service = EmailService()
         self.pending_verification = {}  # Store pending registrations
     
-    def register_user(self, username: str, email: str, password: str, 
+    def register_user(self, first_name: str, last_name: str, username: str, email: str, password: str, 
                      role: str = "operator") -> bool:
         """Register a new user and send verification email"""
         # Validate inputs
-        if not username or not email or not password:
+        if not first_name or not last_name or not username or not email or not password:
             MessageBox.showerror("Error", "All fields are required")
             return False
         
@@ -35,6 +35,8 @@ class AuthController:
         # Store pending registration
         password_hash = User.hash_password(password)
         self.pending_verification[email] = {
+            'first_name': first_name,
+            'last_name': last_name,
             'username': username,
             'email': email,
             'password_hash': password_hash,
@@ -42,21 +44,30 @@ class AuthController:
         }
         
         # Send verification email
-        success, code = self.email_service.send_verification_email(email, username)
+        success, code, email_sent = self.email_service.send_verification_email(email, username)
         if success:
-            # Show message without displaying the code
-            msg = (
-                f"✅ Registration Successful!\n\n"
-                f"A verification code has been sent to:\n{email}\n\n"
-                f"⏱️ The code expires in 10 minutes.\n"
-                f"📧 Please check your email and enter the code on the next screen."
-            )
+            if not email_sent:
+                # Fallback message for failed/unconfigured email
+                msg = (
+                    f"⚠️ Email delivery failed or not configured.\n\n"
+                    f"Here is your verification code for testing:\n"
+                    f"👉 {code}\n\n"
+                    f"Please enter this code on the next screen."
+                )
+            else:
+                # standard message
+                msg = (
+                    f"✅ Registration Successful!\n\n"
+                    f"A verification code has been sent to:\n{email}\n\n"
+                    f"⏱️ The code expires in 10 minutes.\n"
+                    f"📧 Please check your email and enter the code on the next screen."
+                )
             
-            MessageBox.showinfo("Verification Code Sent", msg)
+            MessageBox.showinfo("Verification", msg)
             return True
         else:
             del self.pending_verification[email]
-            MessageBox.showerror("Error", "Failed to send verification email. Please check your email settings.")
+            MessageBox.showerror("Error", "Failed to generate verification code.")
             return False
     
     def verify_email(self, email: str, code: str) -> bool:
@@ -75,6 +86,8 @@ class AuthController:
         # Create user
         pending = self.pending_verification[email]
         user_id, error_msg = self.db.create_user(
+            pending['first_name'],
+            pending['last_name'],
             pending['username'],
             pending['email'],
             pending['password_hash'],
@@ -131,17 +144,26 @@ class AuthController:
         }
         
         # Send password reset email
-        success, code = self.email_service.send_password_reset_email(user['email'], username)
+        success, code, email_sent = self.email_service.send_password_reset_email(user['email'], username)
         if success:
-            # Show message without displaying the code
-            msg = (
-                f"✅ Password Reset Initiated!\n\n"
-                f"A reset code has been sent to:\n{user['email']}\n\n"
-                f"⏱️ The code expires in 15 minutes.\n"
-                f"📧 Please check your email and enter the code on the next screen."
-            )
+            if not email_sent:
+                # Fallback message
+                msg = (
+                    f"⚠️ Email delivery failed or not configured.\n\n"
+                    f"Here is your reset code for testing:\n"
+                    f"👉 {code}\n\n"
+                    f"Please enter this code on the next screen."
+                )
+            else:
+                # Show message without displaying the code
+                msg = (
+                    f"✅ Password Reset Initiated!\n\n"
+                    f"A reset code has been sent to:\n{user['email']}\n\n"
+                    f"⏱️ The code expires in 15 minutes.\n"
+                    f"📧 Please check your email and enter the code on the next screen."
+                )
                 
-            MessageBox.showinfo("Reset Code Sent", msg)
+            MessageBox.showinfo("Reset Code", msg)
             return True
         else:
             del self.pending_verification[f"reset_{user['email']}"]
@@ -209,7 +231,8 @@ class AuthController:
         password_hash = User.hash_password(password)
         
         # Create user
-        user_id, error_msg = self.db.create_user(username, email, password_hash, role)
+        # Pass empty strings for first/last name for now as Admin UI doesn't support them yet
+        user_id, error_msg = self.db.create_user("", "", username, email, password_hash, role)
         
         if not user_id and error_msg:
              MessageBox.showerror("Error", f"Failed to add user: {error_msg}")

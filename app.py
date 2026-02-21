@@ -7,7 +7,7 @@ from views.email_verification_page import EmailVerificationPage
 from views.password_reset_verification_page import PasswordResetVerificationPage
 from views.admin_dashboard import AdminDashboard
 from views.operator_dashboard import OperatorDashboard
-from views.styles import Colors
+from views.styles import Colors, ModernStyles
 from controllers.main_controller import MainController
 from controllers.auth_controller import AuthController
 from controllers.violation_controller import ViolationController
@@ -40,6 +40,9 @@ class AppManager:
     def setup_window(self):
         """Configure root window"""
         self.root.title("OptiFlow - Traffic Management System")
+        
+        # Configure modern TTK styles
+        ModernStyles.configure_ttk_styles(self.root)
         
         # Set window size to 851x545 for auth pages
         window_width = 851
@@ -148,9 +151,9 @@ class AppManager:
             self.show_main_dashboard(user)
         # Error message is shown by auth controller
     
-    def handle_signup(self, username, email, password):
+    def handle_signup(self, first_name, last_name, username, email, password):
         """Handle signup - send verification email"""
-        if self.auth.register_user(username, email, password, role="operator"):
+        if self.auth.register_user(first_name, last_name, username, email, password, role="operator"):
             # Show email verification page
             self.show_email_verification_page(email, username)
         # Error message is shown by auth controller
@@ -237,7 +240,9 @@ class AppManager:
         # Initialize main controller
         main_controller = MainController(container, None, self.db, current_user, 
                                        auth_controller=self.auth,
-                                       on_logout_callback=self.handle_logout)
+                                       on_logout_callback=self.handle_logout,
+                                       violation_controller=controllers['violation'],
+                                       accident_controller=controllers['accident'])
         controllers['main'] = main_controller
         
         # Initialize main window for traffic monitoring in a frame

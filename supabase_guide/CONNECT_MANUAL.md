@@ -1,6 +1,11 @@
--- SystemOptiflow Unified Database Schema
--- Includes Users and Reports tables
+# Supabase Connection & Setup Guide
 
+This guide contains the manual commands required to connect the SystemOptiflow application to Supabase.
+
+## 1. Database Setup (SQL Command)
+Copy and paste the following SQL command into the **Supabase SQL Editor** to create all necessary tables and policies.
+
+```sql
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
@@ -17,48 +22,48 @@ CREATE TABLE IF NOT EXISTS public.users (
     last_login TIMESTAMPTZ
 );
 
--- 2. VEHICLES TABLE (Traffic Flow)
+-- 2. VEHICLES TABLE
 CREATE TABLE IF NOT EXISTS public.vehicles (
     vehicle_id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-    vehicle_type TEXT, -- 'car', 'truck', 'bus', 'motorcycle'
+    vehicle_type TEXT,
     lane INTEGER,
     detected_at TIMESTAMPTZ DEFAULT NOW(),
-    speed FLOAT -- Estimted speed (optional)
+    speed FLOAT
 );
 
--- 3. VIOLATIONS TABLE (Red Light/Speeding)
+-- 3. VIOLATIONS TABLE
 CREATE TABLE IF NOT EXISTS public.violations (
     violation_id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-    vehicle_id UUID, -- Link to vehicle if possible (optional)
-    violation_type TEXT NOT NULL, -- 'Red Light Violation', 'Speeding'
+    vehicle_id UUID,
+    violation_type TEXT NOT NULL,
     lane INTEGER,
-    source TEXT DEFAULT 'SYSTEM', -- 'SYSTEM' or 'MANUAL'
+    source TEXT DEFAULT 'SYSTEM',
     timestamp TIMESTAMPTZ DEFAULT NOW(),
-    image_url TEXT -- Path to snapshot (optional)
+    image_url TEXT
 );
 
--- 4. ACCIDENTS TABLE (Incident Reporting)
+-- 4. ACCIDENTS TABLE
 CREATE TABLE IF NOT EXISTS public.accidents (
     accident_id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
     lane INTEGER,
-    severity TEXT DEFAULT 'Moderate', -- 'Minor', 'Moderate', 'Severe'
-    detection_type TEXT DEFAULT 'SYSTEM', -- 'SYSTEM' or 'MANUAL'
+    severity TEXT DEFAULT 'Moderate',
+    detection_type TEXT DEFAULT 'SYSTEM',
     description TEXT,
-    reported_by TEXT, -- User ID or Name
+    reported_by TEXT,
     timestamp TIMESTAMPTZ DEFAULT NOW(),
     resolved BOOLEAN DEFAULT FALSE
 );
 
--- 5. EMERGENCY EVENTS TABLE (Ambulance/Fire)
+-- 5. EMERGENCY EVENTS TABLE
 CREATE TABLE IF NOT EXISTS public.emergency_events (
     event_id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-    vehicle_type TEXT, -- 'ambulance', 'fire_truck', 'police'
+    vehicle_type TEXT,
     lane INTEGER,
-    action_taken TEXT, -- 'Green Light Forced', etc.
+    action_taken TEXT,
     timestamp TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 6. REPORTS TABLE (Issue Tracking)
+-- 6. REPORTS TABLE
 CREATE TABLE IF NOT EXISTS public.reports (
     report_id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
     title TEXT NOT NULL,
@@ -74,13 +79,12 @@ CREATE TABLE IF NOT EXISTS public.reports (
 -- 7. SYSTEM LOGS TABLE
 CREATE TABLE IF NOT EXISTS public.system_logs (
     log_id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-    event_type TEXT, -- 'ACCIDENT_DETECTED', 'VIOLATION_DETECTED', etc.
+    event_type TEXT,
     description TEXT,
     timestamp TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- 8. ROW LEVEL SECURITY (RLS)
--- Enable RLS
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vehicles ENABLE ROW LEVEL SECURITY;
@@ -89,38 +93,38 @@ ALTER TABLE public.accidents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.emergency_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.system_logs ENABLE ROW LEVEL SECURITY;
 
--- Policies for USERS
--- Allow users to view their own data
-CREATE POLICY "Users can view own data" ON public.users
-    FOR SELECT USING (auth.uid() = user_id);
-
--- Global Read Access for Dashboard Data
--- Allow all authenticated users to view reports
-CREATE POLICY "Enable read access for all users" ON public.reports
-    FOR SELECT USING (true);
+-- Allow read access for dashboard
+CREATE POLICY "Enable read access for all users" ON public.reports FOR SELECT USING (true);
 CREATE POLICY "Enable read access for vehicles" ON public.vehicles FOR SELECT USING (true);
 CREATE POLICY "Enable read access for violations" ON public.violations FOR SELECT USING (true);
 CREATE POLICY "Enable read access for accidents" ON public.accidents FOR SELECT USING (true);
 CREATE POLICY "Enable read access for emergency" ON public.emergency_events FOR SELECT USING (true);
 CREATE POLICY "Enable read access for logs" ON public.system_logs FOR SELECT USING (true);
+CREATE POLICY "Users can view own data" ON public.users FOR SELECT USING (auth.uid() = user_id);
 
--- Insert Access for System/Authenticated Users
--- Allow authenticated users to insert reports
-CREATE POLICY "Enable insert for authenticated users" ON public.reports
-    FOR INSERT WITH CHECK (true);
+-- Allow insert access for system
+CREATE POLICY "Enable insert for authenticated users" ON public.reports FOR INSERT WITH CHECK (true);
 CREATE POLICY "Enable insert for vehicles" ON public.vehicles FOR INSERT WITH CHECK (true);
 CREATE POLICY "Enable insert for violations" ON public.violations FOR INSERT WITH CHECK (true);
 CREATE POLICY "Enable insert for accidents" ON public.accidents FOR INSERT WITH CHECK (true);
 CREATE POLICY "Enable insert for emergency" ON public.emergency_events FOR INSERT WITH CHECK (true);
 CREATE POLICY "Enable insert for logs" ON public.system_logs FOR INSERT WITH CHECK (true);
 
--- Allow admins/authors to update reports
-CREATE POLICY "Enable update for users based on email" ON public.reports
-    FOR UPDATE USING (true);
+-- Allow updates
+CREATE POLICY "Enable update for users based on email" ON public.reports FOR UPDATE USING (true);
+```
 
--- 9. INDEXES
-CREATE INDEX IF NOT EXISTS idx_reports_status ON public.reports(status);
-CREATE INDEX IF NOT EXISTS idx_reports_priority ON public.reports(priority);
-CREATE INDEX IF NOT EXISTS idx_users_username ON public.users(username);
-CREATE INDEX IF NOT EXISTS idx_accidents_time ON public.accidents(timestamp);
-CREATE INDEX IF NOT EXISTS idx_violations_time ON public.violations(timestamp);
+## 2. Connect Application (.env)
+Create a file named `.env` in the project root directory and paste the following content. Replace the values with your project credentials.
+
+```bash
+SUPABASE_URL=your_project_url_here
+SUPABASE_KEY=your_anon_public_key_here
+```
+
+## 3. Install Requirements
+Run this command in your terminal to install the necessary libraries:
+
+```bash
+pip install -r requirements.txt
+```
