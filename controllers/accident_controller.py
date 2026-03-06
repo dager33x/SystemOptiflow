@@ -15,3 +15,7 @@ class AccidentController:
     def get_incidents(self):
         """Get recent incident history"""
         return self.db.get_recent_accidents()
+
+    def clear_incidents(self):
+        """Clear all incidents"""
+        return self.db.clear_accidents()

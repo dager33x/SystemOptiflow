@@ -6,9 +6,10 @@ from ..styles import Colors, Fonts
 class IncidentHistoryPage:
     """Incident history page with past events"""
     
-    def __init__(self, parent, controller=None):
+    def __init__(self, parent, controller=None, current_user=None):
         self.parent = parent
         self.controller = controller
+        self.current_user = current_user
         self.frame = tk.Frame(parent, bg=Colors.BACKGROUND)
         self.tree = None
         self.create_widgets()
@@ -36,6 +37,16 @@ class IncidentHistoryPage:
                               bg=Colors.SECONDARY, fg=Colors.TEXT,
                               relief=tk.FLAT, padx=15, pady=5)
         refresh_btn.pack(side=tk.RIGHT)
+        
+        # Clear Button (Admin Only)
+        is_admin = self.current_user and self.current_user.get('role', '').lower() == 'admin'
+        if is_admin:
+            clear_btn = tk.Button(header, text="🗑️ Clear All",
+                                  command=self.clear_data,
+                                  font=Fonts.BODY,
+                                  bg=Colors.DANGER, fg="white",
+                                  relief=tk.FLAT, padx=15, pady=5)
+            clear_btn.pack(side=tk.RIGHT, padx=10)
         
         # Main content
         content_frame = tk.Frame(self.frame, bg=Colors.BACKGROUND)
@@ -111,6 +122,17 @@ class IncidentHistoryPage:
                 inc.get('severity', 'Moderate'),
                 inc.get('description', '')
             ))
+            
+    def clear_data(self):
+        """Clear all incident data if admin"""
+        from tkinter import messagebox
+        if messagebox.askyesno("Confirm", "Are you sure you want to completely clear all incident history? This cannot be undone.", parent=self.frame):
+            if self.controller and hasattr(self.controller, 'clear_incidents'):
+                if self.controller.clear_incidents():
+                    messagebox.showinfo("Success", "Incident history cleared successfully.", parent=self.frame)
+                    self.load_data()
+                else:
+                    messagebox.showerror("Error", "Failed to clear incident history.", parent=self.frame)
     
     def get_widget(self):
         return self.frame

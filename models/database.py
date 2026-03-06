@@ -76,20 +76,27 @@ class TrafficDB:
     # Violation Operations
     def save_violation(self, vehicle_id: str, lane: int, 
                       violation_type: str = "Red Light Violation", 
-                      source: str = "SYSTEM") -> Optional[str]:
+                      source: str = "SYSTEM",
+                      image_url: str = None) -> Optional[str]:
         """Save traffic violation"""
         if not self.is_connected():
             return None
             
         try:
+            # Only use properly formatted UUIDs for vehicle_id or None
+            if vehicle_id == "SYS-DETECTION" or vehicle_id == "AI_SYSTEM":
+                vehicle_id = None
+                
             data = {
                 "vehicle_id": vehicle_id,
                 "violation_type": violation_type,
                 "lane": lane,
                 "source": source,
-                # "reported_by": None,  # Optional: Pass User ID if available
                 "created_at": datetime.utcnow().isoformat()
             }
+            if image_url:
+                data["image_url"] = image_url
+                
             response = self.supabase.table("violations").insert(data).execute()
             self.save_system_log("VIOLATION_DETECTED", f"{violation_type} on lane {lane}")
             return response.data[0]['violation_id']
@@ -101,7 +108,7 @@ class TrafficDB:
         """Get recent violations"""
         try:
             response = self.supabase.table("violations")\
-                .select("*, vehicles(*)")\
+                .select("*")\
                 .order("created_at", desc=True)\
                 .limit(limit)\
                 .execute()
@@ -109,7 +116,19 @@ class TrafficDB:
         except Exception as e:
             self.logger.error(f"Error fetching violations: {e}")
             return []
-    
+            
+    def clear_violations(self) -> bool:
+        """Clear all violations from the database"""
+        if not self.is_connected():
+            return False
+        try:
+            self.supabase.table("violations").delete().neq("violation_id", "00000000-0000-0000-0000-000000000000").execute()
+            self.logger.info("Cleared all violations")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error clearing violations: {e}")
+            return False
+            
     # Accident Operations
     def save_accident(self, lane: int, severity: str = "Moderate", 
                      detection_type: str = "SYSTEM", 
@@ -127,7 +146,6 @@ class TrafficDB:
                 "severity": severity,
                 "detection_type": detection_type,
                 "description": description,
-                # "reported_by": reported_by, # Needs valid UUID, better to leave null for system
                 "status": "pending",
                 "created_at": datetime.utcnow().isoformat()
             }
@@ -150,7 +168,19 @@ class TrafficDB:
         except Exception as e:
             self.logger.error(f"Error fetching accidents: {e}")
             return []
-    
+            
+    def clear_accidents(self) -> bool:
+        """Clear all accidents from the database"""
+        if not self.is_connected():
+            return False
+        try:
+            self.supabase.table("accidents").delete().neq("accident_id", "00000000-0000-0000-0000-000000000000").execute()
+            self.logger.info("Cleared all accidents")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error clearing accidents: {e}")
+            return False
+            
     def get_accident_stats(self, hours: int = 24) -> Dict[str, Any]:
         """Get accident statistics"""
         try:

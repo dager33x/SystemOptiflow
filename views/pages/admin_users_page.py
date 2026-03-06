@@ -1,7 +1,7 @@
 
 import tkinter as tk
 from tkinter import ttk, messagebox
-from ..styles import Colors, Fonts
+from ..styles import Colors, Fonts, WidgetStyles
 
 class AdminUsersPage:
     """Admin User Management Page"""
@@ -108,30 +108,48 @@ class AdminUsersPage:
         dialog = tk.Toplevel(self.frame)
         dialog.title("Add New User")
         dialog.configure(bg=Colors.BACKGROUND)
-        self.center_dialog(dialog, 400, 400)
+        self.center_dialog(dialog, 420, 540)
         dialog.grab_set()
         
-        container = tk.Frame(dialog, bg="white")
+        container = tk.Frame(dialog, bg=Colors.CARD_BG)
         container.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
         
-        tk.Label(container, text="Add New User", font=("Arial", 16, "bold"), bg="white").pack(pady=(0,20))
+        header_frame = tk.Frame(container, bg=Colors.CARD_BG)
+        header_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        tk.Label(header_frame, text="Add New User", font=Fonts.TITLE, bg=Colors.CARD_BG, fg=Colors.PRIMARY).pack(side=tk.LEFT)
+        tk.Label(header_frame, text="Create a new account", font=Fonts.BODY, bg=Colors.CARD_BG, fg=Colors.TEXT_MUTED).pack(side=tk.LEFT, padx=10, pady=(0, 4))
         
         # Fields
         entries = {}
-        for field in ["Username", "Email", "Password"]:
-            tk.Label(container, text=field+":", font=("Arial", 10, "bold"), bg="white").pack(anchor=tk.W)
-            entry = tk.Entry(container, bg="#f5f5f5", relief=tk.SOLID, bd=1)
-            entry.pack(fill=tk.X, pady=(0, 15))
-            if field == "Password": entry.config(show="*")
+        for field, icon, is_pwd in [("Username", "👤", False), ("Email", "✉️", False), ("Password", "🔑", True)]:
+            frame = tk.Frame(container, bg=Colors.CARD_BG)
+            frame.pack(fill=tk.X, pady=(0, 15))
+            tk.Label(frame, text=f"{icon} {field}", font=Fonts.BODY_BOLD, bg=Colors.CARD_BG, fg=Colors.TEXT).pack(anchor=tk.W, pady=(0, 5))
+            
+            # Simulated padded entry via a frame background
+            input_container = tk.Frame(frame, bg=Colors.INPUT_BG, padx=2, pady=2)
+            input_container.pack(fill=tk.X)
+            
+            entry = tk.Entry(input_container, font=Fonts.INPUT, bg=Colors.INPUT_BG, fg=Colors.TEXT, 
+                             insertbackground=Colors.PRIMARY, relief=tk.FLAT, bd=8)
+            entry.pack(fill=tk.X)
+            
+            if is_pwd: entry.config(show="•")
             entries[field.lower()] = entry
             
         # Role
-        tk.Label(container, text="Role:", font=("Arial", 10, "bold"), bg="white").pack(anchor=tk.W)
+        role_frame = tk.Frame(container, bg=Colors.CARD_BG)
+        role_frame.pack(fill=tk.X, pady=(0, 25))
+        tk.Label(role_frame, text="🛡️ Role", font=Fonts.BODY_BOLD, bg=Colors.CARD_BG, fg=Colors.TEXT).pack(anchor=tk.W, pady=(0, 5))
+        
         role_var = tk.StringVar(value="operator")
-        role_frame = tk.Frame(container, bg="white")
-        role_frame.pack(fill=tk.X, pady=(0, 15))
-        tk.Radiobutton(role_frame, text="Operator", variable=role_var, value="operator", bg="white").pack(side=tk.LEFT)
-        tk.Radiobutton(role_frame, text="Admin", variable=role_var, value="admin", bg="white").pack(side=tk.LEFT, padx=20)
+        style = ttk.Style()
+        style.configure('Dark.TRadiobutton', background=Colors.CARD_BG, foreground=Colors.TEXT, font=Fonts.BODY)
+        style.map('Dark.TRadiobutton', background=[('active', Colors.CARD_BG)], foreground=[('active', Colors.PRIMARY)])
+        
+        ttk.Radiobutton(role_frame, text="Operator", variable=role_var, value="operator", style='Dark.TRadiobutton', cursor="hand2").pack(side=tk.LEFT, padx=(0, 20))
+        ttk.Radiobutton(role_frame, text="Admin", variable=role_var, value="admin", style='Dark.TRadiobutton', cursor="hand2").pack(side=tk.LEFT)
         
         def save():
             u = entries['username'].get().strip()
@@ -139,68 +157,105 @@ class AdminUsersPage:
             p = entries['password'].get()
             r = role_var.get()
             
+            if not u or not e or not p:
+                messagebox.showerror("Error", "All fields are required", parent=dialog)
+                return
+                
             if self.auth.add_user(u, e, p, r):
-                messagebox.showinfo("Success", "User created")
                 dialog.destroy()
                 self.load_users()
         
-        tk.Button(container, text="Save", bg=Colors.SUCCESS, fg="white", command=save, padx=20, pady=5).pack(side=tk.LEFT, pady=10)
-        tk.Button(container, text="Cancel", command=dialog.destroy, padx=20, pady=5).pack(side=tk.LEFT, padx=10, pady=10)
+        btn_frame = tk.Frame(container, bg=Colors.CARD_BG)
+        btn_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=(10, 0))
+        
+        WidgetStyles.create_modern_button(btn_frame, "Save User", command=save, style='success').pack(side=tk.RIGHT, padx=(10, 0))
+        WidgetStyles.create_modern_button(btn_frame, "Cancel", command=dialog.destroy, style='secondary').pack(side=tk.RIGHT)
 
     def show_edit_user_dialog(self):
         if not self.selected_user:
-            messagebox.showwarning("Warning", "Select a user")
             return
             
-        # Fetch current data logic... (simplified for brevity, would access db or tree values)
-        # Using tree values
         item = self.users_tree.item(self.selected_user)
         vals = item['values']
         
         dialog = tk.Toplevel(self.frame)
         dialog.title("Edit User")
         dialog.configure(bg=Colors.BACKGROUND)
-        self.center_dialog(dialog, 400, 300)
+        self.center_dialog(dialog, 420, 380)
         dialog.grab_set()
         
-        container = tk.Frame(dialog, bg="white")
+        container = tk.Frame(dialog, bg=Colors.CARD_BG)
         container.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
         
-        tk.Label(container, text="Edit User", font=("Arial", 16, "bold"), bg="white").pack(pady=(0,20))
+        header_frame = tk.Frame(container, bg=Colors.CARD_BG)
+        header_frame.pack(fill=tk.X, pady=(0, 20))
         
-        # Username Readonly
-        tk.Label(container, text="Username:", font=("Arial", 10, "bold"), bg="white").pack(anchor=tk.W)
-        tk.Label(container, text=vals[1], bg="#f5f5f5", relief=tk.SOLID, bd=1).pack(fill=tk.X, pady=(0, 15))
+        tk.Label(header_frame, text="Edit User", font=Fonts.TITLE, bg=Colors.CARD_BG, fg=Colors.INFO).pack(side=tk.LEFT)
+        tk.Label(header_frame, text=vals[1], font=Fonts.BODY, bg=Colors.CARD_BG, fg=Colors.TEXT_MUTED).pack(side=tk.LEFT, padx=10, pady=(0, 4))
         
         # Email
-        tk.Label(container, text="Email:", font=("Arial", 10, "bold"), bg="white").pack(anchor=tk.W)
-        email_entry = tk.Entry(container, bg="#f5f5f5", relief=tk.SOLID, bd=1)
+        tk.Label(container, text="✉️ Email", font=Fonts.BODY_BOLD, bg=Colors.CARD_BG, fg=Colors.TEXT).pack(anchor=tk.W, pady=(0, 5))
+        
+        input_container = tk.Frame(container, bg=Colors.INPUT_BG, padx=2, pady=2)
+        input_container.pack(fill=tk.X, pady=(0, 20))
+        
+        email_entry = tk.Entry(input_container, font=Fonts.INPUT, bg=Colors.INPUT_BG, fg=Colors.TEXT, insertbackground=Colors.PRIMARY, relief=tk.FLAT, bd=8)
         email_entry.insert(0, vals[2])
-        email_entry.pack(fill=tk.X, pady=(0, 15))
+        email_entry.pack(fill=tk.X)
         
         # Role
-        tk.Label(container, text="Role:", font=("Arial", 10, "bold"), bg="white").pack(anchor=tk.W)
+        tk.Label(container, text="🛡️ Role", font=Fonts.BODY_BOLD, bg=Colors.CARD_BG, fg=Colors.TEXT).pack(anchor=tk.W, pady=(0, 5))
         role_var = tk.StringVar(value=vals[3].lower())
-        role_frame = tk.Frame(container, bg="white")
-        role_frame.pack(fill=tk.X)
-        tk.Radiobutton(role_frame, text="Operator", variable=role_var, value="operator", bg="white").pack(side=tk.LEFT)
-        tk.Radiobutton(role_frame, text="Admin", variable=role_var, value="admin", bg="white").pack(side=tk.LEFT, padx=20)
+        
+        role_frame = tk.Frame(container, bg=Colors.CARD_BG)
+        role_frame.pack(fill=tk.X, pady=(0, 25))
+        
+        style = ttk.Style()
+        style.configure('Dark.TRadiobutton', background=Colors.CARD_BG, foreground=Colors.TEXT, font=Fonts.BODY)
+        
+        ttk.Radiobutton(role_frame, text="Operator", variable=role_var, value="operator", style='Dark.TRadiobutton', cursor="hand2").pack(side=tk.LEFT, padx=(0, 20))
+        ttk.Radiobutton(role_frame, text="Admin", variable=role_var, value="admin", style='Dark.TRadiobutton', cursor="hand2").pack(side=tk.LEFT)
         
         def save():
             if self.auth.edit_user(self.selected_user, email_entry.get().strip(), role_var.get()):
-                messagebox.showinfo("Success", "User updated")
                 dialog.destroy()
                 self.load_users()
-
-        tk.Button(container, text="Save", bg=Colors.SUCCESS, fg="white", command=save, padx=20, pady=5).pack(side=tk.LEFT, pady=10)
-        tk.Button(container, text="Cancel", command=dialog.destroy, padx=20, pady=5).pack(side=tk.LEFT, padx=10, pady=10)
+                
+        btn_frame = tk.Frame(container, bg=Colors.CARD_BG)
+        btn_frame.pack(fill=tk.X, side=tk.BOTTOM)
+        
+        WidgetStyles.create_modern_button(btn_frame, "Save Changes", command=save, style='info').pack(side=tk.RIGHT, padx=(10, 0))
+        WidgetStyles.create_modern_button(btn_frame, "Cancel", command=dialog.destroy, style='secondary').pack(side=tk.RIGHT)
 
     def delete_selected_user(self):
-        if not self.selected_user: return
-        if messagebox.askyesno("Confirm", "Delete this user?"):
+        if not self.selected_user:
+            return
+            
+        item = self.users_tree.item(self.selected_user)
+        username = item['values'][1] if item['values'] else "Unknown"
+        
+        dialog = tk.Toplevel(self.frame)
+        dialog.title("Confirm Delete")
+        dialog.configure(bg=Colors.BACKGROUND)
+        self.center_dialog(dialog, 400, 220)
+        dialog.grab_set()
+        
+        container = tk.Frame(dialog, bg=Colors.CARD_BG)
+        container.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        tk.Label(container, text="⚠️ Delete User", font=Fonts.TITLE, bg=Colors.CARD_BG, fg=Colors.DANGER).pack(anchor=tk.W, pady=(0, 10))
+        tk.Label(container, text=f"Are you sure you want to permanently delete\nuser '{username}'?", font=Fonts.BODY, bg=Colors.CARD_BG, fg=Colors.TEXT, justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 20))
+        
+        def confirm():
             if self.auth.delete_user(self.selected_user):
-                messagebox.showinfo("Success", "User deleted")
+                dialog.destroy()
                 self.load_users()
+                
+        btn_frame = tk.Frame(container, bg=Colors.CARD_BG)
+        btn_frame.pack(fill=tk.X, side=tk.BOTTOM)
+        
+        WidgetStyles.create_modern_button(btn_frame, "Delete", command=confirm, style='danger').pack(side=tk.RIGHT, padx=(10, 0))
+        WidgetStyles.create_modern_button(btn_frame, "Cancel", command=dialog.destroy, style='secondary').pack(side=tk.RIGHT)
 
     def get_widget(self):
         return self.frame

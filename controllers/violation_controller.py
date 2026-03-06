@@ -8,20 +8,36 @@ class ViolationController:
         self.db = db
     
     @run_in_background
-    def save_violation(self, lane, violation_type="Red Light Violation"):
+    def save_violation(self, lane, violation_type="Red Light Violation", frame=None):
         """Save violation to database or local file fallback (Async)"""
-        vehicle_id = "SYS-DETECTION"
+        import cv2
+        import os
+        from datetime import datetime
         
+        vehicle_id = "SYS-DETECTION"
+        image_url = None
+        
+        # Save screenshot locally if frame is provided
+        if frame is not None:
+            try:
+                os.makedirs("screenshots/violations", exist_ok=True)
+                timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                filename = f"screenshots/violations/violation_lane{lane}_{timestamp_str}.jpg"
+                cv2.imwrite(filename, frame)
+                image_url = filename
+            except Exception as e:
+                print(f"Error saving violation screenshot: {e}")
+
         # Try database first
         try:
-            result = self.db.save_violation(vehicle_id, lane, violation_type, source="AI_SYSTEM")
+            result = self.db.save_violation(vehicle_id, lane, violation_type, source="SYSTEM", image_url=image_url)
             if result:
                 return
         except Exception:
             pass # Fallback
             
         # Fallback: Save to local CSV/JSON if DB fails
-        self._save_to_local_fallback(lane, violation_type, vehicle_id)
+        self._save_to_local_fallback(lane, violation_type, vehicle_id, image_url)
 
 
     def get_logs(self):
@@ -31,7 +47,32 @@ class ViolationController:
             return self._get_local_logs()
         return logs
 
-    def _save_to_local_fallback(self, lane, v_type, v_id):
+    def clear_logs(self):
+        """Clear all violation logs"""
+        import os
+        # Clear local fallback file
+        file_path = "violation_logs_local.json"
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                pass
+                
+        # Clear screenshot directory
+        screenshot_dir = "screenshots/violations"
+        if os.path.exists(screenshot_dir):
+            try:
+                for f in os.listdir(screenshot_dir):
+                    if f.endswith(".jpg"):
+                        os.remove(os.path.join(screenshot_dir, f))
+            except:
+                pass
+
+        if self.db:
+            return self.db.clear_violations()
+        return True
+
+    def _save_to_local_fallback(self, lane, v_type, v_id, image_url=None):
         import json
         import os
         from datetime import datetime
@@ -43,7 +84,8 @@ class ViolationController:
             "violation_type": v_type,
             "vehicle_id": v_id,
             "timestamp": datetime.utcnow().isoformat(),
-            "status": "Localized (DB Offline)"
+            "status": "Localized (DB Offline)",
+            "image_url": image_url
         }
         
         try:

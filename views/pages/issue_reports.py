@@ -23,7 +23,7 @@ class IssueReportsPage:
         
         title = tk.Label(header_frame, text="Issue Reports", 
                         font=Fonts.TITLE, bg=Colors.BACKGROUND, 
-                        fg=Colors.TEXT)
+                        fg=Colors.PRIMARY)
         title.pack(side=tk.LEFT)
         
         # New Report Button

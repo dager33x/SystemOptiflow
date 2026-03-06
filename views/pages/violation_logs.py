@@ -7,11 +7,13 @@ from datetime import datetime
 class ViolationLogsPage:
     """Violation logs page with traffic violations database"""
     
-    def __init__(self, parent, controller=None):
+    def __init__(self, parent, controller=None, current_user=None):
         self.parent = parent
         self.controller = controller
+        self.current_user = current_user
         self.frame = tk.Frame(parent, bg=Colors.BACKGROUND)
         self.tree = None
+        self.log_map = {}
         self.create_widgets()
         
         # Load data immediately
@@ -35,6 +37,16 @@ class ViolationLogsPage:
                                relief=tk.FLAT, padx=15, pady=5, cursor="hand2",
                                command=self.refresh_data)
         refresh_btn.pack(side=tk.RIGHT)
+        
+        # Clear Button (Admin Only)
+        is_admin = self.current_user and self.current_user.get('role', '').lower() == 'admin'
+        if is_admin:
+            clear_btn = tk.Button(header_frame, text="🗑️ Clear All",
+                                  command=self.clear_data,
+                                  font=Fonts.BODY,
+                                  bg=Colors.DANGER, fg="white",
+                                  relief=tk.FLAT, padx=15, pady=5)
+            clear_btn.pack(side=tk.RIGHT, padx=10)
         
         # Main content
         content_frame = tk.Frame(self.frame, bg=Colors.BACKGROUND)
@@ -69,10 +81,13 @@ class ViolationLogsPage:
                        font=Fonts.BODY,
                        rowheight=30)
         style.configure("Treeview.Heading",
-                       background=Colors.SECONDARY,
+                       background=Colors.WHITE,
                        foreground="black",
                        font=Fonts.BODY_BOLD)
         style.map('Treeview', background=[('selected', Colors.PRIMARY)])
+        
+        # Bind double-click event
+        self.tree.bind("<Double-1>", self.on_item_double_click)
 
     def refresh_data(self):
         """Fetch and display logs from controller"""
@@ -80,13 +95,14 @@ class ViolationLogsPage:
         for item in self.tree.get_children():
             self.tree.delete(item)
             
+        self.log_map.clear()
+            
         if not self.controller:
             return
             
         logs = self.controller.get_logs()
         
         for log in logs:
-            # Parse timestamp safely
             # Parse timestamp safely
             try:
                 date_str_raw = log.get('created_at') or log.get('timestamp', '')
@@ -97,7 +113,6 @@ class ViolationLogsPage:
                 date_str = "Unknown"
                 time_str = "Unknown"
                 
-                
             # Map lane ID to Direction Name
             lane_id = log.get('lane', '?')
             lane_map = {0: 'North', 1: 'South', 2: 'East', 3: 'West', '0': 'North', '1': 'South', '2': 'East', '3': 'West'}
@@ -105,9 +120,95 @@ class ViolationLogsPage:
             
             v_type = log.get('violation_type', 'Unknown')
             veh_id = log.get('vehicle_id', 'N/A')
-            status = "Recorded" # Default status
             
-            self.tree.insert('', tk.END, values=(date_str, time_str, lane, v_type, veh_id, status))
+            image_url = log.get('image_url')
+            if image_url:
+                status = "📷 View Image"
+            else:
+                status = "Recorded"
+            
+            item_id = self.tree.insert('', tk.END, values=(date_str, time_str, lane, v_type, veh_id, status))
+            self.log_map[item_id] = log
+
+    def on_item_double_click(self, event):
+        selection = self.tree.selection()
+        if not selection:
+            return
+            
+        item_id = selection[0]
+        log = self.log_map.get(item_id)
+        if not log:
+            return
+            
+        image_url = log.get('image_url')
+        import os
+        if not image_url or not os.path.exists(image_url):
+            from tkinter import messagebox
+            messagebox.showinfo("No Image", "No image available for this violation.", parent=self.frame)
+            return
+            
+        self.show_image_popup(log)
+
+    def show_image_popup(self, log):
+        from tkinter import Toplevel, Label, Button, filedialog, messagebox
+        from PIL import Image, ImageTk
+        import os
+
+        image_path = log.get('image_url')
+
+        top = Toplevel(self.frame)
+        top.title("Violation Snapshot")
+        top.geometry("700x680")
+        top.configure(bg=Colors.BACKGROUND)
+        
+        lbl = Label(top, text="Violation Snapshot", font=Fonts.TITLE, bg=Colors.BACKGROUND, fg=Colors.PRIMARY)
+        lbl.pack(pady=10)
+
+        try:
+            img = Image.open(image_path)
+            # Resize
+            img.thumbnail((640, 480))
+            tk_img = ImageTk.PhotoImage(img)
+            
+            img_lbl = Label(top, image=tk_img, bg=Colors.BACKGROUND)
+            img_lbl.image = tk_img 
+            img_lbl.pack(pady=10)
+        except Exception as e:
+            Label(top, text=f"Error loading image: {e}", bg=Colors.BACKGROUND, fg='red').pack()
+
+        def download_pdf():
+            try:
+                raw_time = log.get('created_at') or log.get('timestamp', 'log')
+                safe_time = raw_time.replace(':', '-').replace('.', '-')
+                pdf_path = filedialog.asksaveasfilename(
+                    parent=top,
+                    defaultextension=".pdf",
+                    filetypes=[("PDF files", "*.pdf")],
+                    title="Save as PDF",
+                    initialfile=f"violation_{safe_time}.pdf"
+                )
+                if pdf_path:
+                    pdf_img = Image.open(image_path)
+                    if pdf_img.mode == 'RGBA':
+                        pdf_img = pdf_img.convert('RGB')
+                    pdf_img.save(pdf_path, "PDF", resolution=100.0)
+                    messagebox.showinfo("Success", "PDF saved successfully!", parent=top)
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not save PDF: {e}", parent=top)
+
+        btn = Button(top, text="Download as PDF", font=Fonts.BODY_BOLD, bg=Colors.PRIMARY, fg="white", cursor="hand2", command=download_pdf, padx=20, pady=10)
+        btn.pack(pady=20)
+            
+    def clear_data(self):
+        """Clear all violation data if admin"""
+        from tkinter import messagebox
+        if messagebox.askyesno("Confirm", "Are you sure you want to completely clear all violation logs? This cannot be undone.", parent=self.frame):
+            if self.controller and hasattr(self.controller, 'clear_logs'):
+                if self.controller.clear_logs():
+                    messagebox.showinfo("Success", "Violation logs cleared successfully.", parent=self.frame)
+                    self.refresh_data()
+                else:
+                    messagebox.showerror("Error", "Failed to clear violation logs.", parent=self.frame)
             
     def get_widget(self):
         # Refresh when shown

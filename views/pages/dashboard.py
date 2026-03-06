@@ -1,178 +1,302 @@
 # views/pages/dashboard.py
 import tkinter as tk
 from tkinter import ttk
-from PIL import Image, ImageTk, ImageDraw
-import threading
-import numpy as np
+from PIL import Image, ImageTk
 import cv2
 from ..styles import Colors, Fonts
 
+# ─────────────────────────────────────────────
+#  Color constants specific to the dashboard
+# ─────────────────────────────────────────────
+_BG        = Colors.BACKGROUND       # #0B0F19
+_CARD      = Colors.CARD_BG          # #151B2B
+_BORDER    = '#1E2D45'
+_HEADER_BG = '#0D1520'
+_ACCENT    = Colors.PRIMARY          # #3B82F6
+_TEXT      = Colors.TEXT
+_MUTED     = Colors.TEXT_LIGHT
+_SUCCESS   = Colors.SUCCESS
+_WARN      = Colors.WARNING
+_DANGER    = Colors.DANGER
+
+_SIGNAL_COLORS = {
+    'GREEN':    {'bright': '#22C55E', 'dim': '#052E16'},
+    'YELLOW':   {'bright': '#EAB308', 'dim': '#1C1A00'},
+    'RED':      {'bright': '#EF4444', 'dim': '#2D0000'},
+    'ALL_RED':  {'bright': '#EF4444', 'dim': '#2D0000'},
+}
+
+# Direction metadata
+_DIR_META = {
+    'north': {'icon': '▲', 'label': 'NORTH GATE'},
+    'south': {'icon': '▼', 'label': 'SOUTH JUNCTION'},
+    'east':  {'icon': '▶', 'label': 'EAST PORTAL'},
+    'west':  {'icon': '◀', 'label': 'WEST AVENUE'},
+}
+
+
 class DashboardPage:
-    """Dashboard page with 4-way camera feed and real-time statistics"""
-    
+    """Enhanced command-center style dashboard with 2×2 camera grid."""
+
     def __init__(self, parent):
         self.parent = parent
-        self.frame = tk.Frame(parent, bg=Colors.BACKGROUND)
-        self.camera_labels = {}
-        self.stat_labels = {}
+        self.frame = tk.Frame(parent, bg=_BG)
+        self.camera_labels  = {}
+        self.stat_labels    = {}
         self.light_canvases = {}
-        self.timer_labels = {}
-        self.lamp_ids = {} # {direction: {color: id}}
+        self.timer_labels   = {}
+        self.lamp_ids       = {}   # {direction: {color: canvas_id}}
+        self.signal_badges  = {}   # {direction: tk.Label}
         self.is_running = True
-        self.create_widgets()
-    
-    def create_widgets(self):
-        """Create dashboard layout with 2x2 grid for intersections"""
-        # Title
-        title = tk.Label(self.frame, text="Intersection Dashboard (North-South-East-West)",
-                        font=Fonts.TITLE, bg=Colors.BACKGROUND,
-                        fg=Colors.PRIMARY)
-        title.pack(pady=10)
-        
-        # Main content frame for 2x2 grid
-        grid_frame = tk.Frame(self.frame, bg=Colors.BACKGROUND)
-        grid_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Configure 2x2 grid
+        self._create_widgets()
+
+    # ─────────────────────────────────────────
+    #  Layout construction
+    # ─────────────────────────────────────────
+    def _create_widgets(self):
+        # ── Camera grid (fills full area — top bar handles the title) ─────
+        grid_frame = tk.Frame(self.frame, bg=_BG)
+        grid_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
         grid_frame.grid_columnconfigure(0, weight=1)
         grid_frame.grid_columnconfigure(1, weight=1)
         grid_frame.grid_rowconfigure(0, weight=1)
         grid_frame.grid_rowconfigure(1, weight=1)
-        
-        directions = ['North', 'South', 'East', 'West']
-        coords = [(0, 0), (0, 1), (1, 0), (1, 1)] # Row, Col
-        
-        for i, direction in enumerate(directions):
-            row, col = coords[i]
-            self.create_camera_widget(grid_frame, direction.lower(), row, col)
 
-    def create_camera_widget(self, parent, direction, row, col):
-        """create a single camera/traffic widget pair"""
-        container = tk.Frame(parent, bg=Colors.CARD_BG, relief=tk.RAISED, bd=1)
-        container.grid(row=row, column=col, sticky="nsew", padx=5, pady=5)
-        container.grid_columnconfigure(0, weight=3) # Camera gets more space
-        container.grid_columnconfigure(1, weight=1) # Lights/Stats
-        container.grid_rowconfigure(0, weight=1) # Content row
+        directions = ['north', 'south', 'east', 'west']
+        coords     = [(0, 0), (0, 1), (1, 0), (1, 1)]
 
-        # Left Side: Header + Camera
-        left_panel = tk.Frame(container, bg=Colors.CARD_BG)
-        left_panel.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-        
-        # Header - Larger and clear
-        header = tk.Label(left_panel, text=direction.upper(), 
-                         font=Fonts.TITLE, bg=Colors.CARD_BG, fg=Colors.PRIMARY)
-        header.pack(fill=tk.X, pady=(5, 2))
-        
-        # Camera Feed
-        cam_frame = tk.Frame(left_panel, bg=Colors.BLACK)
-        cam_frame.pack(fill=tk.BOTH, expand=True)
-        
-        cam_label = tk.Label(cam_frame, bg=Colors.BLACK, text="No Signal", fg=Colors.WHITE)
+        for direction, (row, col) in zip(directions, coords):
+            self._build_camera_card(grid_frame, direction, row, col)
+
+    def _build_camera_card(self, parent, direction, row, col):
+        """Build a single camera card: header strip + video + right sidebar with traffic light."""
+        meta = _DIR_META[direction]
+
+        # Outer card with border effect
+        border_frame = tk.Frame(parent, bg=_BORDER, padx=1, pady=1)
+        border_frame.grid(row=row, column=col, sticky='nsew', padx=4, pady=4)
+
+        card = tk.Frame(border_frame, bg=_CARD)
+        card.pack(fill=tk.BOTH, expand=True)
+
+        # ── Card header strip ─────────────────────────────────────
+        card_header = tk.Frame(card, bg='#0D1825', height=36)
+        card_header.pack(fill=tk.X)
+        card_header.pack_propagate(False)
+
+        tk.Label(card_header, text=f" {meta['icon']}  {meta['label']}",
+                 font=('Segoe UI', 10, 'bold'),
+                 bg='#0D1825', fg=_ACCENT).pack(side=tk.LEFT, padx=10, pady=6)
+
+        # Signal state badge
+        badge = tk.Label(card_header, text='● RED', font=('Segoe UI', 9, 'bold'),
+                         bg='#2D0000', fg='#EF4444', padx=8, pady=2)
+        badge.pack(side=tk.RIGHT, padx=8, pady=6)
+        self.signal_badges[direction] = badge
+
+        # Body row: camera (left) + traffic light panel (right)
+        body = tk.Frame(card, bg=_CARD)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        # ── RIGHT sidebar packed FIRST ── (Tkinter rule: fixed-size widgets must be
+        # packed before the expanding widget, otherwise expand grabs all available space)
+        sidebar = tk.Frame(body, bg='#0A1220', width=88)
+        sidebar.pack(side=tk.RIGHT, fill=tk.Y)
+        sidebar.pack_propagate(False)
+
+        # ── Camera feed packed AFTER sidebar so it only fills remaining space ──
+        cam_outer = tk.Frame(body, bg='#050A10')
+        cam_outer.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        cam_label = tk.Label(cam_outer, bg='#050A10',
+                             text='◌  No Signal', fg='#1E3A5F',
+                             font=('Segoe UI', 13, 'bold'))
         cam_label.pack(fill=tk.BOTH, expand=True)
         self.camera_labels[direction] = cam_label
-        
-        # Right Side: Controls/Lights
-        control_frame = tk.Frame(container, bg=Colors.CARD_BG)
-        control_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
-        
-        # Traffic Light Canvas
-        canvas = tk.Canvas(control_frame, width=60, height=140, bg=Colors.DARK_GREY, highlightthickness=0)
-        canvas.pack(pady=10)
-        self.light_canvases[direction] = canvas
-        self.draw_traffic_light_box(direction)
-        
-        # Timer
-        timer = tk.Label(control_frame, text="00s", font=(Fonts.FAMILY, 24, "bold"),
-                        bg=Colors.CARD_BG, fg=Colors.TEXT)
-        timer.pack(pady=5)
-        self.timer_labels[direction] = timer
-        
-        # Stats
-        stats_frame = tk.Frame(control_frame, bg=Colors.CARD_BG)
-        stats_frame.pack(fill=tk.X, pady=5)
-        
-        self.stat_labels[f'{direction}_vehicles'] = self.create_mini_stat(stats_frame, "Vehicles", "0")
-        self.stat_labels[f'{direction}_state'] = self.create_mini_stat(stats_frame, "Status", "RED")
-        
-    def create_mini_stat(self, parent, label_text, value_text):
-        f = tk.Frame(parent, bg=Colors.CARD_BG)
-        f.pack(fill=tk.X, padx=2, pady=2)
-        
-        # Stacked layout for meaningful stats
-        tk.Label(f, text=label_text, font=Fonts.SMALL, bg=Colors.CARD_BG, fg=Colors.TEXT_LIGHT).pack(anchor="w")
-        v = tk.Label(f, text=value_text, font=Fonts.BODY_BOLD, bg=Colors.CARD_BG, fg=Colors.PRIMARY)
-        v.pack(anchor="e")
-        return v
 
-    def draw_traffic_light_box(self, direction):
-        """Draw smaller traffic light"""
+        # ── Realistic traffic light ───────────────────────────────
+        # Pole top label
+        tk.Label(sidebar, text='SIGNAL', font=('Segoe UI', 7, 'bold'),
+                 bg='#0A1220', fg=_MUTED).pack(pady=(10, 2))
+
+        # Canvas housing
+        tl_canvas = tk.Canvas(sidebar, width=64, height=160,
+                              bg='#0A1220', highlightthickness=0)
+        tl_canvas.pack(pady=(0, 4))
+        self.light_canvases[direction] = tl_canvas
+        self._draw_realistic_light(direction)
+
+        # Thin divider
+        tk.Frame(sidebar, bg=_BORDER, height=1).pack(fill=tk.X, padx=6)
+
+        # Timer block
+        tk.Label(sidebar, text='TIMER', font=('Segoe UI', 7, 'bold'),
+                 bg='#0A1220', fg=_MUTED).pack(pady=(8, 0))
+        timer_lbl = tk.Label(sidebar, text='--s',
+                             font=('Consolas', 18, 'bold'),
+                             bg='#0A1220', fg=_TEXT)
+        timer_lbl.pack()
+        self.timer_labels[direction] = timer_lbl
+
+        # Thin divider
+        tk.Frame(sidebar, bg=_BORDER, height=1).pack(fill=tk.X, padx=6, pady=(8, 0))
+
+        # Vehicle count block
+        tk.Label(sidebar, text='VEHICLES', font=('Segoe UI', 7, 'bold'),
+                 bg='#0A1220', fg=_MUTED).pack(pady=(8, 0))
+        v_lbl = tk.Label(sidebar, text='0',
+                         font=('Segoe UI', 20, 'bold'),
+                         bg='#0A1220', fg=_TEXT)
+        v_lbl.pack()
+        self.stat_labels[f'{direction}_vehicles'] = v_lbl
+
+        # State text
+        s_lbl = tk.Label(sidebar, text='RED',
+                         font=('Segoe UI', 10, 'bold'),
+                         bg='#0A1220', fg=_DANGER)
+        s_lbl.pack(pady=(2, 8))
+        self.stat_labels[f'{direction}_state'] = s_lbl
+
+    # ─────────────────────────────────────────
+    #  Realistic vertical traffic light
+    # ─────────────────────────────────────────
+    def _draw_realistic_light(self, direction):
+        """Draw a realistic vertical traffic light with housing and visor hoods."""
         c = self.light_canvases[direction]
-        # Housing
-        c.create_rectangle(5, 5, 55, 135, fill=Colors.BLACK, outline=Colors.SECONDARY, width=2)
-        
         self.lamp_ids[direction] = {}
-        # Red
-        self.lamp_ids[direction]['red'] = c.create_oval(15, 15, 45, 45, fill="#330000", outline=Colors.BLACK)
-        # Yellow
-        self.lamp_ids[direction]['yellow'] = c.create_oval(15, 55, 45, 85, fill="#333300", outline=Colors.BLACK)
-        # Green
-        self.lamp_ids[direction]['green'] = c.create_oval(15, 95, 45, 125, fill="#003300", outline=Colors.BLACK)
 
+        # Housing (rounded rectangle effect with two rectangles)
+        c.create_rectangle(8, 4, 56, 156, fill='#1A1A1A', outline='#333333', width=2)
+        c.create_rectangle(10, 6, 54, 154, fill='#111111', outline='#111111')  # inner shadow
+
+        # Mounting bolt top
+        c.create_oval(29, 2, 35, 8, fill='#2A2A2A', outline='#444444')
+
+        # Each lamp: (color_name, center_x, center_y, dim_fill)
+        lamps = [
+            ('red',    32, 34,  '#2D0000'),
+            ('yellow', 32, 82,  '#1C1A00'),
+            ('green',  32, 130, '#052E16'),
+        ]
+
+        for color, cx, cy, dim_fill in lamps:
+            r = 18
+            # Outer glow ring (subtle dark ring for depth)
+            c.create_oval(cx - r - 3, cy - r - 3, cx + r + 3, cy + r + 3,
+                          fill='#0D0D0D', outline='#0D0D0D')
+            # Lamp body
+            oid = c.create_oval(cx - r, cy - r, cx + r, cy + r,
+                                fill=dim_fill, outline='#2A2A2A', width=1)
+            # Visor hood above each lamp
+            c.create_rectangle(cx - r, cy - r - 5, cx + r, cy - r + 4,
+                                fill='#1A1A1A', outline='#1A1A1A')
+            # Highlight glint (valid 6-char hex only — no alpha in Tkinter)
+            c.create_oval(cx - r + 5, cy - r + 5, cx - r + 11, cy - r + 11,
+                          fill='#2A2A2A', outline='#2A2A2A')
+            self.lamp_ids[direction][color] = oid
+
+        # Bottom bolt
+        c.create_oval(29, 150, 35, 156, fill='#2A2A2A', outline='#444444')
+
+    # ─────────────────────────────────────────
+    #  Live update callbacks (same signatures)
+    # ─────────────────────────────────────────
     def update_camera_feed(self, frame, detection_data=None, direction='north'):
-        """Update camera feed display for specific direction"""
+        """Update camera feed display for specific direction."""
         try:
             if direction not in self.camera_labels:
                 return
 
             if frame is not None:
-                # Resize for grid display (Larger view as requested)
-                frame = cv2.resize(frame, (560, 420))
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                img = Image.fromarray(frame_rgb)
-                photo = ImageTk.PhotoImage(img)
-                
                 label = self.camera_labels[direction]
-                label.config(image=photo, text="")
+                cam_frame = label.master
+
+                w = cam_frame.winfo_width()
+                h = cam_frame.winfo_height()
+                if w < 50 or h < 50:
+                    w, h = 480, 320
+
+                frame_resized = cv2.resize(frame, (w, h))
+                frame_rgb     = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
+                img   = Image.fromarray(frame_rgb)
+                photo = ImageTk.PhotoImage(img)
+
+                label.config(image=photo, text='')
                 label.image = photo
-                
+
             if detection_data:
                 self.update_live_stats(detection_data, direction)
-        except Exception as e:
-            pass # Avoid spamming errors
+
+        except Exception:
+            pass
 
     def update_live_stats(self, data, direction):
-        """Update visuals for a specific direction"""
-        # Check if we have the labels for this direction
+        """Update stats and traffic light indicators for a direction."""
         vehicle_key = f'{direction}_vehicles'
         if vehicle_key not in self.stat_labels:
-            return 
+            return
 
-            
         vehicle_count = data.get('vehicle_count', 0)
-        signal_state = data.get('signal_state', 'RED')
-        time_left = data.get('time_remaining', 0)
-        
-        # Update text
+        signal_state  = data.get('signal_state', 'RED').upper()
+        time_left     = data.get('time_remaining', 0)
+
+        # ── Text stats ────────────────────────────────────────────
         self.stat_labels[f'{direction}_vehicles'].config(text=str(vehicle_count))
-        self.stat_labels[f'{direction}_state'].config(text=signal_state)
-        self.timer_labels[direction].config(text=f"{int(time_left)}s")
-        
-        # Update Lamps
-        dim = {'red': '#330000', 'yellow': '#333300', 'green': '#003300'}
-        bright = {'red': '#ff0000', 'yellow': '#ffff00', 'green': '#00ff00'}
-        
-        c = self.light_canvases[direction]
+
+        state_lbl = self.stat_labels[f'{direction}_state']
+        sig_colors = {
+            'GREEN':   _SUCCESS,
+            'YELLOW':  _WARN,
+            'RED':     _DANGER,
+            'ALL_RED': _DANGER,
+        }
+        state_lbl.config(text=signal_state, fg=sig_colors.get(signal_state, _MUTED))
+
+        # ── Timer ─────────────────────────────────────────────────
+        t = int(time_left)
+        timer_fg = _SUCCESS if signal_state == 'GREEN' else (_WARN if signal_state == 'YELLOW' else _DANGER)
+        self.timer_labels[direction].config(text=f'{t:>3}s', fg=timer_fg)
+
+        # ── Signal badge (top-right of card) ─────────────────────
+        badge = self.signal_badges.get(direction)
+        if badge:
+            badge_styles = {
+                'GREEN':   ('#052E16', '#22C55E'),
+                'YELLOW':  ('#1C1A00', '#EAB308'),
+                'RED':     ('#2D0000', '#EF4444'),
+                'ALL_RED': ('#2D0000', '#EF4444'),
+            }
+            bg_c, fg_c = badge_styles.get(signal_state, ('#1A2332', _MUTED))
+            badge.config(text=f'● {signal_state}', bg=bg_c, fg=fg_c)
+
+        # ── Traffic light lamps ───────────────────────────────────
+        c   = self.light_canvases[direction]
         ids = self.lamp_ids[direction]
-        
+        dim = {'red': '#2D0000', 'yellow': '#1C1A00', 'green': '#052E16'}
+
+        # Dim all first
         for color_name, item_id in ids.items():
             c.itemconfig(item_id, fill=dim[color_name])
-            
-        active_color = signal_state.lower()
-        if active_color in ids:
-            c.itemconfig(ids[active_color], fill=bright[active_color])
-    
+
+        # Light active lamp
+        active = signal_state.lower()
+        if active == 'all_red':
+            active = 'red'
+        if active in ids:
+            # Vivid glow colors that look like a real illuminated lamp
+            bright = {
+                'red':    '#FF2020',   # Vivid red
+                'yellow': '#FFD600',   # Bright amber/yellow
+                'green':  '#00E676',   # Bright green
+            }
+            c.itemconfig(ids[active], fill=bright[active])
+
+    # ─────────────────────────────────────────
+    #  Boilerplate
+    # ─────────────────────────────────────────
     def get_widget(self):
         return self.frame
-    
+
     def cleanup(self):
         self.is_running = False

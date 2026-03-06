@@ -54,12 +54,25 @@ class MainController:
             self.camera_managers[direction] = CameraManager(camera_index=i)
             
         # Initialize YOLO and DQN-based Traffic Controller
-        self.yolo_detector = YOLODetector("yolov8n.pt")
+        # Try to load the best trained model; fall back to fresh model if not found
+        import os as _os
+        _model_candidates = [
+            "models/dqn/dqn_best.pth",
+            "models/dqn/dqn_final.pth",
+        ]
+        _selected_model = next(
+            (p for p in _model_candidates if _os.path.exists(p)), None
+        )
+        self.yolo_detector = YOLODetector("best.pt")
         self.traffic_controller = TrafficLightController(
             num_lanes=4,
-            model_path=None,  # Will use untrained model initially
-            use_pretrained=False
+            model_path=_selected_model,
+            use_pretrained=(_selected_model is not None)
         )
+        if _selected_model:
+            self.logger.info(f"[Main] Loaded trained DQN model: {_selected_model}")
+        else:
+            self.logger.warning("[Main] No trained DQN model found — using untrained network. Run run_training.py first.")
         
         # Traffic States for each direction
         self.states = {}
@@ -72,7 +85,8 @@ class MainController:
                 'detections': [],
                 'phase_start_time': time.time(),
                 'last_ai_time': 0,
-                'cached_detections': []
+                'cached_detections': [],
+                'current_source': 'Simulated'
             }
         
         # North starts green (will be managed by camera_loop state machine)
@@ -88,6 +102,10 @@ class MainController:
         self.camera_thread = None
         self.is_running = True
         
+        # Track read issue reports
+        self.last_viewed_report_count = 0
+        # Wait for initialize_pages or first poll to load actual count from DB
+        
         self.logger.info("MainController initialized with DQN traffic control")
     
     def initialize_pages(self):
@@ -96,8 +114,8 @@ class MainController:
             self.pages['dashboard'] = DashboardPage(self.view.content_area)
             self.pages['issue_reports'] = IssueReportsPage(self.view.content_area, self.db, self.current_user)
             self.pages['traffic_reports'] = TrafficReportsPage(self.view.content_area)
-            self.pages['incident_history'] = IncidentHistoryPage(self.view.content_area, self.accident_controller)
-            self.pages['violation_logs'] = ViolationLogsPage(self.view.content_area, self.violation_controller)
+            self.pages['incident_history'] = IncidentHistoryPage(self.view.content_area, self.accident_controller, self.current_user)
+            self.pages['violation_logs'] = ViolationLogsPage(self.view.content_area, self.violation_controller, self.current_user)
             self.pages['settings'] = SettingsPage(self.view.content_area)
             
             # Admin Pages
@@ -107,7 +125,7 @@ class MainController:
     
     def get_active_cameras(self):
         """Get list of active cameras for the sidebar"""
-        # Map logical directions to display names
+        # Map logical directions to base names
         name_map = {
             'north': 'North Gate',
             'south': 'South Junction',
@@ -118,21 +136,26 @@ class MainController:
         cameras_data = []
         for direction in self.directions:
             manager = self.camera_managers.get(direction)
+            state = self.states.get(direction, {})
+            current_source = state.get("current_source", "Simulated")
             
-            # If camera is running (Real), status is 'active' (Green)
-            # If not running, we fall back to Simulation, so it's 'simulated' (Blue/Amber)
-            # Use 'active' for both if you want them to look 'Working', or distinct if preferred.
-            # Given user complaint "its inactive even the camera is working", they likely want 'active' or 'simulated'
+            base_name = name_map.get(direction, direction.title())
             
-            if manager and manager.is_running:
+            if current_source.startswith("Camera") and manager and manager.is_running:
                 status = "active"
-                display_name = name_map.get(direction, direction.title())
+                # Make it dynamic: show hardware/source name
+                display_name = f"{base_name} ({current_source.replace('Camera', 'Cam')})"
+            elif current_source != "Simulated" and manager and manager.is_running:
+                status = "active"
+                # If it's a video file, clip the name or just show 'Video'
+                if len(current_source) > 10:
+                    src_short = current_source[:7] + "..."
+                else:
+                    src_short = current_source
+                display_name = f"{base_name} ({src_short})"
             else:
-                # Fallback to simulation
-                # Check if we should mark it as "Simulated" or just "Active"
-                # Let's use "simulated" which we will map to a color (INFO/Blue) or WARNING/Amber
                 status = "simulated" 
-                display_name = f"{name_map.get(direction, direction.title())}"
+                display_name = f"{base_name} (Sim)"
 
             cameras_data.append({
                 "name": display_name,
@@ -150,6 +173,17 @@ class MainController:
     def handle_navigation(self, page_name):
         """Handle page navigation"""
         try:
+            # Add dynamic notification clear logic for issue reports
+            if page_name == 'issue_reports':
+                try:
+                    if self.db:
+                        reports = self.db.get_all_reports() or []
+                        self.last_viewed_report_count = len(reports)
+                    if self.view and hasattr(self.view, 'sidebar'):
+                        self.view.sidebar.update_nav_item('issue_reports', "⚠️ Issue Reports")
+                except Exception as ex:
+                    self.logger.error(f"Error resetting report notification: {ex}")
+
             if page_name in self.pages:
                 if self.current_page:
                     try:
@@ -165,9 +199,17 @@ class MainController:
     
     def start_camera_feed(self):
         """Start camera feeds in background thread"""
-        # Initialize all cameras
+        from utils.app_config import SETTINGS
+        # Initialize all cameras based on SETTINGS
         for i, direction in enumerate(self.directions):
-            self.camera_managers[direction].initialize_camera(i)
+            source = SETTINGS.get(f"camera_source_{direction}", "Simulated")
+            self.states[direction]["current_source"] = source
+            if source.startswith("Camera"):
+                try:
+                    cam_idx = int(source.split(" ")[1])
+                    self.camera_managers[direction].initialize_camera(cam_idx)
+                except ValueError:
+                    pass
             
         self.camera_thread = threading.Thread(target=self.camera_loop, daemon=True)
         self.camera_thread.start()
@@ -179,32 +221,31 @@ class MainController:
         
         self.logger.info("🚀 CAMERA LOOP STARTED!")
         
-        # Simple state machine for traffic lights
-        cycle_state = {
-            'current_lane': 0,  # 0=north, 1=south, 2=east, 3=west
-            'phase': 'green',   # green, yellow, all_red
-            'phase_start': time.time(),
-            'phase_duration': 15,  # Start with 15s green (observation period)
-            'green_check_done': False, # Flag for observation check
-        }
+        # Traffic light state is now fully managed by TrafficLightController.
+        # The controller tracks: phase, buffer lock, emergency override, starvation.
+        # We only need to push detections into it and read back the active lane/phase.
         
-        self.logger.info(f"🟢 Initial: {self.directions[0].upper()} → GREEN ({cycle_state['phase_duration']}s) [Observing]")
+        self.logger.info(f"🟢 Initial: {self.directions[0].upper()} → GREEN (15s) [Observing]")
         
         loop_count = 0
         last_status_time = time.time()
+        last_report_poll_time = time.time() - 10.0  # Force an immediate poll
+        last_phase_update_time = time.time()
         
         while self.is_running:
             current_time = time.time()
             loop_count += 1
             
-            # Status update every 5 seconds
+            # Status update every 5 seconds — read state from the controller, not cycle_state
             if current_time - last_status_time >= 5.0:
-                elapsed = current_time - cycle_state['phase_start']
-                remaining = cycle_state['phase_duration'] - elapsed
+                ctrl_status = self.traffic_controller.get_current_status()
                 self.logger.info(
-                    f"📊 Loop #{loop_count} | Phase: {cycle_state['phase'].upper()} | "
-                    f"Lane: {self.directions[cycle_state['current_lane']].upper()} | "
-                    f"Remaining: {remaining:.1f}s"
+                    f"Status Loop #{loop_count} | "
+                    f"Phase: {ctrl_status['current_phase'].upper()} | "
+                    f"Lane: {self.directions[ctrl_status['current_lane']].upper()} | "
+                    f"Remaining: {ctrl_status['phase_remaining']:.1f}s | "
+                    f"Buffer: {'LOCKED' if ctrl_status['buffer_locked'] else 'open'} | "
+                    f"Emergency: {'YES' if ctrl_status['is_emergency'] else 'no'}"
                 )
                 
                 # Update sidebar active camera status
@@ -216,6 +257,21 @@ class MainController:
                         print(f"Error updating sidebar: {e}")
 
                 last_status_time = current_time
+
+            # Update issue reports dynamic notification every 10 seconds
+            if current_time - last_report_poll_time >= 10.0:
+                last_report_poll_time = current_time
+                if self.db and self.view and hasattr(self.view, 'sidebar') and self.view.sidebar:
+                    try:
+                        reports = self.db.get_all_reports() or []
+                        unread = len(reports) - getattr(self, 'last_viewed_report_count', 0)
+                        if unread > 0:
+                            new_text = f"⚠️ Issue Reports 🔴 {unread}"
+                        else:
+                            new_text = "⚠️ Issue Reports"
+                        self.root.after(0, lambda t=new_text: self.view.sidebar.update_nav_item('issue_reports', t))
+                    except Exception as e:
+                        pass # Silently handle if database fails or widgets no longer exist
 
             
             # Step 1: Process all cameras and collect YOLO detections
@@ -236,20 +292,57 @@ class MainController:
                     show_confidence = SETTINGS.get("show_confidence", True)
                     show_sim_text = SETTINGS.get("show_simulation_text", True)
                     dark_mode_cam = SETTINGS.get("dark_mode_cam", False)
+                    camera_source = SETTINGS.get(f"camera_source_{direction}", "Simulated")
+                    
+                    # Check if source changed
+                    if camera_source != state.get("current_source", "Simulated"):
+                        self.camera_managers[direction].release()
+                        if camera_source.startswith("Camera"):
+                            try:
+                                cam_idx = int(camera_source.split(" ")[1])
+                                self.camera_managers[direction].initialize_camera(cam_idx)
+                            except ValueError:
+                                pass
+                        state["current_source"] = camera_source
                     
                     # Get Frame
-                    frame = self.camera_managers[direction].get_frame()
+                    frame = None
+                    if camera_source.startswith("Camera"):
+                        frame = self.camera_managers[direction].get_frame()
+                    
                     if frame is None:
                         # Create blank frame for demo
                         frame = np.zeros((480, 640, 3), dtype=np.uint8)
                         
-                        # SIMULATOR: Generate fake traffic for 3 cameras (North, South, East)
+                        # SIMULATOR: Generate fake traffic for cameras targeting Simulation
                         detections = []
-                        if direction in ['north', 'south', 'east']:
-                            # Generate random count using stable random to avoid flickering
+                        if camera_source == "Simulated" or frame is None:
+                            # DYNAMIC SIMULATION: Smoothly rise and fall over time to test DQN
                             import random
-                            base_count = {'north': 15, 'south': 8, 'east': 12}.get(direction, 0)
-                            count = max(0, base_count + random.randint(-2, 2))
+                            
+                            # Initialize dynamic simulation parameters for the lane
+                            if "sim_count" not in state:
+                                state["sim_count"] = random.randint(5, 30)
+                                state["sim_trend"] = random.choice([-1, 1])
+                                state["last_sim_change"] = time.time()
+                                
+                            # Change count every 1.5 seconds by a small amount
+                            if current_time - state.get("last_sim_change", current_time) > 1.5:
+                                state["last_sim_change"] = current_time
+                                
+                                # Bounce off extremes or randomly change direction 15% of the time
+                                if state["sim_count"] >= 45:
+                                    state["sim_trend"] = -1
+                                elif state["sim_count"] <= 3:
+                                    state["sim_trend"] = 1
+                                elif random.random() < 0.15:
+                                    state["sim_trend"] *= -1
+                                        
+                                # Apply trend step
+                                step = random.randint(1, 4) * state["sim_trend"]
+                                state["sim_count"] = max(0, min(50, state["sim_count"] + step))
+                                
+                            count = int(state["sim_count"])
                             
                             # Create fake detections (Simulator always creates them, but we might not draw them)
                             # Create fake detections (Simulator always creates them, but we might not draw them)
@@ -289,7 +382,7 @@ class MainController:
                                 if random.random() < 0.02: # 2% chance per frame
                                     cx, cy = 320, 240
                                     detections.append({
-                                        'class_name': 'accident', 
+                                        'class_name': 'z_accident', 
                                         'confidence': 0.99,
                                         'box': [cx-40, cy-40, cx+20, cy+20],
                                         'center': (cx, cy)
@@ -333,12 +426,37 @@ class MainController:
                                     if hasattr(self, 'violation_controller') and self.violation_controller:
                                         last_log = getattr(self, 'last_violation_log', 0)
                                         if current_time - last_log > 5.0:
-                                            self.violation_controller.save_violation(lane=lane_id, violation_type="Red Light Violation")
+                                            self.violation_controller.save_violation(lane=lane_id, violation_type="Red Light Violation", frame=frame)
                                             self.session_violations += 1 # Increment Session Counter
                                             self.last_violation_log = current_time
                                             self.logger.info(f"Simulated Violation recorded for {direction}")
                                             # Notify
                                             self.root.after(0, lambda: self.notification_manager.show("Violation Alert", f"Red Light Violation on Lane {lane_id}", "violation"))
+
+                                # 3. Simulate EMERGENCY VEHICLE
+                                # Provide a small chance for an emergency vehicle to show up and trigger priority
+                                # -> Currently disabled at user's request
+                                enable_sim_emergency = False
+                                
+                                if enable_sim_emergency:
+                                    if "sim_emergency_end" not in state:
+                                        state["sim_emergency_end"] = 0
+                                        
+                                    if current_time < state["sim_emergency_end"]:
+                                        # Force emergency vehicle to remain in view
+                                        cx, cy = 400, 300
+                                        detections.append({
+                                            'class_name': 'emergency_vehicle', 
+                                            'confidence': 0.99,
+                                            'box': [cx-30, cy-30, cx+30, cy+30],
+                                            'center': (cx, cy)
+                                        })
+                                        cv2.putText(frame, "🚨 EMERGENCY VEHICLE!", (100, 50), 
+                                                  cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 3)
+                                                  
+                                    elif random.random() < 0.01: # 1% chance per frame (throttle down)
+                                        state["sim_emergency_end"] = current_time + 10.0 # Stick around for 10s
+                                        self.logger.info(f"Generated SIMULATED Emergency Vehicle in {direction}")
 
                             # -------------------------------------------------------------
                             
@@ -365,7 +483,10 @@ class MainController:
                             last_ai_time = state.get('last_ai_time', 0)
                             
                             # Determine if we should run fresh detection
-                            should_detect = (current_ai_time - last_ai_time) > 0.1
+                            # Throttle YOLO inference - gives the UI display loop
+                            # more time per cycle so video rendering stays smooth
+                            throttle_val = SETTINGS.get("ai_throttle_seconds", 0.125)
+                            should_detect = (current_ai_time - last_ai_time) > throttle_val
                             
                             if should_detect:
                                 # Run YOLO detection
@@ -426,7 +547,7 @@ class MainController:
                                                 if hasattr(self, 'violation_controller') and self.violation_controller:
                                                     last_log = getattr(self, 'last_violation_log', 0)
                                                     if current_time - last_log > 5.0:
-                                                        self.violation_controller.save_violation(lane=lane_id, violation_type="Red Light Violation")
+                                                        self.violation_controller.save_violation(lane=lane_id, violation_type="Red Light Violation", frame=annotated_frame)
                                                         self.session_violations += 1 # Increment Session Counter
                                                         self.last_violation_log = current_time
                                                         self.logger.info(f"Violation recorded for {direction}")
@@ -489,16 +610,17 @@ class MainController:
                     
                     # Store detections
                     state['detections'] = detections
-                    state['vehicle_count'] = len(detections)
-                    all_lane_counts.append(len(detections))
+                    state['vehicle_count'] = len([d for d in detections
+                                                  if d.get('class_name') != 'emergency_vehicle'])
+                    all_lane_counts.append(state['vehicle_count'])
                     
                     # Log vehicle detections (only if count > 0 to avoid spam)
                     if len(detections) > 0:
                         self.logger.info(f"📹 {direction.upper()}: Detected {len(detections)} vehicles")
                     
-                    # Update traffic controller lane stats
-                    self.traffic_controller.lane_stats[lane_id]['vehicle_count'] = len(detections)
-                    self.traffic_controller.lane_stats[lane_id]['last_detection'] = datetime.now()
+                    # Push full typed detections into the new TrafficLightController
+                    # This enables congestion weighting, emergency detection, and starvation tracking.
+                    self.traffic_controller.update_lane_detections(lane_id, detections)
                     
                     # Update dashboard display safely on main thread
                     if self.current_page and hasattr(self.current_page, 'update_camera_feed'):
@@ -536,123 +658,91 @@ class MainController:
                     if self.current_page and hasattr(self.current_page, 'update_report') else None
                 )
 
-            # Step 2: Simple traffic light state machine
+            # ─────────────────────────────────────────────────────────────────
+            # Step 2: DQN Traffic Light State Machine
+            # Delegates ALL decisions to TrafficLightController which internally
+            # enforces:
+            #   • 10-second minimum buffer rule
+            #   • Emergency override (separate from DQN policy)
+            #   • Congestion-based green time (low/medium/high)
+            #   • Starvation fairness protection
+            # ─────────────────────────────────────────────────────────────────
             try:
-                elapsed = current_time - cycle_state['phase_start']
-                
-                # Dynamic adjustment removed - Using strict High/Low logic instead
-                # REAL-TIME ADAPTIVE LOGIC: Early Cutoff
-                # If currently GREEN and lane is empty, cut short to save time
-                if cycle_state['phase'] == 'green':
-                    current_idx = cycle_state['current_lane']
-                    # Check current vehicle count for this lane
-                    if len(all_lane_counts) > current_idx:
-                        current_vol = all_lane_counts[current_idx]
-                        
-                        # If lane is empty AND we have given at least 5s of green (Safety min)
-                        if current_vol == 0 and elapsed > 5.0:
-                            self.logger.info(f"⚡ FAST TRACK: Lane {self.directions[current_idx].upper()} is empty! Cutting green light short.")
-                            # Force Phase End immediately
-                            cycle_state['phase_duration'] = elapsed
-                            # Ensure we don't wait -> Logic below will catch 'elapsed >= duration'
-
-                # Check if phase should change
-                if elapsed >= cycle_state['phase_duration']:
-                    current_lane = cycle_state['current_lane']
-                    current_phase = cycle_state['phase']
+                # Call update_phase() approximately every 1 second
+                dt_phase = current_time - last_phase_update_time
+                if dt_phase >= 1.0:
+                    last_phase_update_time = current_time
                     
-                    if current_phase == 'green':
-                        # Green → Yellow
-                        cycle_state['phase'] = 'yellow'
-                        cycle_state['phase_start'] = current_time
-                        cycle_state['phase_duration'] = 3  # 3 seconds yellow
-                        
-                        self.logger.info(f"🟡 {self.directions[current_lane].upper()} → YELLOW (3s)")
-                        
-                        # Update states
-                        self.states[self.directions[current_lane]]['signal_state'] = 'YELLOW'
-                        self.states[self.directions[current_lane]]['time_remaining'] = 3
-                        
-                    elif current_phase == 'yellow':
-                        # Yellow → All Red
-                        cycle_state['phase'] = 'all_red'
-                        cycle_state['phase_start'] = current_time
-                        cycle_state['phase_duration'] = 2  # 2 seconds all red
-                        
-                        self.logger.info(f"🔴 ALL LANES → RED (clearance 2s)")
-                        
-                        # All lanes red
-                        for direction in self.directions:
-                            self.states[direction]['signal_state'] = 'RED'
-                            self.states[direction]['time_remaining'] = 2
-                            
-                    elif current_phase == 'all_red':
-                        # All Red → Pick next lane (Strict Sequential Round Robin)
-                        next_lane = (current_lane + 1) % 4
-                        
-                        # Determine Duration based on Congestion (Simulate DQN High/Low decision)
-                        # Threshold: 20 vehicles considered "High Congestion"
-                        # High Congestion = 60s
-                        # Low Congestion = 30s
-                        # Observation: We check congestion NOW to decide duration. 
-                        # This models the "check 15s window" by effectively using the accumulated count.
-                        
-                        vehicle_count = all_lane_counts[next_lane]
-                        
-                        # RULE-BASED LOGIC (User Override)
-                        # High congestion (>20): 40s (30 + 10)
-                        # Low congestion (<=5): 15s
-                        # Normal: 30s
-                        
-                        if vehicle_count > 20:
-                            green_time = 40
-                            mode_info = "HIGH CONGESTION - EXTENDED"
-                        elif vehicle_count <= 5:
-                            green_time = 15
-                            mode_info = "LOW CONGESTION - REDUCED"
+                    # Ask the controller to evaluate phase transitions
+                    decision = self.traffic_controller.update_phase(
+                        all_lane_counts=all_lane_counts
+                    )
+                    
+                    # Sync UI state from the controller
+                    ctrl_lane  = self.traffic_controller.active_lane
+                    ctrl_phase = self.traffic_controller.current_phase
+                    ctrl_remaining = max(
+                        0.0,
+                        self.traffic_controller.phase_duration -
+                        (current_time - self.traffic_controller.phase_start_time)
+                    )
+                    ctrl_is_emergency = self.traffic_controller.is_emergency_active
+                    ctrl_buffer_locked = self.traffic_controller.buffer_locked
+                    
+                    # Map controller's numeric active_lane back to directions
+                    for i, direction in enumerate(self.directions):
+                        if i == ctrl_lane and ctrl_phase == 'green':
+                            self.states[direction]['signal_state'] = 'GREEN'
+                            self.states[direction]['time_remaining'] = ctrl_remaining
+                        elif i == ctrl_lane and ctrl_phase == 'yellow':
+                            self.states[direction]['signal_state'] = 'YELLOW'
+                            self.states[direction]['time_remaining'] = ctrl_remaining
                         else:
-                            green_time = 30
-                            mode_info = "NORMAL FLOW"
-                        
-                        # Update cycle state
-                        cycle_state['current_lane'] = next_lane
-                        cycle_state['phase'] = 'green'
-                        cycle_state['phase_start'] = current_time
-                        cycle_state['phase_duration'] = green_time
-                        
-                        self.logger.info(
-                            f"🟢 Logic Decision: {self.directions[next_lane].upper()} → GREEN ({green_time}s) "
-                            f"[{vehicle_count} vehicles | {mode_info}]"
-                        )
-                        
-                        
-                        # Update all lane states with CASCADED countdowns
-                        for i, direction in enumerate(self.directions):
-                            if i == next_lane:
-                                self.states[direction]['signal_state'] = 'GREEN'
-                                self.states[direction]['time_remaining'] = green_time
+                            self.states[direction]['signal_state'] = 'RED'
+                            # Estimated wait: hops × avg_phase_duration
+                            hops = (i - ctrl_lane) % len(self.directions)
+                            # Estimate based on congestion-weighted average
+                            est_phase = 25 + 5   # 25s avg green + 5s clearance
+                            if hops == 0:
+                                self.states[direction]['time_remaining'] = ctrl_remaining
                             else:
-                                self.states[direction]['signal_state'] = 'RED'
-                                # Calculate estimated wait time
-                                # Hops: How many phases until this lane?
-                                hops = (i - next_lane) % len(self.directions)
-                                # Wait = Current Green + (Hops-1)*(Future_Est_Green + Clearance) + Current_Clearance
-                                # Assume future phases are 30s + 5s clearance
-                                estimated_wait = green_time + 5 + ((hops - 1) * 35)
-                                self.states[direction]['time_remaining'] = estimated_wait
+                                self.states[direction]['time_remaining'] = (
+                                    ctrl_remaining + (hops - 1) * est_phase
+                                )
+                    
+                    # Log meaningful transitions
+                    if decision is not None:
+                        phase_name = decision.get('phase', 'unknown')
+                        if phase_name == 'green':
+                            lane_id  = decision.get('lane_id', ctrl_lane)
+                            gtime    = decision.get('green_time', 15)
+                            mode     = decision.get('mode', '')
+                            vcnt     = decision.get('vehicle_count', 0)
+                            em_flag  = '🚨 EMERGENCY |' if decision.get('is_emergency') else ''
+                            buf_flag = '🔒 Buffer active' if ctrl_buffer_locked else ''
+                            self.logger.info(
+                                f"🟢 {self.directions[lane_id].upper()} → GREEN {gtime}s "
+                                f"| {vcnt} vehicles | {em_flag}{mode} {buf_flag}"
+                            )
+                        elif phase_name == 'yellow':
+                            self.logger.info(
+                                f"🟡 {self.directions[ctrl_lane].upper()} → YELLOW"
+                            )
+                        elif phase_name == 'all_red':
+                            self.logger.info("🔴 ALL LANES → RED (clearance)")
                 
-                # Update time remaining for all lanes
+                # Update time remaining for all lanes (real-time countdown)
                 for direction in self.directions:
-                    state = self.states[direction]
-                    dt = current_time - state['last_update_time']
-                    state['last_update_time'] = current_time
-                    state['time_remaining'] = max(0, state['time_remaining'] - dt)
+                    st = self.states[direction]
+                    dt_d = current_time - st['last_update_time']
+                    st['last_update_time'] = current_time
+                    st['time_remaining']   = max(0, st['time_remaining'] - dt_d)
                     
             except Exception as e:
-                self.logger.error(f"Error in traffic light control: {e}", exc_info=True)
+                self.logger.error(f"Error in DQN traffic light control: {e}", exc_info=True)
             
-            # Small delay
-            time.sleep(0.1)  # 10 FPS update rate
+            # Small delay — 10 FPS UI update rate; controller observes at 1-sec cadence
+            time.sleep(0.1)
     
     def stop_camera(self):
         """Stop camera feed"""

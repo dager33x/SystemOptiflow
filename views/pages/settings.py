@@ -54,16 +54,25 @@ class SettingsPage:
             ("Enable AI Detection", "enable_detection"),
             ("Simulate Events", "enable_sim_events"), 
             ("Camera Filter (Invert)", "dark_mode_cam"),
+            ("Enhance Video (CPU Heavy)", "enable_video_enhancement"),
         ]
         
         notification_options = [
             ("Enable Notifications", "enable_notifications"),
         ]
 
+        camera_source_options = [
+            ("North Lane Source", "camera_source_north"),
+            ("South Lane Source", "camera_source_south"),
+            ("East Lane Source", "camera_source_east"),
+            ("West Lane Source", "camera_source_west"),
+        ]
+
         # Create Cards in Grid
         self.create_settings_card(content_frame, "Visual & Display", "👁️", visual_options, row=0, col=0)
         self.create_settings_card(content_frame, "System & Performance", "⚡", system_options, row=0, col=1)
         self.create_settings_card(content_frame, "Notifications", "🔔", notification_options, row=1, col=0)
+        self.create_combobox_card(content_frame, "Camera Sources", "🎥", camera_source_options, row=1, col=1)
 
         # 3. Footer / Status
         footer_frame = tk.Frame(self.frame, bg=Colors.BACKGROUND)
@@ -128,6 +137,53 @@ class SettingsPage:
                             bd=0, highlightthickness=0,
                             indicatoron=True) # Standard box style
         chk.pack(side=tk.RIGHT)
+    
+    def create_combobox_card(self, parent, title, icon, options, row, col):
+        """Create a card-style section for settings with comboboxes"""
+        # Card Container
+        card = WidgetStyles.create_card(parent)
+        card.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
+        
+        # Header
+        header = tk.Frame(card, bg=Colors.CARD_BG)
+        header.pack(fill=tk.X, pady=(0, 15))
+        
+        # Title with Icon
+        full_title = f"{icon}  {title}"
+        tk.Label(header, text=full_title, font=Fonts.SUBHEADING, 
+                bg=Colors.CARD_BG, fg=Colors.TEXT).pack(anchor=tk.W)
+        
+        # Subtle Divider
+        tk.Frame(card, bg=Colors.DIVIDER, height=1).pack(fill=tk.X, pady=(0, 15))
+        
+        # Options List
+        for label_text, config_key in options:
+            self.create_modern_combobox(card, label_text, config_key)
+
+    def create_modern_combobox(self, parent, label_text, config_key):
+        """Create a modern row with label on left and combobox on right"""
+        container = tk.Frame(parent, bg=Colors.CARD_BG)
+        container.pack(fill=tk.X, pady=8)
+        
+        # Label (Left)
+        tk.Label(container, text=label_text, font=Fonts.BODY, 
+                bg=Colors.CARD_BG, fg=Colors.TEXT_LIGHT).pack(side=tk.LEFT)
+        
+        # Combobox (Right)
+        current_val = SETTINGS.get(config_key, "Simulated")
+        var = tk.StringVar(value=current_val)
+        self.toggles[config_key] = var  # Reuse the toggles dict to hold state
+        
+        combo = ttk.Combobox(container, textvariable=var, state="readonly", width=12)
+        combo['values'] = ("Simulated", "Camera 0", "Camera 1", "Camera 2", "Camera 3")
+        combo.pack(side=tk.RIGHT)
+        
+        def on_combo_change(event):
+            new_val = var.get()
+            SETTINGS[config_key] = new_val
+            print(f"Setting '{config_key}' changed to {new_val}")
+            
+        combo.bind("<<ComboboxSelected>>", on_combo_change)
     
     def get_widget(self):
         return self.frame

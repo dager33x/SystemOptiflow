@@ -26,7 +26,7 @@ SystemOptiflow/
 ├── requirements.txt      # Main Python dependencies
 ├── requirements_dqn.txt  # AI/ML dependencies
 ├── unified_schema.sql    # Database schema for Supabase
-└── yolov8n.pt            # YOLO model weights (Auto-downloaded if missing)
+└── best.pt               # YOLO custom trained model weights
 ```
 
 ## 3. Installation Steps
@@ -107,7 +107,7 @@ python app.py
     pip install matplotlib
     ```
 *   **Supabase Connection Error**: Double-check your `SUPABASE_URL` and `SUPABASE_KEY` in the `.env` file. Ensure there are no extra spaces or quotes around the values.
-*   **Camera Issues**: If the simulated camera feed does not appear, check the logs in the terminal for any OpenCV errors. The system defaults to simulation mode if no physical camera is found, but it requires the `yolov8n.pt` file (which it will attempt to download automatically).
+*   **Camera Issues**: If the simulated camera feed does not appear, check the logs in the terminal for any OpenCV errors. The system defaults to simulation mode if no physical camera is found, but it requires the `best.pt` file.
 
 ## 6. Developer Notes
 
