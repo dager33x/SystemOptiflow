@@ -1,280 +1,112 @@
-# views/login_page.py
 import tkinter as tk
+import customtkinter as ctk
 from tkinter import messagebox
-from .styles import Colors, WidgetStyles
+from .styles import Colors
 
-
-class LoginPage(tk.Frame):
-    """Login page with username and password"""
+class LoginPage(ctk.CTkFrame):
+    """Modern Login page using CustomTkinter"""
     
     def __init__(self, parent, on_login_callback=None, on_signup_callback=None, 
                  on_forgot_password_callback=None):
-        super().__init__(parent, bg="#f8fafc")
+        super().__init__(parent, fg_color=Colors.BACKGROUND)
         self.on_login_callback = on_login_callback
         self.on_signup_callback = on_signup_callback
         self.on_forgot_password_callback = on_forgot_password_callback
         
-        # Animation variables
-        self.animation_step = 0
-        self.max_animation_steps = 20
-        
         self.create_widgets()
-        self.start_animations()
-    
-    def start_animations(self):
-        """Start fade-in animation for form elements"""
-        if self.animation_step < self.max_animation_steps:
-            self.animation_step += 1
-            self.after(50, self.start_animations)
     
     def create_widgets(self):
-        """Create login page widgets"""
-        # Main container
-        main_container = tk.Frame(self, bg=Colors.BACKGROUND)
-        main_container.pack(fill=tk.BOTH, expand=True)
+        """Create modern login page widgets"""
+        # Master container for 50/50 split
+        main_frame = ctk.CTkFrame(self, fg_color="transparent")
+        main_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER, relwidth=0.9, relheight=0.9)
         
-        # Left panel (Branding)
-        left_panel = tk.Frame(main_container, bg=Colors.CARD_BG, width=350)
-        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=False)
-        left_panel.pack_propagate(False)
+        # Exact half-half scaling
+        main_frame.grid_columnconfigure(0, weight=1, uniform="half")
+        main_frame.grid_columnconfigure(1, weight=1, uniform="half")
+        main_frame.grid_rowconfigure(0, weight=1)
+
+        # ── Left panel (Branding) ──
+        left_panel = ctk.CTkFrame(main_frame, fg_color="transparent")
+        left_panel.grid(row=0, column=0, sticky="nsew")
         
-        # Logo area
-        logo_frame = tk.Frame(left_panel, bg=Colors.CARD_BG)
-        logo_frame.pack(pady=60, expand=True, fill=tk.X)
+        # Vertically/Horizontally centered logo
+        logo_frame = ctk.CTkFrame(left_panel, fg_color="transparent")
+        logo_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         
-        # Shield icon
-        shield_container = tk.Frame(logo_frame, bg=Colors.CARD_BG)
-        shield_container.pack(pady=(0, 10), fill=tk.X)
+        ctk.CTkLabel(logo_frame, text="🛡️", font=("Segoe UI Emoji", 90), text_color=Colors.PRIMARY).pack(pady=(0, 15))
+        ctk.CTkLabel(logo_frame, text="OPTIFLOW", font=("Segoe UI", 42, "bold"), text_color="white").pack(pady=(0, 5))
+        ctk.CTkLabel(logo_frame, text="Advanced Traffic Management", font=("Segoe UI", 15), text_color=Colors.TEXT_MUTED).pack()
         
-        self.shield_label = tk.Label(
-            shield_container,
-            text="🛡️",
-            font=("Segoe UI Emoji", 80),
-            bg=Colors.CARD_BG,
-            fg=Colors.PRIMARY,
-            justify=tk.CENTER
-        )
-        self.shield_label.pack(anchor=tk.CENTER)
+        # ── Right panel (Form) ──
+        right_panel = ctk.CTkFrame(main_frame, fg_color="transparent")
+        right_panel.grid(row=0, column=1, sticky="nsew")
         
-        # OptiFlow text
-        self.title_label = tk.Label(
-            logo_frame,
-            text="OPTIFLOW",
-            font=("Segoe UI", 28, "bold"),
-            bg=Colors.CARD_BG,
-            fg=Colors.TEXT,
-            justify=tk.CENTER
-        )
-        self.title_label.pack(pady=(0, 2), anchor=tk.CENTER, fill=tk.X)
+        # Form Card
+        self.form_container = ctk.CTkFrame(right_panel, fg_color=Colors.CARD_BG, corner_radius=15, border_width=1, border_color="#2c3a52", width=400)
+        self.form_container.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         
-        # Subtitle
-        self.subtitle_label = tk.Label(
-            logo_frame,
-            text="Traffic Control System",
-            font=("Segoe UI", 11),
-            bg=Colors.CARD_BG,
-            fg=Colors.TEXT_LIGHT,
-            justify=tk.CENTER
-        )
-        self.subtitle_label.pack(anchor=tk.CENTER, fill=tk.X)
-        
-        # Status indicators
-        status_frame = tk.Frame(logo_frame, bg=Colors.CARD_BG)
-        status_frame.pack(pady=45)
-        
-        status_items = [
-            ("●", Colors.SUCCESS, "Optimal"),
-            ("●", Colors.WARNING, "Moderate"),
-            ("●", Colors.DANGER, "Critical")
-        ]
-        
-        for status, color, label in status_items:
-            status_item = tk.Frame(status_frame, bg=Colors.CARD_BG)
-            status_item.pack(side=tk.LEFT, padx=15, pady=5)
-            
-            tk.Label(
-                status_item,
-                text=status,
-                font=("Arial", 14),
-                bg=Colors.CARD_BG,
-                fg=color
-            ).pack(anchor=tk.CENTER)
-            
-            tk.Label(
-                status_item,
-                text=label,
-                font=("Segoe UI", 9),
-                bg=Colors.CARD_BG,
-                fg=Colors.TEXT_LIGHT
-            ).pack(anchor=tk.CENTER, pady=(2, 0))
-        
-        # Right panel (Form)
-        right_panel = tk.Frame(main_container, bg=Colors.BACKGROUND)
-        right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-        
-        # Form container (Card)
-        self.form_container = tk.Frame(right_panel, bg=Colors.CARD_BG, padx=40, pady=40)
-        self.form_container.pack(expand=True)
+        # Internal padding frame
+        inner_form = ctk.CTkFrame(self.form_container, fg_color="transparent")
+        inner_form.pack(padx=40, pady=40, fill=tk.BOTH, expand=True)
         
         # Welcome text
-        self.welcome_label = tk.Label(
-            self.form_container,
-            text="Welcome Back",
-            font=("Segoe UI", 24, "bold"),
-            bg=Colors.CARD_BG,
-            fg=Colors.TEXT
-        )
-        self.welcome_label.pack(pady=(0, 5), anchor=tk.W)
-        
-        self.subtitle_login = tk.Label(
-            self.form_container,
-            text="Sign in to your account",
-            font=("Segoe UI", 10),
-            bg=Colors.CARD_BG,
-            fg=Colors.TEXT_LIGHT
-        )
-        self.subtitle_login.pack(pady=(0, 30), anchor=tk.W)
+        ctk.CTkLabel(inner_form, text="Welcome Back", font=("Segoe UI", 24, "bold"), text_color="white").pack(anchor=tk.W, pady=(0, 5))
+        ctk.CTkLabel(inner_form, text="Sign in to your account", font=("Segoe UI", 13), text_color=Colors.TEXT_MUTED).pack(anchor=tk.W, pady=(0, 30))
         
         # Username field
-        user_wrap = self.create_styled_entry(self.form_container, "Username")
-        user_wrap.pack(fill=tk.X, pady=(0, 20))
-        self.username_entry = user_wrap.entry
-        self.username_placeholder = "Username"
+        self.username_entry = ctk.CTkEntry(inner_form, placeholder_text="Username", width=320,
+                                           height=45, corner_radius=8, border_width=1, 
+                                           border_color="#2c3a52", fg_color="#0f1522", font=("Segoe UI", 13))
+        self.username_entry.pack(fill=tk.X, pady=(0, 20))
         
-        # Password field
-        pass_wrap = self.create_styled_entry(self.form_container, "Password", is_password=True)
-        pass_wrap.pack(fill=tk.X, pady=(0, 25))
-        self.password_entry = pass_wrap.entry
-        self.password_placeholder = "Password"
+        # Password wrapper for eye icon
+        pass_wrap = ctk.CTkFrame(inner_form, fg_color="#0f1522", corner_radius=8, border_width=1, border_color="#2c3a52", height=45)
+        pass_wrap.pack(fill=tk.X, pady=(0, 30))
+        pass_wrap.pack_propagate(False)
+        
+        self.password_entry = ctk.CTkEntry(pass_wrap, placeholder_text="Password", show="*",
+                                           height=43, border_width=0, 
+                                           fg_color="transparent", font=("Segoe UI", 13))
+        self.password_entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(2, 0))
+        
+        self.show_pwd = False
+        self.eye_btn = ctk.CTkButton(pass_wrap, text="👁️", width=30, height=30, fg_color="transparent", 
+                                     hover_color="#161f33", text_color=Colors.TEXT_MUTED, font=("Segoe UI Emoji", 14), 
+                                     command=self.toggle_password)
+        self.eye_btn.pack(side=tk.RIGHT, padx=5)
 
         # Login button
-        self.login_button = WidgetStyles.create_modern_button(
-            self.form_container,
-            text="Sign In",
-            command=self.handle_login,
-            style='primary'
-        )
-        self.login_button.pack(fill=tk.X, pady=(0, 20), ipady=2)
+        self.login_button = ctk.CTkButton(inner_form, text="Sign In", command=self.handle_login,
+                                          height=45, corner_radius=8, font=("Segoe UI", 14, "bold"),
+                                          fg_color=Colors.PRIMARY, hover_color="#2563EB")
+        self.login_button.pack(fill=tk.X, pady=(0, 25))
         
         # Footer
-        footer_frame = tk.Frame(self.form_container, bg=Colors.CARD_BG)
+        footer_frame = ctk.CTkFrame(inner_form, fg_color="transparent")
         footer_frame.pack(fill=tk.X)
         
-        forgot_btn = tk.Button(
-            footer_frame,
-            text="Forgot Password?",
-            font=("Segoe UI", 9),
-            bg=Colors.CARD_BG,
-            fg=Colors.TEXT_LIGHT,
-            activebackground=Colors.CARD_BG,
-            activeforeground=Colors.PRIMARY,
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
-            command=self.handle_forgot_password
-        )
+        forgot_btn = ctk.CTkButton(footer_frame, text="Forgot Password?", font=("Segoe UI", 12), text_color=Colors.TEXT_MUTED,
+                                   fg_color="transparent", hover_color=Colors.BACKGROUND, width=120, anchor="w",
+                                   command=self.handle_forgot_password)
         forgot_btn.pack(side=tk.LEFT)
         
-        signup_btn = tk.Button(
-            footer_frame,
-            text="Create Account",
-            font=("Segoe UI", 9, "bold"),
-            bg=Colors.CARD_BG,
-            fg=Colors.PRIMARY,
-            activebackground=Colors.CARD_BG,
-            activeforeground=Colors.PRIMARY_DARK,
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
-            command=self.handle_signup
-        )
+        signup_btn = ctk.CTkButton(footer_frame, text="Create Account", font=("Segoe UI", 12, "bold"), text_color=Colors.PRIMARY,
+                                   fg_color="transparent", hover_color=Colors.BACKGROUND, width=120, anchor="e",
+                                   command=self.handle_signup)
         signup_btn.pack(side=tk.RIGHT)
 
-    def create_styled_entry(self, parent, placeholder, is_password=False):
-        """Create a styled entry with placeholder text and optional eye icon"""
-        container = tk.Frame(parent, bg=Colors.BACKGROUND, padx=1, pady=1)
-        
-        inner_frame = tk.Frame(container, bg=Colors.BACKGROUND)
-        inner_frame.pack(fill=tk.BOTH, expand=True)
-        
-        entry = tk.Entry(
-            inner_frame,
-            font=("Segoe UI", 11),
-            bg=Colors.BACKGROUND,
-            fg=Colors.TEXT_LIGHT,
-            relief=tk.FLAT,
-            bd=0,
-            insertbackground=Colors.PRIMARY
-        )
-        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=8, padx=(10, 5))
-        
-        entry.insert(0, placeholder)
-        
-        entry.placeholder_text = placeholder
-        entry.password_visible = False
-        
-        def on_focus_in(event):
-            if entry.get() == placeholder:
-                entry.delete(0, tk.END)
-                entry.config(fg=Colors.TEXT)
-                if is_password and not entry.password_visible:
-                    entry.config(show="*")
-
-        def on_focus_out(event):
-            if not entry.get():
-                if is_password:
-                    entry.config(show="")
-                entry.insert(0, placeholder)
-                entry.config(fg=Colors.TEXT_LIGHT)
-        
-        entry.bind("<FocusIn>", on_focus_in)
-        entry.bind("<FocusOut>", on_focus_out)
-        
-        if is_password:
-            def toggle_visibility():
-                if entry.get() == placeholder: return
-                entry.password_visible = not entry.password_visible
-                if entry.password_visible:
-                    entry.config(show="")
-                else:
-                    entry.config(show="*")
-            
-            eye_btn = tk.Button(
-                inner_frame,
-                text="👁️",
-                font=("Segoe UI", 12),
-                bg=Colors.BACKGROUND,
-                fg=Colors.TEXT_LIGHT,
-                relief=tk.FLAT,
-                bd=0,
-                cursor="hand2",
-                activebackground=Colors.BACKGROUND,
-                activeforeground=Colors.PRIMARY,
-                command=toggle_visibility
-            )
-            eye_btn.pack(side=tk.RIGHT, padx=5)
-            
-            def on_enter(e): eye_btn.config(fg=Colors.PRIMARY)
-            def on_leave(e): eye_btn.config(fg=Colors.TEXT_LIGHT)
-            eye_btn.bind("<Enter>", on_enter)
-            eye_btn.bind("<Leave>", on_leave)
-
-        container.entry = entry
-        return container
+    def toggle_password(self):
+        self.show_pwd = not self.show_pwd
+        if self.show_pwd:
+            self.password_entry.configure(show="")
+        else:
+            self.password_entry.configure(show="*")
 
     def handle_login(self):
         """Handle login button click"""
         username = self.username_entry.get().strip()
         password = self.password_entry.get().strip()
-        
-        # Filter placeholders
-        if username == getattr(self, 'username_placeholder', ''):
-            username = ""
-        
-        # For password, if show is empty (text mode) AND it equals placeholder, treat as empty
-        # Or simpler: check against placeholder
-        if password == getattr(self, 'password_placeholder', ''):
-            password = ""
         
         if not username:
             messagebox.showwarning("Input Error", "Please enter username")

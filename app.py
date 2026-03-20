@@ -2,11 +2,11 @@
 import tkinter as tk
 from models.database import TrafficDB
 from views.main_window import MainWindow
-from views.auth_pages import LoginPage, SignupPage, ForgotPasswordPage
+from views.login_page import LoginPage
+from views.signup_page import SignupPage
+from views.forgot_password_page import ForgotPasswordPage
 from views.email_verification_page import EmailVerificationPage
 from views.password_reset_verification_page import PasswordResetVerificationPage
-from views.admin_dashboard import AdminDashboard
-from views.operator_dashboard import OperatorDashboard
 from views.styles import Colors, ModernStyles
 from controllers.main_controller import MainController
 from controllers.auth_controller import AuthController
@@ -72,6 +72,12 @@ class AppManager:
     
     def set_auth_window_size(self):
         """Set window size for authentication pages (851x545)"""
+        # Restore window state if it was maximized/zoomed
+        try:
+            self.root.state('normal')
+        except:
+            pass
+            
         window_width = 851
         window_height = 545
         self.root.geometry(f"{window_width}x{window_height}")
@@ -86,19 +92,27 @@ class AppManager:
         self.root.resizable(False, False)
     
     def set_dashboard_window_size(self):
-        """Set window size for dashboard (full screen)"""
-        window_width = 1600
-        window_height = 900
-        self.root.geometry(f"{window_width}x{window_height}")
-        
-        # Center window on screen
+        """Set window size for dashboard (responsive)"""
+        # Get screen size
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
+        
+        # Make it flexible but large enough
+        window_width = min(1600, screen_width - 100)
+        window_height = min(900, screen_height - 100)
+        
+        # Center window on screen
         x_position = (screen_width - window_width) // 2
         y_position = (screen_height - window_height) // 2
         self.root.geometry(f"{window_width}x{window_height}+{x_position}+{y_position}")
         
         self.root.resizable(True, True)
+        
+        # Maximize the window for better experience on all screens
+        try:
+            self.root.state('zoomed')
+        except:
+            pass
     
     def clear_window(self):
         """Clear all widgets from window"""
@@ -216,11 +230,6 @@ class AppManager:
             self.show_login_page()
         # Error message is shown by auth controller
 
-    
-    def show_operator_dashboard(self):
-        """Show operator dashboard with traffic monitoring"""
-        self.show_main_dashboard(self.auth.get_current_user())
-    
     def show_main_dashboard(self, current_user):
         """Show main dashboard with traffic monitoring (for operators)"""
         self.set_dashboard_window_size()
@@ -262,38 +271,9 @@ class AppManager:
             main_controller.handle_navigation('dashboard')
         except Exception as e:
             print(f"Error loading dashboard: {e}")
+
     
-    def show_admin_dashboard(self):
-        """Show admin dashboard with user management"""
-        self.set_dashboard_window_size()
-        self.clear_window()
-        
-        admin_dash = AdminDashboard(
-            self.root,
-            current_user=self.auth.get_current_user(),
-            on_logout_callback=self.handle_logout,
-            on_add_user_callback=self.handle_add_user,
-            on_edit_user_callback=self.handle_edit_user,
-            on_delete_user_callback=self.handle_delete_user,
-            on_load_users_callback=self.handle_load_users
-        )
-        admin_dash.pack(fill=tk.BOTH, expand=True)
-    
-    def handle_add_user(self, username, email, password, role):
-        """Handle add user from admin dashboard"""
-        return self.auth.add_user(username, email, password, role)
-    
-    def handle_edit_user(self, user_id, email, role):
-        """Handle edit user from admin dashboard"""
-        return self.auth.edit_user(user_id, email, role)
-    
-    def handle_delete_user(self, user_id):
-        """Handle delete user from admin dashboard"""
-        return self.auth.delete_user(user_id)
-    
-    def handle_load_users(self):
-        """Handle load users for admin dashboard"""
-        return self.auth.get_all_users()
+
     
     def handle_logout(self):
         """Handle logout"""

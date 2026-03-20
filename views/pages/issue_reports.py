@@ -1,12 +1,13 @@
 # views/pages/issue_reports.py
 import tkinter as tk
 from tkinter import ttk
+import customtkinter as ctk
 from views.components.message_box import MessageBox
 from ..styles import Colors, Fonts
 from datetime import datetime
 
 class IssueReportsPage:
-    """Page for managing and viewing issue reports"""
+    """Page for managing and viewing issue reports with CustomTkinter styling"""
     
     def __init__(self, parent, db=None, current_user=None):
         self.parent = parent
@@ -18,50 +19,66 @@ class IssueReportsPage:
     def create_widgets(self):
         """Create page layout"""
         # Header
-        header_frame = tk.Frame(self.frame, bg=Colors.BACKGROUND)
-        header_frame.pack(fill=tk.X, padx=20, pady=20)
+        header_frame = ctk.CTkFrame(self.frame, fg_color="transparent")
+        header_frame.pack(fill=tk.X, padx=40, pady=(30, 15))
         
-        title = tk.Label(header_frame, text="Issue Reports", 
-                        font=Fonts.TITLE, bg=Colors.BACKGROUND, 
-                        fg=Colors.TEXT)
-        title.pack(side=tk.LEFT)
+        # Title
+        title_container = ctk.CTkFrame(header_frame, fg_color="transparent")
+        title_container.pack(side=tk.LEFT)
+        
+        ctk.CTkLabel(title_container, text="Issue Reports",
+                     font=('Segoe UI', 24, 'bold'),
+                     text_color=Colors.TEXT).pack(anchor=tk.W)
+                
+        ctk.CTkLabel(title_container, text="Submit, track, and resolve system issues directly.",
+                     font=('Segoe UI', 14),
+                     text_color=Colors.TEXT_MUTED).pack(anchor=tk.W, pady=(5, 0))
         
         # New Report Button
-        new_btn = tk.Button(header_frame, text="+ NEW REPORT",
-                           font=Fonts.BODY_BOLD, bg=Colors.PRIMARY, 
-                           fg="white", relief=tk.FLAT,
-                           activebackground=Colors.PRIMARY_DARK,
-                           activeforeground="white",
-                           command=self.show_create_report_dialog)
-        new_btn.pack(side=tk.RIGHT, ipadx=10, ipady=5)
+        new_btn = ctk.CTkButton(header_frame, text="+ NEW REPORT",
+                                font=('Segoe UI', 13, 'bold'),
+                                fg_color=Colors.PRIMARY, 
+                                hover_color=Colors.PRIMARY_DARK,
+                                corner_radius=8,
+                                width=140, height=36,
+                                command=self.show_create_report_dialog)
+        new_btn.pack(side=tk.RIGHT)
         
-        # Reports List (Treeview)
-        list_frame = tk.Frame(self.frame, bg=Colors.BACKGROUND)
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 20))
+        # Reports List Card (Treeview)
+        # Main content - Premium card styling
+        card_frame = ctk.CTkFrame(self.frame, fg_color='#161F33', corner_radius=15, border_width=1, border_color='#2c3a52')
+        card_frame.pack(fill=tk.BOTH, expand=True, padx=40, pady=(10, 30))
         
-        # Style for Treeview
+        # Inner padding frame
+        list_frame = ctk.CTkFrame(card_frame, fg_color="transparent")
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        # Style for Treeview matching dashboard theme
         style = ttk.Style()
+        style.theme_use('default')
         style.configure("Reports.Treeview", 
-                       background=Colors.CARD_BG,
-                       foreground=Colors.TEXT,
-                       fieldbackground=Colors.CARD_BG,
-                       rowheight=35,
-                       borderwidth=0,
-                       font=(Fonts.FAMILY, 10))
+                        background="#0B111D",
+                        foreground=Colors.TEXT,
+                        fieldbackground="#0B111D",
+                        rowheight=45,
+                        borderwidth=0,
+                        font=('Segoe UI', 11))
         
         style.configure("Reports.Treeview.Heading",
-                       font=(Fonts.FAMILY, 10, "bold"),
-                       background="#e2e8f0",      # Light slate (if respected)
-                       foreground=Colors.BACKGROUND, # Dark text for contrast
-                       relief="flat")
+                        font=('Segoe UI', 12, 'bold'),
+                        background="#1A2332",
+                        foreground=Colors.TEXT_LIGHT,
+                        relief="flat", borderwidth=0)
                        
         style.map("Reports.Treeview", 
-                 background=[('selected', Colors.PRIMARY)],
-                 foreground=[('selected', 'white')])
+                  background=[('selected', Colors.PRIMARY)],
+                  foreground=[('selected', 'white')])
+        
+        style.map('Reports.Treeview.Heading', background=[('active', '#2c3a52')])
         
         columns = ("id", "date", "title", "priority", "status", "author")
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", 
-                                style="Reports.Treeview", selectmode="browse")
+                                 style="Reports.Treeview", selectmode="browse")
         
         # Column Headings
         self.tree.heading("id", text="ID")
@@ -74,17 +91,17 @@ class IssueReportsPage:
         # Column Widths
         self.tree.column("id", width=0, stretch=tk.NO) # Hidden ID
         self.tree.column("date", width=150, anchor="center")
-        self.tree.column("title", width=400)
+        self.tree.column("title", width=400, anchor="w")
         self.tree.column("priority", width=100, anchor="center")
         self.tree.column("status", width=100, anchor="center")
         self.tree.column("author", width=150, anchor="center")
         
-        # Scrollbar
-        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Modern Scrollbar
+        scrollbar = ctk.CTkScrollbar(list_frame, orientation="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
         
         # Bind double click
         self.tree.bind("<Double-1>", self.on_item_double_click)
@@ -110,55 +127,68 @@ class IssueReportsPage:
                 self.tree.insert("", tk.END, values=(
                     report.get('report_id'),
                     date_str,
-                    report.get('title'),
-                    report.get('priority', 'Medium'),
-                    report.get('status', 'Open'),
+                    f" {report.get('title')}", # Padding
+                    report.get('priority', 'Medium').upper(),
+                    report.get('status', 'Open').upper(),
                     report.get('author_name', 'Unknown')
                 ))
     
     def show_create_report_dialog(self):
-        """Show dialog to create new report"""
-        dialog = tk.Toplevel(self.parent)
+        """Show modern CTk dialog to create new report"""
+        dialog = ctk.CTkToplevel(self.parent)
         dialog.title("Create New Report")
         dialog.geometry("600x650")
-        dialog.configure(bg=Colors.BACKGROUND)
+        dialog.configure(fg_color=Colors.BACKGROUND)
+        
+        # Optional: Make sure it layers properly if Main Dashboard is zoomed
+        dialog.attributes('-topmost', True)
         
         # Center dialog
         dialog.transient(self.parent)
         dialog.grab_set()
         
-        # Form Container
-        container = tk.Frame(dialog, bg=Colors.CARD_BG, padx=30, pady=30)
-        container.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        # Form Container inside dialog
+        container = ctk.CTkFrame(dialog, fg_color='#161F33', corner_radius=15, border_width=1, border_color='#2c3a52')
+        container.pack(fill=tk.BOTH, expand=True, padx=30, pady=30)
         
+        inner = ctk.CTkFrame(container, fg_color="transparent")
+        inner.pack(fill=tk.BOTH, expand=True, padx=30, pady=30)
+
         # Header
-        tk.Label(container, text="Create Issue Report", font=Fonts.HEADING, 
-                bg=Colors.CARD_BG, fg=Colors.TEXT).pack(pady=(0, 20))
+        ctk.CTkLabel(inner, text="Create Issue Report", font=('Segoe UI', 22, 'bold'), 
+                     text_color=Colors.TEXT).pack(pady=(0, 25), anchor="w")
         
         # Title
-        tk.Label(container, text="Title / Subject", font=(Fonts.FAMILY, 10, "bold"), 
-                bg=Colors.CARD_BG, fg=Colors.TEXT_LIGHT).pack(anchor=tk.W, pady=(0, 5))
+        ctk.CTkLabel(inner, text="Title / Subject", font=('Segoe UI', 12, 'bold'), 
+                     text_color=Colors.TEXT_MUTED).pack(anchor=tk.W, pady=(0, 5))
                 
-        title_entry = tk.Entry(container, font=(Fonts.FAMILY, 11), bg=Colors.BACKGROUND, 
-                              fg=Colors.TEXT, relief=tk.FLAT, insertbackground=Colors.PRIMARY)
-        title_entry.pack(fill=tk.X, ipady=8, pady=(0, 15))
+        title_entry = ctk.CTkEntry(inner, font=('Segoe UI', 14), 
+                                   fg_color="#0B111D", border_color="#2c3a52", border_width=1,
+                                   text_color=Colors.TEXT, placeholder_text="Describe the core issue simply...")
+        title_entry.pack(fill=tk.X, ipady=6, pady=(0, 20))
         
         # Priority
-        tk.Label(container, text="Priority", font=(Fonts.FAMILY, 10, "bold"), 
-                bg=Colors.CARD_BG, fg=Colors.TEXT_LIGHT).pack(anchor=tk.W, pady=(0, 5))
+        ctk.CTkLabel(inner, text="Priority", font=('Segoe UI', 12, 'bold'), 
+                     text_color=Colors.TEXT_MUTED).pack(anchor=tk.W, pady=(0, 5))
                 
-        priority_cb = ttk.Combobox(container, values=["Low", "Medium", "High"], state="readonly")
-        priority_cb.current(1)
-        priority_cb.pack(fill=tk.X, ipady=5, pady=(0, 15))
+        priority_cb = ctk.CTkOptionMenu(inner, values=["Low", "Medium", "High"],
+                                        fg_color="#0B111D",
+                                        button_color="#1E293B",
+                                        button_hover_color="#334155",
+                                        dropdown_fg_color="#0B111D",
+                                        dropdown_hover_color="#1E293B",
+                                        font=('Segoe UI', 13))
+        priority_cb.set("Medium")
+        priority_cb.pack(fill=tk.X, ipady=6, pady=(0, 20))
         
         # Description
-        tk.Label(container, text="Description", font=(Fonts.FAMILY, 10, "bold"), 
-                bg=Colors.CARD_BG, fg=Colors.TEXT_LIGHT).pack(anchor=tk.W, pady=(0, 5))
+        ctk.CTkLabel(inner, text="Description", font=('Segoe UI', 12, 'bold'), 
+                     text_color=Colors.TEXT_MUTED).pack(anchor=tk.W, pady=(0, 5))
                 
-        desc_text = tk.Text(container, height=10, font=(Fonts.FAMILY, 11), 
-                           bg=Colors.BACKGROUND, fg=Colors.TEXT, relief=tk.FLAT,
-                           insertbackground=Colors.PRIMARY)
-        desc_text.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
+        desc_text = ctk.CTkTextbox(inner, font=('Segoe UI', 14), 
+                                   fg_color="#0B111D", border_color="#2c3a52", border_width=1, 
+                                   text_color=Colors.TEXT, corner_radius=6)
+        desc_text.pack(fill=tk.BOTH, expand=True, pady=(0, 25))
         
         def submit():
             title = title_entry.get().strip()
@@ -180,6 +210,8 @@ class IssueReportsPage:
                 
                 if success:
                     MessageBox.showsuccess("Success", "Report created successfully", parent=dialog)
+                    # We can drop topmost before destroying to prevent z-layer issues
+                    dialog.attributes('-topmost', False)
                     dialog.destroy()
                     self.load_reports()
                 else:
@@ -187,17 +219,25 @@ class IssueReportsPage:
             else:
                 MessageBox.showerror("Error", "Database connection not available", parent=dialog)
         
+        def safely_close():
+             # Drop topmost locking rule
+             dialog.attributes('-topmost', False)
+             dialog.destroy()
+        
         # Buttons
-        btn_frame = tk.Frame(container, bg=Colors.CARD_BG)
+        btn_frame = ctk.CTkFrame(inner, fg_color="transparent")
         btn_frame.pack(fill=tk.X)
         
-        tk.Button(btn_frame, text="Submit Report", command=submit,
-                 bg=Colors.PRIMARY, fg="white", relief=tk.FLAT, padx=20, pady=10,
-                 activebackground=Colors.PRIMARY_DARK, activeforeground="white").pack(side=tk.RIGHT)
+        ctk.CTkButton(btn_frame, text="Submit Report", command=submit,
+                      font=('Segoe UI', 13, 'bold'), fg_color=Colors.PRIMARY, 
+                      hover_color=Colors.PRIMARY_DARK,
+                      corner_radius=8, width=140, height=40).pack(side=tk.RIGHT)
                  
-        tk.Button(btn_frame, text="Cancel", command=dialog.destroy,
-                 bg=Colors.BACKGROUND, fg=Colors.TEXT, relief=tk.FLAT, padx=20, pady=10,
-                 activebackground=Colors.HOVER, activeforeground=Colors.TEXT).pack(side=tk.RIGHT, padx=10)
+        ctk.CTkButton(btn_frame, text="Cancel", command=safely_close,
+                      font=('Segoe UI', 13, 'bold'), fg_color='transparent',
+                      hover_color='#334155', text_color=Colors.TEXT,
+                      border_width=1, border_color='#334155',
+                      corner_radius=8, width=100, height=40).pack(side=tk.RIGHT, padx=15)
 
     def on_item_double_click(self, event):
         """View report details"""
@@ -211,70 +251,71 @@ class IssueReportsPage:
                 self.show_view_report_dialog(report)
     
     def show_view_report_dialog(self, report):
-        """Show dialog to view report details"""
-        dialog = tk.Toplevel(self.parent)
+        """Show modern CTk dialog to view report details"""
+        dialog = ctk.CTkToplevel(self.parent)
         dialog.title(f"Report: {report.get('title')}")
         dialog.geometry("600x600")
-        dialog.configure(bg=Colors.BACKGROUND)
+        dialog.configure(fg_color=Colors.BACKGROUND)
+        
+        dialog.attributes('-topmost', True)
         
         # Content Container
-        container = tk.Frame(dialog, bg=Colors.BACKGROUND)
-        container.pack(fill=tk.BOTH, expand=True)
-
-        canvas = tk.Canvas(container, bg=Colors.BACKGROUND, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
-        scrollable_frame = tk.Frame(canvas, bg=Colors.BACKGROUND)
-        
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw", width=580)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        canvas.pack(side="left", fill="both", expand=True, padx=10, pady=10)
-        scrollbar.pack(side="right", fill="y")
+        # To simulate scrollable frame natively in CTk:
+        scrollable_frame = ctk.CTkScrollableFrame(dialog, fg_color="transparent", bg_color="transparent")
+        scrollable_frame.pack(side="left", fill="both", expand=True, padx=10, pady=10)
         
         # Report Card
-        card = tk.Frame(scrollable_frame, bg=Colors.CARD_BG, padx=30, pady=30)
-        card.pack(fill=tk.BOTH, expand=True)
+        card = ctk.CTkFrame(scrollable_frame, fg_color='#161F33', corner_radius=15, border_width=1, border_color='#2c3a52')
+        card.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+        
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(fill=tk.BOTH, expand=True, padx=30, pady=30)
         
         # Title
-        tk.Label(card, text=report.get('title'), font=Fonts.HEADING, 
-                bg=Colors.CARD_BG, fg=Colors.TEXT, wraplength=500, justify="left").pack(anchor=tk.W, pady=(0, 20))
+        ctk.CTkLabel(inner, text=report.get('title'), font=('Segoe UI', 24, 'bold'), 
+                     text_color=Colors.TEXT, wraplength=480, justify="left").pack(anchor=tk.W, pady=(0, 25))
         
-        # Metadata Frame
-        meta_frame = tk.Frame(card, bg=Colors.SECONDARY, padx=15, pady=15)
-        meta_frame.pack(fill=tk.X, pady=(0, 20))
+        # Metadata Frame (sleeker inline badges)
+        meta_frame = ctk.CTkFrame(inner, fg_color='#0B111D', corner_radius=10)
+        meta_frame.pack(fill=tk.X, pady=(0, 30))
         
-        grid_opts = {'sticky': 'w', 'padx': 10, 'pady': 5}
-        
-        tk.Label(meta_frame, text="STATUS", font=Fonts.SMALL, bg=Colors.SECONDARY, fg=Colors.TEXT_LIGHT).grid(row=0, column=0, **grid_opts)
-        tk.Label(meta_frame, text=report.get('status').upper(), font=Fonts.BODY_BOLD, 
-                bg=Colors.SECONDARY, fg=Colors.get_status_color(report.get('status'))).grid(row=1, column=0, **grid_opts)
-                
-        tk.Label(meta_frame, text="PRIORITY", font=Fonts.SMALL, bg=Colors.SECONDARY, fg=Colors.TEXT_LIGHT).grid(row=0, column=1, **grid_opts)
-        tk.Label(meta_frame, text=report.get('priority'), font=Fonts.BODY_BOLD, bg=Colors.SECONDARY, fg=Colors.WARNING).grid(row=1, column=1, **grid_opts)
+        # We will pack the metadata horizontally
+        inner_meta = ctk.CTkFrame(meta_frame, fg_color="transparent")
+        inner_meta.pack(padx=20, pady=20, fill=tk.X)
 
-        tk.Label(meta_frame, text="AUTHOR", font=Fonts.SMALL, bg=Colors.SECONDARY, fg=Colors.TEXT_LIGHT).grid(row=0, column=2, **grid_opts)
-        tk.Label(meta_frame, text=report.get('author_name'), font=Fonts.BODY_BOLD, bg=Colors.SECONDARY, fg=Colors.TEXT).grid(row=1, column=2, **grid_opts)
+        # Helper method for metadata groups
+        def create_meta_block(parent, label, value, val_color=Colors.TEXT):
+            frame = ctk.CTkFrame(parent, fg_color="transparent")
+            frame.pack(side=tk.LEFT, expand=True, anchor="w")
+            ctk.CTkLabel(frame, text=label, font=('Segoe UI', 10, 'bold'), text_color=Colors.TEXT_MUTED).pack(anchor="w")
+            ctk.CTkLabel(frame, text=value, font=('Segoe UI', 14, 'bold'), text_color=val_color).pack(anchor="w", pady=(2, 0))
 
-        tk.Label(meta_frame, text="DATE", font=Fonts.SMALL, bg=Colors.SECONDARY, fg=Colors.TEXT_LIGHT).grid(row=0, column=3, **grid_opts)
-        tk.Label(meta_frame, text=report.get('created_at')[:10], font=Fonts.BODY_BOLD, bg=Colors.SECONDARY, fg=Colors.TEXT).grid(row=1, column=3, **grid_opts)
+        priority_color = Colors.WARNING if report.get('priority') == 'Medium' else (Colors.DANGER if report.get('priority') == 'High' else Colors.SUCCESS)
+        status_color = Colors.PRIMARY if report.get('status') == 'Open' else Colors.SUCCESS
+
+        create_meta_block(inner_meta, "STATUS", report.get('status').upper(), status_color)
+        create_meta_block(inner_meta, "PRIORITY", report.get('priority').upper(), priority_color)
+        create_meta_block(inner_meta, "AUTHOR", report.get('author_name'))
+        create_meta_block(inner_meta, "DATE", report.get('created_at')[:10])
 
         # Description
-        tk.Label(card, text="DESCRIPTION", font=Fonts.SMALL, 
-                bg=Colors.CARD_BG, fg=Colors.TEXT_LIGHT).pack(anchor=tk.W, pady=(0, 8))
+        ctk.CTkLabel(inner, text="DESCRIPTION", font=('Segoe UI', 11, 'bold'), 
+                     text_color=Colors.TEXT_MUTED).pack(anchor=tk.W, pady=(0, 8))
         
-        desc_lbl = tk.Label(card, text=report.get('description'), font=Fonts.BODY, 
-                           bg=Colors.CARD_BG, fg=Colors.TEXT, wraplength=500, justify="left")
+        desc_lbl = ctk.CTkLabel(inner, text=report.get('description'), font=('Segoe UI', 15), 
+                                text_color=Colors.TEXT, wraplength=480, justify="left")
         desc_lbl.pack(anchor=tk.W)
         
+        def safely_close():
+             # Drop topmost locking rule
+             dialog.attributes('-topmost', False)
+             dialog.destroy()
+
         # Close Button
-        tk.Button(card, text="Close", command=dialog.destroy,
-                 bg=Colors.BACKGROUND, fg=Colors.TEXT, relief=tk.FLAT, padx=20, pady=8,
-                 activebackground=Colors.HOVER).pack(pady=(40, 0))
+        ctk.CTkButton(inner, text="Close Window", command=safely_close,
+                      font=('Segoe UI', 13, 'bold'),
+                      fg_color='#1E293B', hover_color='#334155', text_color=Colors.TEXT,
+                      corner_radius=8, width=140, height=40).pack(pady=(40, 0))
     
     def get_widget(self):
         return self.frame

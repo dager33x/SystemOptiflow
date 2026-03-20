@@ -1,11 +1,11 @@
-# views/password_dialog.py
 import tkinter as tk
+import customtkinter as ctk
 from tkinter import messagebox
 from .styles import Colors
+from views.components.message_box import MessageBox
 
-
-class PasswordResetDialog(tk.Toplevel):
-    """Custom password reset dialog with modern UI"""
+class PasswordResetDialog(ctk.CTkToplevel):
+    """Custom password reset dialog with modern CustomTkinter UI"""
     
     def __init__(self, parent, title="Set New Password"):
         super().__init__(parent)
@@ -13,25 +13,18 @@ class PasswordResetDialog(tk.Toplevel):
         
         # Configure window
         self.title(title)
-        self.configure(bg="#1e293b")  # Dark background
+        self.configure(fg_color=Colors.CARD_BG)
+        self.geometry("450x550")
         self.resizable(False, False)
         
-        # Set window size - increased to show buttons
-        window_width = 450
-        window_height = 480  # Increased to show buttons
-        self.geometry(f"{window_width}x{window_height}")
-        
-        # Center window on screen
-        screen_width = self.winfo_screenwidth()
-        screen_height = self.winfo_screenheight()
-        x_position = (screen_width - window_width) // 2
-        y_position = (screen_height - window_height) // 2
-        self.geometry(f"{window_width}x{window_height}+{x_position}+{y_position}")
-        
-        # Make modal
-        self.transient(parent)
-        self.grab_set()
-        
+        # Center window relative to parent
+        self.update_idletasks()
+        if parent:
+            x = parent.winfo_rootx() + (parent.winfo_width() // 2) - 225
+            y = parent.winfo_rooty() + (parent.winfo_height() // 2) - 275
+            self.geometry(f"+{x}+{y}")
+            self.transient(parent)
+            
         self.create_widgets()
         
         # Focus on password entry
@@ -41,165 +34,99 @@ class PasswordResetDialog(tk.Toplevel):
         self.bind('<Return>', lambda e: self.on_ok())
         self.bind('<Escape>', lambda e: self.on_cancel())
         
+        # Make modal
+        self.grab_set()
+        
     def create_widgets(self):
-        """Create dialog widgets"""
-        # Main container with dark background
-        main_container = tk.Frame(self, bg="#1e293b", padx=40, pady=20)
-        main_container.pack(fill=tk.BOTH, expand=True)
+        """Create dialog widgets using CustomTkinter"""
+        
+        # Main container with padding
+        main_container = ctk.CTkFrame(self, fg_color="transparent")
+        main_container.pack(fill=tk.BOTH, expand=True, padx=40, pady=30)
         
         # Icon
-        icon_label = tk.Label(
-            main_container,
-            text="🔑",
-            font=("Segoe UI Emoji", 45),
-            bg="#1e293b",
-            fg="#3b82f6"  # Blue
-        )
-        icon_label.pack(pady=(0, 8))
+        ctk.CTkLabel(main_container, text="🔑", font=("Segoe UI Emoji", 55), text_color=Colors.PRIMARY).pack(pady=(0, 15))
         
         # Title
-        title_label = tk.Label(
-            main_container,
-            text="Set New Password",
-            font=("Segoe UI", 16, "bold"),
-            bg="#1e293b",
-            fg="white"
-        )
-        title_label.pack(pady=(0, 3))
+        ctk.CTkLabel(main_container, text="Set New Password", font=("Segoe UI", 24, "bold"), text_color="white").pack(pady=(0, 5))
         
         # Subtitle
-        subtitle_label = tk.Label(
-            main_container,
-            text="Enter your new password (minimum 6 characters)",
-            font=("Segoe UI", 9),
-            bg="#1e293b",
-            fg="#94a3b8"
-        )
-        subtitle_label.pack(pady=(0, 15))
+        ctk.CTkLabel(main_container, text="Enter your new password (minimum 6 characters)", font=("Segoe UI", 12), text_color=Colors.TEXT_MUTED).pack(pady=(0, 25))
         
         # New Password label
-        tk.Label(
-            main_container,
-            text="New Password",
-            font=("Segoe UI", 10, "bold"),
-            bg="#1e293b",
-            fg="white"
-        ).pack(anchor=tk.W, pady=(0, 5))
+        ctk.CTkLabel(main_container, text="New Password", font=("Segoe UI", 13, "bold"), text_color="white").pack(anchor=tk.W, pady=(0, 5))
         
-        # New Password field with eye icon
-        password_frame = tk.Frame(main_container, bg="#334155", highlightbackground="#475569", highlightthickness=1)
-        password_frame.pack(fill=tk.X, pady=(0, 12))
+        # New Password field wrapper
+        pass_wrap = ctk.CTkFrame(main_container, fg_color="#0f1522", corner_radius=8, border_width=1, border_color="#2c3a52", height=45)
+        pass_wrap.pack(fill=tk.X, pady=(0, 20))
+        pass_wrap.pack_propagate(False)
         
-        self.password_entry = tk.Entry(
-            password_frame,
-            font=("Segoe UI", 11),
-            bg="#334155",
-            fg="white",
-            relief=tk.FLAT,
-            bd=0,
-            show="*",
-            insertbackground="#3b82f6"
-        )
-        self.password_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=8, padx=10)
+        self.password_entry = ctk.CTkEntry(pass_wrap, show="*", height=43, border_width=0, 
+                                           fg_color="transparent", font=("Segoe UI", 13))
+        self.password_entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
         
-        # Eye icon
         self.show_password = False
-        self.eye_button = tk.Label(
-            password_frame,
-            text="👁️",
-            font=("Segoe UI", 12),
-            bg="#334155",
-            fg="#94a3b8",
-            cursor="hand2"
-        )
-        self.eye_button.pack(side=tk.RIGHT, padx=10)
-        self.eye_button.bind("<Button-1>", lambda e: self.toggle_password_visibility())
+        self.eye_button = ctk.CTkButton(pass_wrap, text="👁️", width=30, height=30, fg_color="transparent", 
+                                        hover_color="#161f33", text_color=Colors.TEXT_MUTED, font=("Segoe UI Emoji", 14), 
+                                        command=self.toggle_password_visibility)
+        self.eye_button.pack(side=tk.RIGHT, padx=5)
         
         # Confirm Password label
-        tk.Label(
-            main_container,
-            text="Confirm New Password",
-            font=("Segoe UI", 10, "bold"),
-            bg="#1e293b",
-            fg="white"
-        ).pack(anchor=tk.W, pady=(0, 5))
+        ctk.CTkLabel(main_container, text="Confirm New Password", font=("Segoe UI", 13, "bold"), text_color="white").pack(anchor=tk.W, pady=(0, 5))
         
-        # Confirm Password field with eye icon
-        confirm_frame = tk.Frame(main_container, bg="#334155", highlightbackground="#475569", highlightthickness=1)
-        confirm_frame.pack(fill=tk.X, pady=(0, 20))
+        # Confirm Password field wrapper
+        confirm_wrap = ctk.CTkFrame(main_container, fg_color="#0f1522", corner_radius=8, border_width=1, border_color="#2c3a52", height=45)
+        confirm_wrap.pack(fill=tk.X, pady=(0, 30))
+        confirm_wrap.pack_propagate(False)
         
-        self.confirm_entry = tk.Entry(
-            confirm_frame,
-            font=("Segoe UI", 11),
-            bg="#334155",
-            fg="white",
-            relief=tk.FLAT,
-            bd=0,
-            show="*",
-            insertbackground="#3b82f6"
-        )
-        self.confirm_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=8, padx=10)
+        self.confirm_entry = ctk.CTkEntry(confirm_wrap, show="*", height=43, border_width=0, 
+                                           fg_color="transparent", font=("Segoe UI", 13))
+        self.confirm_entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
         
-        # Eye icon for confirm password
         self.show_confirm = False
-        self.confirm_eye_button = tk.Label(
-            confirm_frame,
-            text="👁️",
-            font=("Segoe UI", 12),
-            bg="#334155",
-            fg="#94a3b8",
-            cursor="hand2"
-        )
-        self.confirm_eye_button.pack(side=tk.RIGHT, padx=10)
-        self.confirm_eye_button.bind("<Button-1>", lambda e: self.toggle_confirm_visibility())
-        
-        # Buttons frame
-        button_frame = tk.Frame(main_container, bg="#1e293b")
-        button_frame.pack(fill=tk.X, pady=(0, 0))
+        self.confirm_eye_button = ctk.CTkButton(confirm_wrap, text="👁️", width=30, height=30, fg_color="transparent", 
+                                        hover_color="#161f33", text_color=Colors.TEXT_MUTED, font=("Segoe UI Emoji", 14), 
+                                        command=self.toggle_confirm_visibility)
+        self.confirm_eye_button.pack(side=tk.RIGHT, padx=5)
         
         # Reset Password button (blue)
-        ok_button = tk.Button(
-            button_frame,
+        ok_button = ctk.CTkButton(
+            main_container,
             text="Reset Password",
-            font=("Segoe UI", 11, "bold"),
-            bg="#3b82f6",  # Blue
-            fg="white",
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
-            activebackground="#2563eb",
-            activeforeground="white",
+            font=("Segoe UI", 14, "bold"),
+            fg_color=Colors.PRIMARY,
+            hover_color="#2563EB",
+            height=45,
+            corner_radius=8,
             command=self.on_ok
         )
-        ok_button.pack(side=tk.LEFT, ipady=10, padx=(0, 10), expand=True, fill=tk.X)
+        ok_button.pack(fill=tk.X, pady=(0, 10))
         
         # Cancel button
-        cancel_button = tk.Button(
-            button_frame,
+        cancel_button = ctk.CTkButton(
+            main_container,
             text="Cancel",
-            font=("Segoe UI", 11),
-            bg="#475569",  # Gray
-            fg="white",
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
-            activebackground="#64748b",
-            activeforeground="white",
+            font=("Segoe UI", 14, "bold"),
+            fg_color="transparent",
+            text_color="#94a3b8",
+            hover_color="#1e293b",
+            height=45,
+            corner_radius=8,
             command=self.on_cancel
         )
-        cancel_button.pack(side=tk.RIGHT, ipady=10, expand=True, fill=tk.X)
+        cancel_button.pack(fill=tk.X)
     
     def toggle_password_visibility(self):
         """Toggle new password visibility"""
         self.show_password = not self.show_password
         show_char = "" if self.show_password else "*"
-        self.password_entry.config(show=show_char)
+        self.password_entry.configure(show=show_char)
     
     def toggle_confirm_visibility(self):
         """Toggle confirm password visibility"""
         self.show_confirm = not self.show_confirm
         show_char = "" if self.show_confirm else "*"
-        self.confirm_entry.config(show=show_char)
+        self.confirm_entry.configure(show=show_char)
     
     def on_ok(self):
         """Handle OK button"""
@@ -207,27 +134,29 @@ class PasswordResetDialog(tk.Toplevel):
         confirm = self.confirm_entry.get()
         
         if not password:
-            messagebox.showwarning("Input Error", "Please enter a password", parent=self)
+            MessageBox.showwarning("Input Error", "Please enter a password", parent=self)
             self.password_entry.focus_set()
             return
         
         if len(password) < 6:
-            messagebox.showwarning("Input Error", "Password must be at least 6 characters", parent=self)
+            MessageBox.showwarning("Input Error", "Password must be at least 6 characters", parent=self)
             self.password_entry.focus_set()
             return
         
         if password != confirm:
-            messagebox.showwarning("Input Error", "Passwords do not match", parent=self)
+            MessageBox.showwarning("Input Error", "Passwords do not match", parent=self)
             self.confirm_entry.delete(0, tk.END)
             self.confirm_entry.focus_set()
             return
         
         self.result = password
+        self.grab_release()
         self.destroy()
     
     def on_cancel(self):
         """Handle Cancel button"""
         self.result = None
+        self.grab_release()
         self.destroy()
     
     def show(self):

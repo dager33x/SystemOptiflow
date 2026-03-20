@@ -1,8 +1,9 @@
 import tkinter as tk
+import customtkinter as ctk
 from ..styles import Colors, Fonts
 
-class CustomMessageBox(tk.Toplevel):
-    """Custom styled message box that matches system theme"""
+class CustomMessageBox(ctk.CTkToplevel):
+    """Custom styled message box for CustomTkinter that fixes system freeze bugs"""
     
     def __init__(self, title, message, type_="info", buttons=None, parent=None):
         super().__init__(parent)
@@ -13,123 +14,76 @@ class CustomMessageBox(tk.Toplevel):
             "info": {"icon": "ℹ️", "color": Colors.INFO, "title": "Information"},
             "success": {"icon": "✅", "color": Colors.SUCCESS, "title": "Success"},
             "warning": {"icon": "⚠️", "color": Colors.WARNING, "title": "Warning"},
-            "error": {"icon": "❌", "color": Colors.DANGER, "title": "Error"},
+            "error": {"icon": "🚫", "color": Colors.DANGER, "title": "Error"},
             "question": {"icon": "❓", "color": Colors.PRIMARY, "title": "Question"}
         }
         
         config = self.type_config.get(type_, self.type_config["info"])
         self.result = None
         
-        # Window Setup
-        self.configure(bg=Colors.BACKGROUND)
-        self.geometry("400x200")
+        self.geometry("460x280")
         self.resizable(False, False)
+        self.configure(fg_color=Colors.CARD_BG)
+        # We keep the window OS chrome so the user can easily close it or drag it safely without weird lag freezing.
         
-        # Remove standard title bar for full custom look (optional, but requested aligned design)
-        self.overrideredirect(True)
+        # Top frame for icon and title
+        top_frame = ctk.CTkFrame(self, fg_color="transparent", height=50)
+        top_frame.pack(fill=tk.X, padx=20, pady=(20, 10))
         
-        # Center the window
-        self.update_idletasks()
-        if parent:
-            x = parent.winfo_rootx() + (parent.winfo_width() // 2) - 200
-            y = parent.winfo_rooty() + (parent.winfo_height() // 2) - 100
-        else:
-            screen_width = self.winfo_screenwidth()
-            screen_height = self.winfo_screenheight()
-            x = (screen_width - 400) // 2
-            y = (screen_height - 200) // 2
+        ctk.CTkLabel(top_frame, text=config["icon"], font=("Segoe UI Emoji", 28), text_color=config["color"]).pack(side=tk.LEFT, padx=(0, 15))
+        ctk.CTkLabel(top_frame, text=title or config["title"], font=("Segoe UI", 18, "bold"), text_color="white").pack(side=tk.LEFT)
         
-        self.geometry(f"+{x}+{y}")
+        # Buttons bottom (packed FIRST with tk.BOTTOM, so they don't get squished)
+        self.btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=(0, 20))
         
-        # Draw Border
-        main_frame = tk.Frame(self, bg=Colors.BACKGROUND, highlightbackground=config["color"], highlightthickness=2)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # Message content
+        msg_frame = ctk.CTkFrame(self, fg_color="transparent")
+        msg_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=30, pady=(0, 10))
         
-        # Title Bar
-        title_bar = tk.Frame(main_frame, bg=Colors.CARD_BG, height=40)
-        title_bar.pack(fill=tk.X, side=tk.TOP)
-        title_bar.pack_propagate(False)
-        
-        # Icon
-        tk.Label(title_bar, text=config["icon"], font=("Segoe UI", 12), bg=Colors.CARD_BG, fg="white").pack(side=tk.LEFT, padx=(15, 5))
-        
-        # Title Text
-        tk.Label(title_bar, text=title or config["title"], font=Fonts.BODY_BOLD, bg=Colors.CARD_BG, fg="white").pack(side=tk.LEFT)
-        
-        # Close Button (X) - mainly for if they want to cancel without strictly choosing an option
-        close_btn = tk.Label(title_bar, text="✕", font=("Arial", 12), bg=Colors.CARD_BG, fg=Colors.TEXT_LIGHT, cursor="hand2")
-        close_btn.pack(side=tk.RIGHT, padx=15)
-        close_btn.bind("<Button-1>", lambda e: self.on_close())
-        
-        # Dragging logic
-        title_bar.bind("<Button-1>", self.start_move)
-        title_bar.bind("<B1-Motion>", self.do_move)
-        
-        # Content Content
-        content_frame = tk.Frame(main_frame, bg=Colors.BACKGROUND, padx=30, pady=20)
-        content_frame.pack(fill=tk.BOTH, expand=True)
-        
-        tk.Label(content_frame, text=message, font=Fonts.BODY, bg=Colors.BACKGROUND, fg=Colors.TEXT, wraplength=340, justify=tk.LEFT).pack(expand=True)
-        
-        # Buttons
-        btn_frame = tk.Frame(main_frame, bg=Colors.BACKGROUND, height=60)
-        btn_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=15, padx=30)
+        ctk.CTkLabel(msg_frame, text=message, font=("Segoe UI", 14), text_color=Colors.TEXT_MUTED, wraplength=400, justify="left").pack(anchor="nw", fill=tk.BOTH, expand=True)
         
         if not buttons:
             buttons = [("OK", "ok", Colors.PRIMARY)]
             
         for text, value, color in buttons:
-            # Reverse order to put primary action on right usually, but pack side=RIGHT works too
-            btn = tk.Button(btn_frame, 
+            btn = ctk.CTkButton(self.btn_frame, 
                            text=text,
-                           font=Fonts.BODY_BOLD,
-                           bg=color,
-                           fg="white",
-                           relief=tk.FLAT,
-                           activebackground=Colors.HOVER,
-                           activeforeground="white",
-                           padx=20,
-                           pady=5,
+                           font=("Segoe UI", 13, "bold"),
+                           fg_color=color,
+                           hover_color="#2c3a52",
+                           width=100, height=35,
                            command=lambda v=value: self.on_btn_click(v))
             btn.pack(side=tk.RIGHT, padx=(10, 0))
 
-        if parent is None:
-            # Try to get default root
-            parent = tk._default_root
-            if parent is None:
-                # Should not happen if Tk() exists
-                pass
-
-        self.transient(parent)
-        self.grab_set()
+        self.update_idletasks()
         if parent:
-            parent.wait_window(self)
-        else:
-            self.wait_window(self)
-
-    def start_move(self, event):
-        self.x = event.x
-        self.y = event.y
-
-    def do_move(self, event):
-        deltax = event.x - self.x
-        deltay = event.y - self.y
-        x = self.winfo_x() + deltax
-        y = self.winfo_y() + deltay
-        self.geometry(f"+{x}+{y}")
+            # Center relative to parent
+            x = parent.winfo_rootx() + (parent.winfo_width() // 2) - (self.winfo_width() // 2)
+            y = parent.winfo_rooty() + (parent.winfo_height() // 2) - (self.winfo_height() // 2)
+            self.geometry(f"+{x}+{y}")
+            self.transient(parent)
+            
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        
+        # Grab and wait (Modal)
+        self.grab_set()
+        self.wait_window(self)
 
     def on_btn_click(self, value):
         self.result = value
+        self.grab_release()
         self.destroy()
         
     def on_close(self):
         self.result = None
+        self.grab_release()
         self.destroy()
+
 
 class MessageBox:
     @staticmethod
     def showinfo(title, message, parent=None):
-        # Ensure we have a valid parent if possible, otherwise let Toplevel resolve it
         if parent is None and tk._default_root:
             parent = tk._default_root
         dialog = CustomMessageBox(title, message, "info", parent=parent)
@@ -161,7 +115,7 @@ class MessageBox:
         if parent is None and tk._default_root:
             parent = tk._default_root
         buttons = [
-            ("No", False, Colors.SECONDARY),
+            ("No", False, "#4c566a"),
             ("Yes", True, Colors.PRIMARY)
         ]
         dialog = CustomMessageBox(title, message, "question", buttons, parent=parent)

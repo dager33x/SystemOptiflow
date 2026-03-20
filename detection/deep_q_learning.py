@@ -1,4 +1,38 @@
 # detection/deep_q_learning.py
+"""
+Deep Q-Network (DQN) Agent for Intelligent Traffic Light Control
+─────────────────────────────────────────────────────────────────
+Architecture: Dueling Double-DQN with experience replay & target network.
+
+STATE SPACE (26 features):
+  Per lane (4 x 5 = 20):
+    - weighted_vehicle_count  (float, normalized)
+    - raw_vehicle_count       (int, normalized)
+    - wait_time               (float, normalized)
+    - emergency_flag          (0/1)
+    - starvation_flag         (0/1, 1 if lane has been red > STARVATION_THRESHOLD)
+  Global (6):
+    - active_green_lane       (int 0-3, one-hot encoded → 4 dims)
+    - elapsed_green_time      (float, normalized)
+    - buffer_locked           (0/1 — 1 if still inside 10-sec minimum buffer)
+
+ACTION SPACE (5):
+  0 → Switch to Lane 0 (North)
+  1 → Switch to Lane 1 (South)
+  2 → Switch to Lane 2 (East)
+  3 → Switch to Lane 3 (West)
+  4 → Extend current green
+
+REWARD FUNCTION:
+  +  Reduction in total weighted wait time
+  +  Reduction in total queue length
+  +  Emergency vehicle cleared quickly (large bonus)
+  -  Ignoring emergency vehicle (large penalty)
+  -  Switching before minimum buffer (buffer violation penalty)
+  -  Lane starvation (fairness penalty)
+  -  Large queue accumulation (congestion penalty)
+"""
+
 import logging
 import numpy as np
 import torch
@@ -11,383 +45,586 @@ import json
 from datetime import datetime
 import os
 
+# ─────────────────────────────── Constants ────────────────────────────────
+NUM_LANES = 4
+STATE_SIZE = 22        # lane1-4 weighted_counts (4), wait_times (4), emergency (4), accident (4), violation (4), current green (1), elapsed (1)
+ACTION_SIZE = 5        # Switch L0, L1, L2, L3, Extend
 
-class DQNNetwork(nn.Module):
-    """Deep Q-Network for traffic light decision making"""
-    
+# Vehicle weights for congestion calculation
+VEHICLE_WEIGHTS = {
+    'motorcycle':       1.0,
+    'car':              2.0,
+    'bus':              3.0,
+    'truck':            3.0,
+    'emergency_vehicle':0.0,
+    'accident':         0.0,
+    'pedestrian_violation': 0.0
+}
+DEFAULT_WEIGHT = 2.0
+
+# Timing (seconds)
+MIN_BUFFER_TIME      = 10    # hard minimum green — no switch allowed before this
+NORMAL_MIN_GREEN     = 15    # absolute floor for any green phase
+MAX_GREEN_NORMAL     = 60    # absolute ceiling for any normal green phase
+MAX_GREEN_EMERGENCY  = 60    # max emergency green
+STARVATION_THRESHOLD = 60    # seconds a lane may wait before starvation override
+
+
+# ─────────────────────────────── Network ──────────────────────────────────
+class DuelingDQNNetwork(nn.Module):
+    """Dueling Deep Q-Network for traffic light decision making.
+
+    Advantages:
+      • Dueling streams separate value (V) and advantage (A) estimation,
+        which leads to better policy evaluation for actions that don't
+        affect the environment much (e.g., 'extend' when queue is empty).
+    """
+
     def __init__(self, input_size: int, hidden_size: int, output_size: int):
-        super(DQNNetwork, self).__init__()
-        
-        # Neural network architecture
-        self.fc1 = nn.Linear(input_size, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size * 2)
-        self.fc3 = nn.Linear(hidden_size * 2, hidden_size)
-        self.fc4 = nn.Linear(hidden_size, output_size)
-        
-        # Activation functions
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(0.2)
-        
-    def forward(self, x):
-        """Forward pass through the network"""
-        x = self.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = self.relu(self.fc2(x))
-        x = self.dropout(x)
-        x = self.relu(self.fc3(x))
-        x = self.fc4(x)
-        return x
+        super().__init__()
+
+        # Shared feature extractor
+        self.feature = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(),
+            nn.Dropout(0.15),
+            nn.Linear(hidden_size, hidden_size * 2),
+            nn.LayerNorm(hidden_size * 2),
+            nn.ReLU(),
+            nn.Dropout(0.15),
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(),
+        )
+
+        # Value stream  V(s)
+        self.value_stream = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_size // 2, 1)
+        )
+
+        # Advantage stream  A(s, a)
+        self.advantage_stream = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_size // 2, output_size)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        features = self.feature(x)
+        value     = self.value_stream(features)
+        advantage = self.advantage_stream(features)
+        # Q(s,a) = V(s) + A(s,a) − mean(A(s,·))
+        q_values = value + advantage - advantage.mean(dim=1, keepdim=True)
+        return q_values
 
 
+# ─────────────────────────────── Replay Buffer ────────────────────────────
 class ReplayBuffer:
-    """Experience replay buffer for DQN training"""
-    
-    def __init__(self, capacity: int = 10000):
+    """Prioritized-like experience replay with uniform sampling."""
+
+    def __init__(self, capacity: int = 20000):
         self.buffer = deque(maxlen=capacity)
-    
+
     def push(self, state, action, reward, next_state, done):
-        """Add experience to buffer"""
-        self.buffer.append((state, action, reward, next_state, done))
-    
+        self.buffer.append((
+            np.array(state,      dtype=np.float32),
+            int(action),
+            float(reward),
+            np.array(next_state, dtype=np.float32),
+            float(done)
+        ))
+
     def sample(self, batch_size: int):
-        """Sample a batch of experiences"""
         return random.sample(self.buffer, batch_size)
-    
+
     def __len__(self):
         return len(self.buffer)
 
 
+# ─────────────────────────────── State Builder ────────────────────────────
+class TrafficStateBuilder:
+    @staticmethod
+    def compute_weighted_count(detections: List[Dict]) -> float:
+        """Sum vehicle weights, ignoring non-vehicle classes."""
+        total = 0.0
+        for det in detections:
+            cls = det.get('class_name', 'car')
+            if cls not in ['emergency_vehicle', 'accident', 'pedestrian_violation']:
+                # VEHICLE_WEIGHTS is defined globally in this file
+                total += VEHICLE_WEIGHTS.get(cls, 1.0)
+        return total
+
+    @staticmethod
+    def calculate_green_time(weighted_count: float, has_accident: bool, has_violation: bool) -> int:
+        """Calculate green time extension based on congestion count."""
+        if weighted_count <= 5:
+            base_time = 25  # Small extension -> 25s
+        elif weighted_count <= 15:
+            base_time = 40  # Moderate extension -> 40s
+        else:
+            base_time = 60  # Longer extension -> 60s
+        
+        # Accident restricted mode penalty -> reduce green extension
+        if has_accident:
+            base_time = int(base_time * 0.7)
+            
+        # Pedestrian violation penalty -> slightly reduce green time
+        if has_violation:
+            base_time -= 5
+
+        return max(NORMAL_MIN_GREEN, min(base_time, MAX_GREEN_NORMAL))
+
+    @staticmethod
+    def relative_green_time(target_lane: int, all_w_counts: List[float], all_accidents: List[bool] = None, all_violations: List[bool] = None) -> int:
+        if target_lane < 0 or target_lane >= len(all_w_counts):
+            return NORMAL_MIN_GREEN
+        has_acc = all_accidents[target_lane] if all_accidents else False
+        has_vio = all_violations[target_lane] if all_violations else False
+        return TrafficStateBuilder.calculate_green_time(
+            all_w_counts[target_lane], 
+            has_acc, 
+            has_vio
+        )
+
+    @staticmethod
+    def relative_pressure(lane_w: float, all_w: List[float]) -> float:
+        total = sum(all_w)
+        return float(lane_w / total) if total > 0 else 0.0
+
+    @staticmethod
+    def congestion_label(pressure: float) -> str:
+        if pressure < 0.25:
+            return 'low'
+        elif pressure < 0.50:
+            return 'medium'
+        return 'high'
+
+    @classmethod
+    def build(cls,
+              lane_detections: List[List[Dict]],   # list of 4 detection lists
+              wait_times:      List[float],         # seconds each lane has been red
+              active_lane:     int,                 # currently green lane index
+              elapsed_green:   float,               # seconds current green has been active
+              buffer_locked:   bool) -> np.ndarray:
+        """Build the 22-dim state vector."""
+        w_counts = []
+        em_flags = []
+        acc_flags = []
+        vio_flags = []
+        waits = []
+
+        for lane_idx in range(NUM_LANES):
+            dets = lane_detections[lane_idx] if lane_idx < len(lane_detections) else []
+            w_counts.append(cls.compute_weighted_count(dets))
+            waits.append(float(wait_times[lane_idx]) if lane_idx < len(wait_times) else 0.0)
+            em_flags.append(1.0 if any(d.get('class_name') == 'emergency_vehicle' for d in dets) else 0.0)
+            acc_flags.append(1.0 if any(d.get('class_name') == 'accident' for d in dets) else 0.0)
+            vio_flags.append(1.0 if any(d.get('class_name') == 'pedestrian_violation' for d in dets) else 0.0)
+
+        # state = [lane_weighted_counts(4), wait_times(4), emergency(4), accident(4), violation(4), active_lane(1), elapsed_green(1)]
+        features = w_counts + waits + em_flags + acc_flags + vio_flags + [float(active_lane), float(elapsed_green)]
+        return np.array(features, dtype=np.float32)
+
+
+# ─────────────────────────────── DQN Agent ────────────────────────────────
 class TrafficLightDQN:
-    """Deep Q-Learning for intelligent traffic light optimization
-    
-    This model takes YOLO detection data as input and outputs optimal
-    traffic light timing decisions to minimize congestion and wait times.
+    """Dueling Double DQN agent for intelligent traffic light control.
+
+    Key properties:
+      • MIN_BUFFER_TIME (10 s) is enforced OUTSIDE the agent by the controller.
+        The agent CAN attempt a switch, but the controller will ignore it if
+        the buffer hasn't expired (action masking at execution time).
+      • Emergency override is handled by the TrafficLightController; the DQN
+        simply learns to clear emergencies quickly via the reward signal.
+      • Double-DQN: action selection uses policy net, value estimation uses target net.
     """
-    
-    def __init__(self, 
-                 state_size: int = 12,  # Features from YOLO + traffic state
-                 action_size: int = 6,   # Different green light durations
-                 hidden_size: int = 128,
-                 learning_rate: float = 0.001,
-                 gamma: float = 0.95,
-                 epsilon_start: float = 1.0,
-                 epsilon_end: float = 0.01,
-                 epsilon_decay: float = 0.995,
-                 batch_size: int = 64,
-                 buffer_capacity: int = 10000):
-        
+
+    def __init__(self,
+                 state_size:       int   = STATE_SIZE,
+                 action_size:      int   = ACTION_SIZE,
+                 hidden_size:      int   = 256,
+                 learning_rate:    float = 5e-4,
+                 gamma:            float = 0.97,
+                 epsilon_start:    float = 1.0,
+                 epsilon_end:      float = 0.05,
+                 epsilon_decay:    float = 0.9985,   # ~3000 episodes to reach min
+                 batch_size:       int   = 128,
+                 buffer_capacity:  int   = 20000,
+                 target_update_freq: int = 200):      # hard update every N steps
+
         self.logger = logging.getLogger(__name__)
-        
-        # State and action space
-        self.state_size = state_size
-        self.action_size = action_size
-        
-        # Device configuration
+
+        self.state_size   = state_size
+        self.action_size  = action_size
+        self.hidden_size  = hidden_size
+        self.gamma        = gamma
+        self.epsilon      = epsilon_start
+        self.epsilon_end  = epsilon_end
+        self.epsilon_decay = epsilon_decay
+        self.batch_size   = batch_size
+        self.target_update_freq = target_update_freq
+
+        # Timing constants (accessible by controller)
+        self.min_buffer_time    = MIN_BUFFER_TIME
+        self.normal_min_green   = NORMAL_MIN_GREEN
+        self.max_green_normal   = MAX_GREEN_NORMAL
+        self.max_green_emergency = MAX_GREEN_EMERGENCY
+        self.yellow_time        = 3
+        self.all_red_time       = 2
+
+        # Device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.logger.info(f"Using device: {self.device}")
-        
-        # Neural networks
-        self.policy_net = DQNNetwork(state_size, hidden_size, action_size).to(self.device)
-        self.target_net = DQNNetwork(state_size, hidden_size, action_size).to(self.device)
+        self.logger.info(f"[DQN] Using device: {self.device}")
+
+        # Networks (Dueling Double-DQN)
+        self.policy_net = DuelingDQNNetwork(state_size, hidden_size, action_size).to(self.device)
+        self.target_net = DuelingDQNNetwork(state_size, hidden_size, action_size).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
-        
-        # Optimizer and loss
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
-        self.criterion = nn.MSELoss()
-        
-        # Hyperparameters
-        self.gamma = gamma
-        self.epsilon = epsilon_start
-        self.epsilon_end = epsilon_end
-        self.epsilon_decay = epsilon_decay
-        self.batch_size = batch_size
-        
-        # Experience replay
+
+        # Optimizer (AdamW —  better generalisation than Adam)
+        self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=learning_rate, weight_decay=1e-4)
+        self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=500, gamma=0.9)
+
+        # Huber loss (robust to outlier rewards)
+        self.criterion = nn.SmoothL1Loss()
+
+        # Replay buffer
         self.memory = ReplayBuffer(buffer_capacity)
-        
-        # Traffic light timing parameters (in seconds)
-        self.min_green_time = 15
-        self.max_green_time = 90
-        self.yellow_time = 3
-        self.all_red_time = 2
-        
-        # Training statistics
-        self.training_step = 0
-        self.episode_rewards = []
-        self.losses = []
-        
-        self.logger.info(f"TrafficLightDQN initialized with state_size={state_size}, action_size={action_size}")
-    
-    def preprocess_yolo_data(self, yolo_detections: List[Dict], lane_id: int = 0) -> np.ndarray:
-        """Convert YOLO detection data to state vector
-        
+
+        # State builder
+        self.state_builder = TrafficStateBuilder()
+
+        # Training stats
+        self.training_step    = 0
+        self.episode_rewards: List[float] = []
+        self.losses:          List[float] = []
+
+        self.logger.info(
+            f"[DQN] Initialized | state={state_size} | actions={action_size} | "
+            f"hidden={hidden_size} | lr={learning_rate} | gamma={gamma}"
+        )
+
+    # ── State construction ────────────────────────────────────────────────
+    def build_state(self,
+                    lane_detections: List[List[Dict]],
+                    wait_times:      List[float],
+                    active_lane:     int,
+                    elapsed_green:   float,
+                    buffer_locked:   bool) -> np.ndarray:
+        return TrafficStateBuilder.build(
+            lane_detections, wait_times, active_lane, elapsed_green, buffer_locked
+        )
+
+    # ── Legacy compatibility (used by trainer / existing code) ────────────
+    def preprocess_system_state(self,
+                                lane_counts:    List[int],
+                                emergency_flag: bool,
+                                accident_flag:  bool) -> np.ndarray:
+        """Backward-compatible wrapper. Builds a minimal state from count-only data."""
+        dummy_dets: List[List[Dict]] = []
+        for count in lane_counts[:NUM_LANES]:
+            dummy_dets.append([{'class_name': 'car'}] * max(0, int(count)))
+        # Pad to 4 lanes
+        while len(dummy_dets) < NUM_LANES:
+            dummy_dets.append([])
+        wait_times = [0.0] * NUM_LANES
+        return TrafficStateBuilder.build(dummy_dets, wait_times, 0, 0.0, False)
+
+    # ── Action selection ──────────────────────────────────────────────────
+    def get_action(self, state: np.ndarray, training: bool = True,
+                   allowed_actions: Optional[List[int]] = None) -> int:
+        """Epsilon-greedy with optional action masking.
+
         Args:
-            yolo_detections: List of vehicle detections from YOLO
-            lane_id: Current lane identifier (0-3 for 4-way intersection)
-            
+            state           : current state vector
+            training        : if True, use epsilon-greedy exploration
+            allowed_actions : if provided, restrict choices to this list
+                              (used to mask buffer-locked switch actions)
         Returns:
-            State vector as numpy array
+            action index
         """
-        # Count vehicles by type
-        cars = sum(1 for d in yolo_detections if d.get('class_name') == 'car')
-        buses = sum(1 for d in yolo_detections if d.get('class_name') == 'bus')
-        trucks = sum(1 for d in yolo_detections if d.get('class_name') == 'truck')
-        motorcycles = sum(1 for d in yolo_detections if d.get('class_name') == 'motorcycle')
-        bicycles = sum(1 for d in yolo_detections if d.get('class_name') == 'bicycle')
-        
-        total_vehicles = len(yolo_detections)
-        
-        # Calculate average confidence
-        avg_confidence = np.mean([d.get('confidence', 0) for d in yolo_detections]) if yolo_detections else 0
-        
-        # Estimate queue length based on vehicle positions
-        if yolo_detections:
-            y_positions = [d.get('center', (0, 0))[1] for d in yolo_detections]
-            queue_length = max(y_positions) - min(y_positions) if len(y_positions) > 1 else 0
-        else:
-            queue_length = 0
-        
-        # Normalize queue length (assuming max frame height of 1080)
-        normalized_queue = queue_length / 1080.0
-        
-        # Create state vector (12 features)
-        state = np.array([
-            total_vehicles / 50.0,      # Normalized total vehicle count
-            cars / 30.0,                 # Normalized car count
-            buses / 5.0,                 # Normalized bus count
-            trucks / 5.0,                # Normalized truck count
-            motorcycles / 10.0,          # Normalized motorcycle count
-            bicycles / 10.0,             # Normalized bicycle count
-            avg_confidence,              # Average detection confidence
-            normalized_queue,            # Normalized queue length
-            lane_id / 3.0,              # Normalized lane ID
-            0.0,                        # Current phase time (to be filled)
-            0.0,                        # Time since last change (to be filled)
-            0.0                         # Current signal state (to be filled)
-        ], dtype=np.float32)
-        
-        return state
-    
-    def get_action(self, state: np.ndarray, training: bool = True) -> int:
-        """Select action using epsilon-greedy policy
-        
-        Args:
-            state: Current state vector
-            training: Whether in training mode (uses exploration)
-            
-        Returns:
-            Action index (0 to action_size-1)
-        """
+        if allowed_actions is None:
+            allowed_actions = list(range(self.action_size))
+
         # Exploration
         if training and random.random() < self.epsilon:
-            return random.randint(0, self.action_size - 1)
-        
+            return random.choice(allowed_actions)
+
         # Exploitation
         with torch.no_grad():
-            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-            q_values = self.policy_net(state_tensor)
-            return q_values.argmax().item()
-    
-    def action_to_green_time(self, action: int) -> int:
-        """Convert action index to green light duration
-        
-        Args:
-            action: Action index (0 to action_size-1)
-            
-        Returns:
-            Green light duration in seconds
-        """
-        # Map actions to green times
-        time_range = self.max_green_time - self.min_green_time
-        green_time = self.min_green_time + (action * time_range / (self.action_size - 1))
-        return int(green_time)
-    
-    def calculate_reward(self, 
-                        prev_vehicle_count: int,
-                        curr_vehicle_count: int,
-                        avg_wait_time: float,
-                        throughput: int,
-                        action: int) -> float:
-        """Calculate reward for the taken action
-        
-        Reward components:
-        - Negative reward for vehicles waiting
-        - Positive reward for reducing queue
-        - Positive reward for throughput
-        - Penalty for very long or very short green times
-        
-        Args:
-            prev_vehicle_count: Vehicle count before action
-            curr_vehicle_count: Vehicle count after action
-            avg_wait_time: Average waiting time in seconds
-            throughput: Number of vehicles that passed
-            action: Action taken
-            
-        Returns:
-            Reward value
-        """
-        # Queue reduction reward
-        queue_reduction = prev_vehicle_count - curr_vehicle_count
-        queue_reward = queue_reduction * 2.0
-        
-        # Throughput reward
-        throughput_reward = throughput * 1.5
-        
-        # Wait time penalty
-        wait_penalty = -avg_wait_time * 0.5
-        
-        # Penalty for extreme green times
-        green_time = self.action_to_green_time(action)
-        if green_time < 20 or green_time > 80:
-            time_penalty = -5.0
+            state_t  = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            q_values = self.policy_net(state_t).squeeze(0).cpu().numpy()
+
+        # Mask disallowed actions with -inf
+        masked = np.full(self.action_size, -np.inf)
+        for a in allowed_actions:
+            masked[a] = q_values[a]
+
+        return int(np.argmax(masked))
+
+    # ── Action → recommendation ───────────────────────────────────────────
+    def action_to_recommendation(self,
+                                 action:          int,
+                                 current_lane:    int,
+                                 lane_detections: List[List[Dict]]) -> Dict:
+        if action < NUM_LANES:
+            target_lane = action
         else:
-            time_penalty = 0.0
-        
-        # Total reward
-        total_reward = queue_reward + throughput_reward + wait_penalty + time_penalty
-        
-        return total_reward
-    
+            target_lane = current_lane
+
+        all_w = []
+        all_acc = []
+        all_vio = []
+        for i in range(NUM_LANES):
+            dets = lane_detections[i] if i < len(lane_detections) else []
+            all_w.append(TrafficStateBuilder.compute_weighted_count(dets))
+            all_acc.append(any(d.get('class_name') == 'accident' for d in dets))
+            all_vio.append(any(d.get('class_name') == 'pedestrian_violation' for d in dets))
+
+        green_time = TrafficStateBuilder.relative_green_time(target_lane, all_w, all_acc, all_vio)
+
+        return {
+            'action':         action,
+            'target_lane':    target_lane,
+            'is_switch':      (action < NUM_LANES and action != current_lane),
+            'is_extend':      (action == 4 or action == current_lane),
+            'green_time':     green_time,
+            'congestion':     TrafficStateBuilder.congestion_label(all_w[target_lane]),
+            'weighted_count': all_w[target_lane],
+        }
+
+    @staticmethod
+    def calculate_reward(prev_wait_times:     List[float],
+                         next_wait_times:     List[float],
+                         prev_queue_lengths:  List[int],
+                         next_queue_lengths:  List[int],
+                         active_lane:         int,
+                         elapsed_green:       float,
+                         emergency_flags:     List[bool],
+                         buffer_violated:     bool,
+                         action:              int,
+                         emergency_cleared:   bool = False,
+                         accident_flags:      List[bool] = None,
+                         violation_flags:     List[bool] = None) -> float:
+        if accident_flags is None:
+            accident_flags = [False] * NUM_LANES
+        if violation_flags is None:
+            violation_flags = [False] * NUM_LANES
+
+        # Wait time reduction
+        delta_wait = sum(prev_wait_times) - sum(next_wait_times)
+        R_wait = delta_wait * 0.3
+
+        # Queue length reduction
+        delta_queue = sum(prev_queue_lengths) - sum(next_queue_lengths)
+        R_queue = delta_queue * 1.0
+
+        R_emergency_green = 0.0
+        R_emergency_ignore = 0.0
+        for lane_idx, em in enumerate(emergency_flags):
+            if em:
+                if lane_idx == active_lane:
+                    R_emergency_green += 150.0
+                else:
+                    R_emergency_ignore -= 200.0
+
+        R_emergency_clear = 300.0 if emergency_cleared else 0.0
+        R_buffer_violation = -80.0 if buffer_violated else 0.0
+
+        R_starvation = 0.0
+        for lane_idx, wait in enumerate(next_wait_times):
+            if lane_idx != active_lane and wait >= STARVATION_THRESHOLD:
+                R_starvation -= 50.0 * (wait / STARVATION_THRESHOLD)
+
+        R_congestion = -0.5 * sum(next_queue_lengths)
+
+        # Accident-aware reward shaping
+        R_accident = 0.0
+        for lane_idx, is_acc in enumerate(accident_flags):
+            if is_acc:
+                # Penalize increasing queue toward accident lane
+                if next_queue_lengths[lane_idx] > prev_queue_lengths[lane_idx]:
+                    R_accident -= 30.0
+                # Reward clearing vehicles before accident area (active green reduces queue)
+                if lane_idx == active_lane and (prev_queue_lengths[lane_idx] - next_queue_lengths[lane_idx] > 0):
+                    R_accident += 20.0
+
+        # Pedestrian violation reward shaping
+        R_violation = 0.0
+        for lane_idx, is_vio in enumerate(violation_flags):
+            if is_vio:
+                R_violation -= 20.0  # Penalize violation occurrences
+
+        # Reward balanced redistribution
+        q_std = np.std(next_queue_lengths)
+        R_balance = -2.0 * q_std
+
+        total = (R_wait + R_queue + R_emergency_green + R_emergency_ignore
+                 + R_emergency_clear + R_buffer_violation + R_starvation 
+                 + R_congestion + R_accident + R_violation + R_balance)
+
+        return float(np.clip(total, -500.0, 500.0))
+
+    # ── Memory & training ─────────────────────────────────────────────────
     def store_transition(self, state, action, reward, next_state, done):
-        """Store transition in replay buffer"""
         self.memory.push(state, action, reward, next_state, done)
-    
-    def train_step(self):
-        """Perform one training step"""
+
+    def train_step(self) -> Optional[float]:
+        """Double-DQN training step with Huber loss and gradient clipping."""
         if len(self.memory) < self.batch_size:
             return None
-        
-        # Sample batch from memory
-        batch = self.memory.sample(self.batch_size)
+
+        batch  = self.memory.sample(self.batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
-        
-        # Convert to tensors
-        states = torch.FloatTensor(np.array(states)).to(self.device)
-        actions = torch.LongTensor(actions).to(self.device)
-        rewards = torch.FloatTensor(rewards).to(self.device)
+
+        states      = torch.FloatTensor(np.array(states)).to(self.device)
+        actions     = torch.LongTensor(actions).to(self.device)
+        rewards     = torch.FloatTensor(rewards).to(self.device)
         next_states = torch.FloatTensor(np.array(next_states)).to(self.device)
-        dones = torch.FloatTensor(dones).to(self.device)
-        
-        # Current Q values
-        current_q_values = self.policy_net(states).gather(1, actions.unsqueeze(1))
-        
-        # Next Q values from target network
+        dones       = torch.FloatTensor(dones).to(self.device)
+
+        # Current Q-values
+        curr_q = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+
+        # Double-DQN target:
+        # a* = argmax_a Q_policy(s', a)
+        # target = r + γ * Q_target(s', a*)
         with torch.no_grad():
-            next_q_values = self.target_net(next_states).max(1)[0]
-            target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
-        
-        # Compute loss
-        loss = self.criterion(current_q_values.squeeze(), target_q_values)
-        
-        # Optimize
+            next_actions = self.policy_net(next_states).argmax(dim=1)
+            next_q       = self.target_net(next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+            target_q     = rewards + (1.0 - dones) * self.gamma * next_q
+
+        loss = self.criterion(curr_q, target_q)
+
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1.0)
+        # Gradient clipping (prevents exploding gradients)
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
         self.optimizer.step()
-        
-        # Update statistics
+
         self.training_step += 1
         self.losses.append(loss.item())
-        
+
         # Decay epsilon
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
-        
+
+        # Hard target network update
+        if self.training_step % self.target_update_freq == 0:
+            self.update_target_network()
+
         return loss.item()
-    
+
     def update_target_network(self):
-        """Update target network with policy network weights"""
+        """Hard update: copy policy weights to target network."""
         self.target_net.load_state_dict(self.policy_net.state_dict())
-        self.logger.info("Target network updated")
-    
-    def predict_signal_timing(self, yolo_detections: List[Dict], lane_id: int = 0) -> Dict:
-        """Predict optimal signal timing based on YOLO detections
-        
-        Args:
-            yolo_detections: List of vehicle detections from YOLO
-            lane_id: Current lane identifier
-            
-        Returns:
-            Dictionary with timing recommendations
-        """
-        # Preprocess YOLO data to state
-        state = self.preprocess_yolo_data(yolo_detections, lane_id)
-        
-        # Get action (no exploration in prediction)
+        self.logger.debug("[DQN] Target network updated (hard copy)")
+
+    # ── Inference (backward-compatible) ──────────────────────────────────
+    def predict_signal_timing(self,
+                              lane_counts:    List[int],
+                              emergency_flag: bool,
+                              accident_flag:  bool,
+                              lane_id:        int = 0) -> Dict:
+        state  = self.preprocess_system_state(lane_counts, emergency_flag, accident_flag)
         action = self.get_action(state, training=False)
-        
-        # Convert action to timing
-        green_time = self.action_to_green_time(action)
-        
-        # Calculate confidence based on Q-value
+
+        all_w = []
+        all_acc = []
+        all_vio = []
+        for i in range(NUM_LANES):
+            count = lane_counts[i] if i < len(lane_counts) else 0
+            # Rough estimation for inference when only counts are available
+            all_w.append(float(count) * VEHICLE_WEIGHTS.get('car', 2.0))
+            all_acc.append(accident_flag if i == lane_id else False)
+            all_vio.append(False)
+
+        green_time = TrafficStateBuilder.relative_green_time(lane_id, all_w, all_acc, all_vio)
+        congestion = TrafficStateBuilder.congestion_label(all_w[lane_id])
+
         with torch.no_grad():
-            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-            q_values = self.policy_net(state_tensor)
-            max_q = q_values.max().item()
-            confidence = min(1.0, max(0.0, (max_q + 10) / 20))  # Normalize Q-value to [0, 1]
-        
+            state_t    = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            q_vals     = self.policy_net(state_t)
+            max_q      = q_vals.max().item()
+            confidence = float(np.clip((max_q + 10) / 20.0, 0.0, 1.0))
+
+        count = lane_counts[lane_id] if lane_id < len(lane_counts) else 0
         return {
-            "lane_id": lane_id,
-            "action": action,
-            "green_time": green_time,
-            "yellow_time": self.yellow_time,
-            "all_red_time": self.all_red_time,
-            "total_cycle_time": green_time + self.yellow_time + self.all_red_time,
-            "vehicle_count": len(yolo_detections),
-            "confidence": confidence,
-            "epsilon": self.epsilon,
-            "timestamp": datetime.now().isoformat()
+            'lane_id':           lane_id,
+            'action':            action,
+            'green_time':        green_time,
+            'yellow_time':       self.yellow_time,
+            'all_red_time':      self.all_red_time,
+            'total_cycle_time':  green_time + self.yellow_time + self.all_red_time,
+            'vehicle_count':     count,
+            'congestion':        congestion,
+            'confidence':        confidence,
+            'epsilon':           self.epsilon,
+            'timestamp':         datetime.now().isoformat()
         }
-    
+
+    # ── Save / load ───────────────────────────────────────────────────────
     def save_model(self, filepath: str):
-        """Save model to file"""
         try:
-            import os
-            # Create directory if it doesn't exist
-            os.makedirs(os.path.dirname(filepath), exist_ok=True)
-            
+            os.makedirs(os.path.dirname(filepath) or '.', exist_ok=True)
             checkpoint = {
-                'policy_net_state_dict': self.policy_net.state_dict(),
-                'target_net_state_dict': self.target_net.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'epsilon': self.epsilon,
-                'training_step': self.training_step,
-                'episode_rewards': self.episode_rewards,
-                'losses': self.losses[-1000:],  # Save last 1000 losses
+                'policy_net':       self.policy_net.state_dict(),
+                'target_net':       self.target_net.state_dict(),
+                'optimizer':        self.optimizer.state_dict(),
+                'epsilon':          self.epsilon,
+                'training_step':    self.training_step,
+                'episode_rewards':  self.episode_rewards[-500:],
+                'losses':           self.losses[-1000:],
                 'hyperparameters': {
-                    'state_size': self.state_size,
-                    'action_size': self.action_size,
-                    'gamma': self.gamma,
-                    'batch_size': self.batch_size
+                    'state_size':   self.state_size,
+                    'action_size':  self.action_size,
+                    'hidden_size':  self.hidden_size,
+                    'gamma':        self.gamma,
+                    'batch_size':   self.batch_size,
                 }
             }
             torch.save(checkpoint, filepath)
-            self.logger.info(f"Model saved to {filepath}")
+            self.logger.info(f"[DQN] Model saved → {filepath}")
         except Exception as e:
-            self.logger.error(f"Failed to save model: {e}")
-    
+            self.logger.error(f"[DQN] Save failed: {e}")
+
     def load_model(self, filepath: str):
-        """Load model from file"""
         try:
-            checkpoint = torch.load(filepath, map_location=self.device)
-            self.policy_net.load_state_dict(checkpoint['policy_net_state_dict'])
-            self.target_net.load_state_dict(checkpoint['target_net_state_dict'])
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            self.epsilon = checkpoint.get('epsilon', self.epsilon_end)
-            self.training_step = checkpoint.get('training_step', 0)
-            self.episode_rewards = checkpoint.get('episode_rewards', [])
-            self.losses = checkpoint.get('losses', [])
-            self.logger.info(f"Model loaded from {filepath}")
+            ckpt = torch.load(filepath, map_location=self.device)
+            self.policy_net.load_state_dict(ckpt['policy_net'])
+            self.target_net.load_state_dict(ckpt['target_net'])
+            self.optimizer.load_state_dict(ckpt['optimizer'])
+            self.epsilon       = ckpt.get('epsilon', self.epsilon_end)
+            self.training_step = ckpt.get('training_step', 0)
+            self.episode_rewards = ckpt.get('episode_rewards', [])
+            self.losses        = ckpt.get('losses', [])
+            self.logger.info(f"[DQN] Model loaded ← {filepath}")
         except Exception as e:
-            self.logger.error(f"Failed to load model: {e}")
-    
+            self.logger.error(f"[DQN] Load failed: {e}")
+
     def get_training_stats(self) -> Dict:
-        """Get training statistics"""
         return {
-            "training_steps": self.training_step,
-            "epsilon": self.epsilon,
-            "avg_loss": np.mean(self.losses[-100:]) if self.losses else 0,
-            "avg_reward": np.mean(self.episode_rewards[-100:]) if self.episode_rewards else 0,
-            "memory_size": len(self.memory),
-            "device": str(self.device)
+            'training_steps': self.training_step,
+            'epsilon':        self.epsilon,
+            'avg_loss':       float(np.mean(self.losses[-100:])) if self.losses else 0.0,
+            'avg_reward':     float(np.mean(self.episode_rewards[-100:])) if self.episode_rewards else 0.0,
+            'memory_size':    len(self.memory),
+            'device':         str(self.device)
         }
+
+    # ── Action space helpers ──────────────────────────────────────────────
+    @staticmethod
+    def get_allowed_actions(buffer_locked: bool, current_lane: int) -> List[int]:
+        """
+        Return allowed action indices given the current buffer state.
+
+        If buffer_locked is True only 'extend' (action 4) and switching TO THE
+        SAME lane (which is equivalent to extend) are allowed — effectively
+        only action 4.  Once the buffer expires, all 5 actions are valid.
+        """
+        if buffer_locked:
+            return [4]          # can only extend within the 10-sec buffer
+        return list(range(ACTION_SIZE))   # all actions valid after buffer

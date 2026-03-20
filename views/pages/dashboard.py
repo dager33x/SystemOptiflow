@@ -1,178 +1,282 @@
 # views/pages/dashboard.py
 import tkinter as tk
-from tkinter import ttk
-from PIL import Image, ImageTk, ImageDraw
-import threading
-import numpy as np
+import customtkinter as ctk
+from PIL import Image, ImageTk
 import cv2
 from ..styles import Colors, Fonts
 
+# ─────────────────────────────────────────────
+#  Color constants specific to the dashboard
+# ─────────────────────────────────────────────
+_BG        = Colors.BACKGROUND       # #0B0F19
+_CARD      = '#161F33'               # Slightly brighter than before for distinct cards
+_HEADER_BG = '#0B111D'               # Very dark for header
+_ACCENT    = Colors.PRIMARY          # #3B82F6
+_TEXT      = Colors.TEXT
+_MUTED     = Colors.TEXT_LIGHT
+_SUCCESS   = Colors.SUCCESS
+_WARN      = Colors.WARNING
+_DANGER    = Colors.DANGER
+
+_SIGNAL_COLORS = {
+    'GREEN':    {'bright': '#22C55E', 'dim': '#052E16'},
+    'YELLOW':   {'bright': '#EAB308', 'dim': '#1C1A00'},
+    'RED':      {'bright': '#EF4444', 'dim': '#2D0000'},
+    'ALL_RED':  {'bright': '#EF4444', 'dim': '#2D0000'},
+}
+
+# Direction metadata
+_DIR_META = {
+    'north': {'icon': '▲', 'label': 'NORTH GATE'},
+    'south': {'icon': '▼', 'label': 'SOUTH JUNCTION'},
+    'east':  {'icon': '▶', 'label': 'EAST PORTAL'},
+    'west':  {'icon': '◀', 'label': 'WEST AVENUE'},
+}
+
 class DashboardPage:
-    """Dashboard page with 4-way camera feed and real-time statistics"""
-    
+    """Beautiful CustomTkinter command-center 2x2 camera grid."""
+
     def __init__(self, parent):
         self.parent = parent
-        self.frame = tk.Frame(parent, bg=Colors.BACKGROUND)
-        self.camera_labels = {}
-        self.stat_labels = {}
+        self.frame = tk.Frame(parent, bg=_BG) # Keep standard tk.Frame as root mount point
+        self.camera_labels  = {}
+        self.stat_labels    = {}
         self.light_canvases = {}
-        self.timer_labels = {}
-        self.lamp_ids = {} # {direction: {color: id}}
+        self.timer_labels   = {}
+        self.lamp_ids       = {}   # {direction: {color: canvas_id}}
+        self.signal_badges  = {}   # {direction: ctk.CTkLabel}
         self.is_running = True
-        self.create_widgets()
-    
-    def create_widgets(self):
-        """Create dashboard layout with 2x2 grid for intersections"""
+        
+        # Initialize CTk explicitly for rendering mode (dark)
+        ctk.set_appearance_mode("dark")
+        self._create_widgets()
+
+    # ─────────────────────────────────────────
+    #  Layout construction
+    # ─────────────────────────────────────────
+    def _create_widgets(self):
+        # ── Camera grid (fills full area) ─────
+        grid_frame = ctk.CTkFrame(self.frame, fg_color=_BG, corner_radius=0)
+        grid_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+
+        grid_frame.grid_columnconfigure(0, weight=1, uniform="col")
+        grid_frame.grid_columnconfigure(1, weight=1, uniform="col")
+        grid_frame.grid_rowconfigure(0, weight=1, uniform="row")
+        grid_frame.grid_rowconfigure(1, weight=1, uniform="row")
+
+        directions = ['north', 'south', 'east', 'west']
+        coords     = [(0, 0), (0, 1), (1, 0), (1, 1)]
+
+        for direction, (row, col) in zip(directions, coords):
+            self._build_camera_card(grid_frame, direction, row, col)
+
+    def _build_camera_card(self, parent, direction, row, col):
+        """Build a single camera card using modern CTkFrames with rounded corners."""
+        meta = _DIR_META[direction]
+
+        # Use CustomTkinter for beautiful rounded corners and subtle shadow/color differences
+        card = ctk.CTkFrame(parent, fg_color=_CARD, corner_radius=15, border_width=1, border_color='#2c3a52')
+        card.grid(row=row, column=col, sticky='nsew', padx=10, pady=10)
+
+        # ── Card header strip ─────────────────────────────────────
+        card_header = ctk.CTkFrame(card, fg_color=_HEADER_BG, corner_radius=0, height=45)
+        card_header.pack(fill=tk.X, side=tk.TOP, anchor='n')
+        card_header.pack_propagate(False)
+
         # Title
-        title = tk.Label(self.frame, text="Intersection Dashboard (North-South-East-West)",
-                        font=Fonts.TITLE, bg=Colors.BACKGROUND,
-                        fg=Colors.PRIMARY)
-        title.pack(pady=10)
-        
-        # Main content frame for 2x2 grid
-        grid_frame = tk.Frame(self.frame, bg=Colors.BACKGROUND)
-        grid_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Configure 2x2 grid
-        grid_frame.grid_columnconfigure(0, weight=1)
-        grid_frame.grid_columnconfigure(1, weight=1)
-        grid_frame.grid_rowconfigure(0, weight=1)
-        grid_frame.grid_rowconfigure(1, weight=1)
-        
-        directions = ['North', 'South', 'East', 'West']
-        coords = [(0, 0), (0, 1), (1, 0), (1, 1)] # Row, Col
-        
-        for i, direction in enumerate(directions):
-            row, col = coords[i]
-            self.create_camera_widget(grid_frame, direction.lower(), row, col)
+        ctk.CTkLabel(card_header, text=f"{meta['icon']}  {meta['label']}",
+                     font=('Segoe UI', 13, 'bold'),
+                     text_color=_ACCENT).pack(side=tk.LEFT, padx=15, pady=0)
 
-    def create_camera_widget(self, parent, direction, row, col):
-        """create a single camera/traffic widget pair"""
-        container = tk.Frame(parent, bg=Colors.CARD_BG, relief=tk.RAISED, bd=1)
-        container.grid(row=row, column=col, sticky="nsew", padx=5, pady=5)
-        container.grid_columnconfigure(0, weight=3) # Camera gets more space
-        container.grid_columnconfigure(1, weight=1) # Lights/Stats
-        container.grid_rowconfigure(0, weight=1) # Content row
+        # Signal state badge (CTkLabel)
+        badge = ctk.CTkLabel(card_header, text='● RED', font=('Segoe UI', 12, 'bold'),
+                             corner_radius=8, fg_color='#2D0000', text_color='#EF4444', padx=8, pady=2)
+        badge.pack(side=tk.RIGHT, padx=15, pady=5)
+        self.signal_badges[direction] = badge
 
-        # Left Side: Header + Camera
-        left_panel = tk.Frame(container, bg=Colors.CARD_BG)
-        left_panel.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-        
-        # Header - Larger and clear
-        header = tk.Label(left_panel, text=direction.upper(), 
-                         font=Fonts.TITLE, bg=Colors.CARD_BG, fg=Colors.PRIMARY)
-        header.pack(fill=tk.X, pady=(5, 2))
-        
-        # Camera Feed
-        cam_frame = tk.Frame(left_panel, bg=Colors.BLACK)
-        cam_frame.pack(fill=tk.BOTH, expand=True)
-        
-        cam_label = tk.Label(cam_frame, bg=Colors.BLACK, text="No Signal", fg=Colors.WHITE)
-        cam_label.pack(fill=tk.BOTH, expand=True)
+        # Body row: camera (left) + traffic light panel (right)
+        body = ctk.CTkFrame(card, fg_color='transparent', corner_radius=0)
+        body.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # ── RIGHT sidebar packed FIRST ──
+        sidebar = ctk.CTkFrame(body, fg_color='#101726', corner_radius=10, width=95)
+        sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 5), pady=5)
+        sidebar.pack_propagate(False)
+
+        # ── Camera feed packed AFTER sidebar so it fills remaining space ──
+        cam_outer = ctk.CTkFrame(body, fg_color='#050A10', corner_radius=10)
+        cam_outer.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0), pady=5)
+        cam_outer.pack_propagate(False)
+
+        # We keep tk.Label for the camera output as it handles PhotoImage updates very efficiently
+        cam_label = tk.Label(cam_outer, bg='#050A10',
+                             text='◌  No Signal', fg='#1E3A5F',
+                             font=('Segoe UI', 14, 'bold'))
+        cam_label.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
         self.camera_labels[direction] = cam_label
-        
-        # Right Side: Controls/Lights
-        control_frame = tk.Frame(container, bg=Colors.CARD_BG)
-        control_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
-        
-        # Traffic Light Canvas
-        canvas = tk.Canvas(control_frame, width=60, height=140, bg=Colors.DARK_GREY, highlightthickness=0)
-        canvas.pack(pady=10)
-        self.light_canvases[direction] = canvas
-        self.draw_traffic_light_box(direction)
-        
-        # Timer
-        timer = tk.Label(control_frame, text="00s", font=(Fonts.FAMILY, 24, "bold"),
-                        bg=Colors.CARD_BG, fg=Colors.TEXT)
-        timer.pack(pady=5)
-        self.timer_labels[direction] = timer
-        
-        # Stats
-        stats_frame = tk.Frame(control_frame, bg=Colors.CARD_BG)
-        stats_frame.pack(fill=tk.X, pady=5)
-        
-        self.stat_labels[f'{direction}_vehicles'] = self.create_mini_stat(stats_frame, "Vehicles", "0")
-        self.stat_labels[f'{direction}_state'] = self.create_mini_stat(stats_frame, "Status", "RED")
-        
-    def create_mini_stat(self, parent, label_text, value_text):
-        f = tk.Frame(parent, bg=Colors.CARD_BG)
-        f.pack(fill=tk.X, padx=2, pady=2)
-        
-        # Stacked layout for meaningful stats
-        tk.Label(f, text=label_text, font=Fonts.SMALL, bg=Colors.CARD_BG, fg=Colors.TEXT_LIGHT).pack(anchor="w")
-        v = tk.Label(f, text=value_text, font=Fonts.BODY_BOLD, bg=Colors.CARD_BG, fg=Colors.PRIMARY)
-        v.pack(anchor="e")
-        return v
 
-    def draw_traffic_light_box(self, direction):
-        """Draw smaller traffic light"""
+        # ── Realistic traffic light sidebar ───────────────────────────────
+        ctk.CTkLabel(sidebar, text='SIGNAL', font=('Segoe UI', 10, 'bold'),
+                     text_color=_MUTED).pack(pady=(12, 2))
+
+        # We keep tk.Canvas for drawing circles/rectangles easily
+        tl_canvas = tk.Canvas(sidebar, width=64, height=160,
+                              bg='#101726', highlightthickness=0)
+        tl_canvas.pack(pady=(0, 6))
+        self.light_canvases[direction] = tl_canvas
+        self._draw_realistic_light(direction)
+
+        # Timer block
+        ctk.CTkLabel(sidebar, text='TIMER', font=('Segoe UI', 10, 'bold'),
+                     text_color=_MUTED).pack(pady=(5, 0))
+        timer_lbl = ctk.CTkLabel(sidebar, text='--s',
+                                 font=('Consolas', 22, 'bold'),
+                                 text_color=_TEXT)
+        timer_lbl.pack()
+        self.timer_labels[direction] = timer_lbl
+
+        # Vehicle count block
+        ctk.CTkLabel(sidebar, text='VEHICLES', font=('Segoe UI', 10, 'bold'),
+                     text_color=_MUTED).pack(pady=(12, 0))
+        v_lbl = ctk.CTkLabel(sidebar, text='0',
+                             font=('Segoe UI', 24, 'bold'),
+                             text_color=_TEXT)
+        v_lbl.pack()
+        self.stat_labels[f'{direction}_vehicles'] = v_lbl
+
+        # State text
+        s_lbl = ctk.CTkLabel(sidebar, text='RED',
+                             font=('Segoe UI', 12, 'bold'),
+                             text_color=_DANGER)
+        s_lbl.pack(pady=(2, 8))
+        self.stat_labels[f'{direction}_state'] = s_lbl
+
+    # ─────────────────────────────────────────
+    #  Realistic vertical traffic light
+    # ─────────────────────────────────────────
+    def _draw_realistic_light(self, direction):
+        """Draw a realistic vertical traffic light with housing and visor hoods."""
         c = self.light_canvases[direction]
-        # Housing
-        c.create_rectangle(5, 5, 55, 135, fill=Colors.BLACK, outline=Colors.SECONDARY, width=2)
-        
         self.lamp_ids[direction] = {}
-        # Red
-        self.lamp_ids[direction]['red'] = c.create_oval(15, 15, 45, 45, fill="#330000", outline=Colors.BLACK)
-        # Yellow
-        self.lamp_ids[direction]['yellow'] = c.create_oval(15, 55, 45, 85, fill="#333300", outline=Colors.BLACK)
-        # Green
-        self.lamp_ids[direction]['green'] = c.create_oval(15, 95, 45, 125, fill="#003300", outline=Colors.BLACK)
 
+        # Housing (rounded rectangle effect with two rectangles)
+        c.create_rectangle(8, 4, 56, 156, fill='#1A1A1A', outline='#333333', width=2)
+        c.create_rectangle(10, 6, 54, 154, fill='#111111', outline='#111111')  # inner shadow
+        c.create_oval(29, 2, 35, 8, fill='#2A2A2A', outline='#444444')
+
+        # Each lamp: (color_name, center_x, center_y, dim_fill)
+        lamps = [
+            ('red',    32, 34,  '#2D0000'),
+            ('yellow', 32, 82,  '#1C1A00'),
+            ('green',  32, 130, '#052E16'),
+        ]
+
+        for color, cx, cy, dim_fill in lamps:
+            r = 18
+            c.create_oval(cx - r - 3, cy - r - 3, cx + r + 3, cy + r + 3,
+                          fill='#0D0D0D', outline='#0D0D0D')
+            oid = c.create_oval(cx - r, cy - r, cx + r, cy + r,
+                                fill=dim_fill, outline='#2A2A2A', width=1)
+            c.create_rectangle(cx - r, cy - r - 5, cx + r, cy - r + 4,
+                                fill='#1A1A1A', outline='#1A1A1A')
+            c.create_oval(cx - r + 5, cy - r + 5, cx - r + 11, cy - r + 11,
+                          fill='#2A2A2A', outline='#2A2A2A')
+            self.lamp_ids[direction][color] = oid
+
+        c.create_oval(29, 150, 35, 156, fill='#2A2A2A', outline='#444444')
+
+    # ─────────────────────────────────────────
+    #  Live update callbacks (same signatures)
+    # ─────────────────────────────────────────
     def update_camera_feed(self, frame, detection_data=None, direction='north'):
-        """Update camera feed display for specific direction"""
+        """Update camera feed display for specific direction."""
         try:
             if direction not in self.camera_labels:
                 return
 
             if frame is not None:
-                # Resize for grid display (Larger view as requested)
-                frame = cv2.resize(frame, (560, 420))
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                img = Image.fromarray(frame_rgb)
-                photo = ImageTk.PhotoImage(img)
-                
                 label = self.camera_labels[direction]
-                label.config(image=photo, text="")
+                cam_frame = label.master
+
+                w = cam_frame.winfo_width()
+                h = cam_frame.winfo_height()
+                if w < 50 or h < 50:
+                    w, h = 480, 320
+
+                frame_resized = cv2.resize(frame, (w, h))
+                frame_rgb     = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
+                img   = Image.fromarray(frame_rgb)
+                photo = ImageTk.PhotoImage(img)
+
+                label.config(image=photo, text='')
                 label.image = photo
-                
+
             if detection_data:
                 self.update_live_stats(detection_data, direction)
-        except Exception as e:
-            pass # Avoid spamming errors
+
+        except Exception:
+            pass
 
     def update_live_stats(self, data, direction):
-        """Update visuals for a specific direction"""
-        # Check if we have the labels for this direction
+        """Update stats and traffic light indicators for a direction."""
         vehicle_key = f'{direction}_vehicles'
         if vehicle_key not in self.stat_labels:
-            return 
+            return
 
-            
         vehicle_count = data.get('vehicle_count', 0)
-        signal_state = data.get('signal_state', 'RED')
-        time_left = data.get('time_remaining', 0)
-        
-        # Update text
-        self.stat_labels[f'{direction}_vehicles'].config(text=str(vehicle_count))
-        self.stat_labels[f'{direction}_state'].config(text=signal_state)
-        self.timer_labels[direction].config(text=f"{int(time_left)}s")
-        
-        # Update Lamps
-        dim = {'red': '#330000', 'yellow': '#333300', 'green': '#003300'}
-        bright = {'red': '#ff0000', 'yellow': '#ffff00', 'green': '#00ff00'}
-        
-        c = self.light_canvases[direction]
+        signal_state  = data.get('signal_state', 'RED').upper()
+        time_left     = data.get('time_remaining', 0)
+
+        # ── Text stats ────────────────────────────────────────────
+        self.stat_labels[f'{direction}_vehicles'].configure(text=str(vehicle_count))
+
+        state_lbl = self.stat_labels[f'{direction}_state']
+        sig_colors = {
+            'GREEN':   _SUCCESS,
+            'YELLOW':  _WARN,
+            'RED':     _DANGER,
+            'ALL_RED': _DANGER,
+        }
+        state_lbl.configure(text=signal_state, text_color=sig_colors.get(signal_state, _MUTED))
+
+        # ── Timer ─────────────────────────────────────────────────
+        t = int(time_left)
+        timer_fg = _SUCCESS if signal_state == 'GREEN' else (_WARN if signal_state == 'YELLOW' else _DANGER)
+        self.timer_labels[direction].configure(text=f'{t:>3}s', text_color=timer_fg)
+
+        # ── Signal badge (top-right of card) ─────────────────────
+        badge = self.signal_badges.get(direction)
+        if badge:
+            badge_styles = {
+                'GREEN':   ('#052E16', '#22C55E'),
+                'YELLOW':  ('#1C1A00', '#EAB308'),
+                'RED':     ('#2D0000', '#EF4444'),
+                'ALL_RED': ('#2D0000', '#EF4444'),
+            }
+            bg_c, fg_c = badge_styles.get(signal_state, ('#1A2332', _MUTED))
+            badge.configure(text=f'● {signal_state}', fg_color=bg_c, text_color=fg_c)
+
+        # ── Traffic light lamps ───────────────────────────────────
+        c   = self.light_canvases[direction]
         ids = self.lamp_ids[direction]
-        
+        dim = {'red': '#2D0000', 'yellow': '#1C1A00', 'green': '#052E16'}
+
         for color_name, item_id in ids.items():
             c.itemconfig(item_id, fill=dim[color_name])
-            
-        active_color = signal_state.lower()
-        if active_color in ids:
-            c.itemconfig(ids[active_color], fill=bright[active_color])
-    
+
+        active = signal_state.lower()
+        if active == 'all_red':
+            active = 'red'
+        if active in ids:
+            bright = {
+                'red':    '#FF2020',
+                'yellow': '#FFD600',
+                'green':  '#00E676',
+            }
+            c.itemconfig(ids[active], fill=bright[active])
+
     def get_widget(self):
         return self.frame
-    
+
     def cleanup(self):
         self.is_running = False
