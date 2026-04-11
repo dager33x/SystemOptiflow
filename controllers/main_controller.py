@@ -57,6 +57,7 @@ class MainController:
         # Try to load the best trained model; fall back to fresh model if not found
         import os as _os
         _model_candidates = [
+            "Optiflow_Dqn.pth",
             "models/dqn/dqn_best.pth",
             "models/dqn/dqn_final.pth",
         ]
@@ -73,6 +74,13 @@ class MainController:
             self.logger.info(f"[Main] Loaded trained DQN model: {_selected_model}")
         else:
             self.logger.warning("[Main] No trained DQN model found — using untrained network. Run run_training.py first.")
+
+        # Wire violation screenshot callback into the DQN Rule Controller
+        # so frames are auto-saved whenever a z_jaywalker detection fires.
+        self.traffic_controller.set_screenshot_callback(self._rule_violation_screenshot)
+
+        # Per-lane frame cache so the rule controller can capture the right frame
+        self._lane_frames: dict = {i: None for i in range(4)}
         
         # Traffic States for each direction
         self.states = {}
@@ -380,13 +388,13 @@ class MainController:
                                     detections.append({
                                         'class_name': 'z_accident', 
                                         'confidence': 0.99,
-                                        'box': [cx-40, cy-40, cx+20, cy+20],
+                                        'bbox': [cx-40, cy-40, cx+20, cy+20],
                                         'center': (cx, cy)
                                     })
                                     detections.append({
                                         'class_name': 'car', 
                                         'confidence': 0.90,
-                                        'box': [cx-20, cy-20, cx+40, cy+40],
+                                        'bbox': [cx-20, cy-20, cx+40, cy+40],
                                         'center': (cx+10, cy+10)
                                     })
                                     
@@ -411,7 +419,7 @@ class MainController:
                                     detections.append({
                                         'class_name': 'violation', 
                                         'confidence': 0.98,
-                                        'box': [100, 100, 200, 200], # Arbitrary box
+                                        'bbox': [100, 100, 200, 200], # Arbitrary box
                                         'center': (150, 150)
                                     })
                                     cv2.putText(frame, "🚫 RED LIGHT VIOLATION!", (100, 150), 
@@ -444,7 +452,7 @@ class MainController:
                                         detections.append({
                                             'class_name': 'emergency_vehicle', 
                                             'confidence': 0.99,
-                                            'box': [cx-30, cy-30, cx+30, cy+30],
+                                            'bbox': [cx-30, cy-30, cx+30, cy+30],
                                             'center': (cx, cy)
                                         })
                                         cv2.putText(frame, "🚨 EMERGENCY VEHICLE!", (100, 50), 
@@ -513,91 +521,130 @@ class MainController:
                             # -------------------------------------------------------------
                             # REAL AI LOGIC: Violation & Accident Detection
                             # -------------------------------------------------------------
-                            enable_sim = SETTINGS.get("enable_sim_events", True)
-                            
-                            if enable_sim: # Using same toggle for "Enable Events" on real cam
+                            if True: # Always process real AI logic for actual camera
                                 
                                 # 1. Red Light Violation (Real Logic)
-                                # Define Intersection Zone (Center of image)
+                                # Define Stop Line based on user preference
                                 h, w, _ = frame.shape
-                                # Zone: x1, y1, x2, y2 (Central box)
-                                zone_x1, zone_y1 = int(w*0.3), int(h*0.3)
-                                zone_x2, zone_y2 = int(w*0.7), int(h*0.7)
                                 
-                                # Draw zone for debugging/visual
-                                if state['signal_state'] == 'RED':
-                                    color = (0, 0, 255) # Red Zone
-                                    # cv2.rectangle(annotated_frame, (zone_x1, zone_y1), (zone_x2, zone_y2), color, 2)
-                                    
-                                    # Check if any car is INSIDE this zone while RED
+                                # Line position: 80% height, spanning the central parts of the lane
+                                line_y = int(h * 0.80)
+                                line_x1 = int(w * 0.25)  # 1/4 the way in
+                                line_x2 = int(w * 0.75)  # 3/4 the way in
+                                
+                                is_red = state['signal_state'] == 'RED'
+                                is_green = state['signal_state'] == 'GREEN'
+                                
+                                # Draw the Stop Line
+                                if is_red:
+                                    color = (0, 0, 255)  # Red
+                                    cv2.line(annotated_frame, (line_x1, line_y), (line_x2, line_y), color, 3)
+                                    cv2.putText(annotated_frame, "STOP LINE", (line_x1, line_y - 10), 
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                                                
+                                    # Check if any car crosses the line while RED
                                     for det in detections:
                                         if det['class_name'] in ['car', 'truck', 'bus', 'motorcycle']:
-                                            cx, cy = det['center']
-                                            if zone_x1 < cx < zone_x2 and zone_y1 < cy < zone_y2:
-                                                # VIOLATION CONFIRMED
-                                                cv2.putText(annotated_frame, "🚫 RED LIGHT VIOLATION!", (50, 100), 
-                                                          cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
-                                                
-                                                # Save violation (Simple Throttle: max 1 per 5 seconds per camera)
-                                                current_time = time.time()
-                                                if hasattr(self, 'violation_controller') and self.violation_controller:
-                                                    last_log = getattr(self, 'last_violation_log', 0)
-                                                    if current_time - last_log > 5.0:
-                                                        self.violation_controller.save_violation(lane=lane_id, violation_type="Red Light Violation", frame=annotated_frame)
-                                                        self.session_violations += 1 # Increment Session Counter
-                                                        self.last_violation_log = current_time
-                                                        self.logger.info(f"Violation recorded for {direction}")
-                                                        # Notify
-                                                        self.root.after(0, lambda: self.notification_manager.show("Violation Alert", f"Red Light Violation on Lane {lane_id}", "violation"))
-                                                
-                                                break
-
-                                # 2. Accident Detection (Real Logic - Box Overlap)
-                                # Simple heuristic: overlapping boxes of high confidence
-                                for i, d1 in enumerate(detections):
-                                    for j, d2 in enumerate(detections):
-                                        if i >= j: continue # Avoid double check
-                                        
-                                        # Only check vehicles
-                                        vehicles = ['car', 'truck', 'bus', 'motorcycle']
-                                        if d1['class_name'] in vehicles and d2['class_name'] in vehicles:
-                                            # Box 1
-                                            x1a, y1a, x2a, y2a = d1['bbox']
-                                            # Box 2
-                                            x1b, y1b, x2b, y2b = d2['bbox']
+                                            v_x1, v_y1, v_x2, v_y2 = det['bbox']
                                             
-                                            # IoU / Overlap Check
-                                            xi1 = max(x1a, x1b)
-                                            yi1 = max(y1a, y1b)
-                                            xi2 = min(x2a, x2b)
-                                            yi2 = min(y2a, y2b)
-                                            
-                                            inter_area = max(0, xi2 - xi1) * max(0, yi2 - yi1)
-                                            
-                                            if inter_area > 0:
-                                                box1_area = (x2a - x1a) * (y2a - y1a)
-                                                box2_area = (x2b - x1b) * (y2b - y1b)
-                                                union_area = box1_area + box2_area - inter_area
-                                                iou = inter_area / union_area
-                                                
-                                                # If Overlap is significant, flag as potential accident (Medium Sensitivity)
-                                                # Threshold raised to 0.35 (35% overlap) to avoid false positives from perspective
-                                                if iou > 0.35:
-                                                    cv2.putText(annotated_frame, "⚠️ ACCIDENT ALERT!", (50, 150), 
-                                                              cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 165, 255), 3)
-                                                    # Draw connecting line
-                                                    c1 = d1['center']
-                                                    c2 = d2['center']
-                                                    cv2.line(annotated_frame, c1, c2, (0, 0, 255), 3)
+                                            # Check if vehicle box intersects the stop line segment
+                                            # It intersects if line_y is between the vehicle's top and bottom,
+                                            # AND vehicle's left-right spans across the line's x range
+                                            if v_y1 < line_y < v_y2:
+                                                if (v_x1 < line_x2) and (v_x2 > line_x1):
+                                                    # VIOLATION CONFIRMED
+                                                    cv2.putText(annotated_frame, "🚫 RED LIGHT VIOLATION!", (50, 100), 
+                                                              cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
                                                     
-                                                    # Notify and Save (Throttled)
+                                                    # Save violation (Simple Throttle: max 1 per 5 seconds per camera)
                                                     current_time = time.time()
-                                                    last_acc = getattr(self, 'last_accident_log', 0)
-                                                    if hasattr(self, 'accident_controller') and self.accident_controller:
-                                                        if current_time - last_acc > 10.0:
-                                                            self.accident_controller.report_accident(lane=lane_id, severity="Severe", description=f"Collision detected ({iou:.2f} IoU)")
-                                                            self.last_accident_log = current_time
-                                                            self.root.after(0, lambda: self.notification_manager.show("Accident Alert", f"Collision detected on Lane {lane_id}", "error"))
+                                                    if hasattr(self, 'violation_controller') and self.violation_controller:
+                                                        last_log = getattr(self, 'last_violation_log', 0)
+                                                        if current_time - last_log > 5.0:
+                                                            self.violation_controller.save_violation(lane=lane_id, violation_type="Red Light Violation", frame=annotated_frame)
+                                                            self.session_violations += 1 # Increment Session Counter
+                                                            self.last_violation_log = current_time
+                                                            self.logger.info(f"Violation recorded for {direction}")
+                                                            # Notify
+                                                            self.root.after(0, lambda: self.notification_manager.show("Violation Alert", f"Red Light Violation on Lane {lane_id}", "violation"))
+                                                    
+                                                    break
+
+                                elif is_green:
+                                    color = (0, 255, 0)  # Green
+                                    cv2.line(annotated_frame, (line_x1, line_y), (line_x2, line_y), color, 3)
+                                    cv2.putText(annotated_frame, "GO", (line_x1, line_y - 10), 
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+
+                                # 2. Accident Detection (Real Logic - Box Overlap & Native AI)
+                                accident_detected = False
+                                accident_desc = ""
+
+                                # Check direct AI classification first
+                                for det in detections:
+                                    if det.get('class_name') == 'z_accident':
+                                        accident_detected = True
+                                        accident_desc = "AI Classified Accident (z_accident)"
+                                        cv2.putText(annotated_frame, "⚠️ ACCIDENT DETECTED!", (50, 150), 
+                                                  cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+                                        break
+
+                                # Fallback: heuristic overlapping boxes of high confidence
+                                if not accident_detected:
+                                    for i, d1 in enumerate(detections):
+                                        for j, d2 in enumerate(detections):
+                                            if i >= j: continue # Avoid double check
+                                            
+                                            # Only check vehicles
+                                            vehicles = ['car', 'truck', 'bus', 'motorcycle']
+                                            if d1['class_name'] in vehicles and d2['class_name'] in vehicles:
+                                                # Box 1
+                                                x1a, y1a, x2a, y2a = d1['bbox']
+                                                # Box 2
+                                                x1b, y1b, x2b, y2b = d2['bbox']
+                                                
+                                                # IoU / Overlap Check
+                                                xi1 = max(x1a, x1b)
+                                                yi1 = max(y1a, y1b)
+                                                xi2 = min(x2a, x2b)
+                                                yi2 = min(y2a, y2b)
+                                                
+                                                inter_area = max(0, xi2 - xi1) * max(0, yi2 - yi1)
+                                                
+                                                if inter_area > 0:
+                                                    box1_area = (x2a - x1a) * (y2a - y1a)
+                                                    box2_area = (x2b - x1b) * (y2b - y1b)
+                                                    union_area = box1_area + box2_area - inter_area
+                                                    iou = inter_area / union_area
+                                                    
+                                                    # Threshold raised from 0.35 to 0.75 to completely avoid false 
+                                                    # positives from bumper-to-bumper perspective stacking
+                                                    if iou > 0.75:
+                                                        cv2.putText(annotated_frame, "⚠️ ACCIDENT ALERT!", (50, 150), 
+                                                                  cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 165, 255), 3)
+                                                        # Draw connecting line
+                                                        c1 = d1['center']
+                                                        c2 = d2['center']
+                                                        cv2.line(annotated_frame, c1, c2, (0, 0, 255), 3)
+                                                        
+                                                        accident_detected = True
+                                                        accident_desc = f"Collision heuristic ({iou:.2f} IoU)"
+                                            
+                                            if accident_detected:
+                                                break
+                                        if accident_detected:
+                                            break
+
+                                if accident_detected:
+                                    # Notify and Save (Throttled)
+                                    current_time = time.time()
+                                    last_acc = getattr(self, 'last_accident_log', 0)
+                                    if hasattr(self, 'accident_controller') and self.accident_controller:
+                                        if current_time - last_acc > 10.0:
+                                            self.accident_controller.report_accident(lane=lane_id, severity="Severe", description=accident_desc)
+                                            self.last_accident_log = current_time
+                                            self.root.after(0, lambda: self.notification_manager.show("Accident Alert", f"Collision detected on Lane {lane_id}", "error"))
                             # -------------------------------------------------------------
                         
                     # Apply final filters (Dark Mode)
@@ -617,6 +664,11 @@ class MainController:
                     # Push full typed detections into the new TrafficLightController
                     # This enables congestion weighting, emergency detection, and starvation tracking.
                     self.traffic_controller.update_lane_detections(lane_id, detections)
+
+                    # Cache the latest frame per lane for violation screenshot capture
+                    self._lane_frames[lane_id] = (
+                        annotated_frame.copy() if annotated_frame is not None else None
+                    )
                     
                     # Update dashboard display safely on main thread
                     if self.current_page and hasattr(self.current_page, 'update_camera_feed'):
@@ -740,6 +792,38 @@ class MainController:
             # Small delay — 10 FPS UI update rate; controller observes at 1-sec cadence
             time.sleep(0.1)
     
+    def _rule_violation_screenshot(self, lane_id: int, frame):
+        """
+        Callback invoked by DQNRuleController when a pedestrian violation
+        (z_jaywalker) is detected. Saves the frame through the violation
+        controller and shows a UI notification.
+        """
+        try:
+            import cv2, os
+            # Try to get the cached frame for this lane if none supplied
+            if frame is None:
+                frame = self._lane_frames.get(lane_id)
+
+            if frame is not None and hasattr(self, 'violation_controller') and self.violation_controller:
+                self.violation_controller.save_violation(
+                    lane=lane_id,
+                    violation_type="Pedestrian Violation (Jaywalker)",
+                    frame=frame
+                )
+                self.session_violations += 1
+                direction = self.directions[lane_id] if lane_id < len(self.directions) else str(lane_id)
+                self.logger.info(
+                    f"[RuleCtrl] Pedestrian violation screenshot saved — "
+                    f"Lane {lane_id} ({direction.upper()})"
+                )
+                self.root.after(0, lambda: self.notification_manager.show(
+                    "Pedestrian Violation",
+                    f"Jaywalker detected on Lane {lane_id}",
+                    "violation"
+                ))
+        except Exception as e:
+            self.logger.error(f"[RuleCtrl] Failed to save violation screenshot: {e}")
+
     def stop_camera(self):
         """Stop camera feed"""
         self.is_running = False
@@ -758,3 +842,4 @@ class MainController:
         self.stop_camera()
         if self.on_logout_callback:
             self.on_logout_callback()
+
