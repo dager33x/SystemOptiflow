@@ -61,30 +61,29 @@ class NotificationToast(ctk.CTkFrame):
             for inner in child.winfo_children():
                 inner.bind("<Button-1>", dismiss)
 
-    def animate_slide_in(self, target_x, target_y):
-        """Starts off-screen to the right and slides in rapidly"""
+    def animate_slide_in(self, target_y, right_margin):
+        """Starts off-screen to the right and slides in rapidly, immune to screen resizing"""
         try:
-            self.target_x = target_x
-            screen_w = self.winfo_toplevel().winfo_width()
-            self.current_x = screen_w + 20  # Start slightly off screen
+            self.target_offset = -right_margin
+            self.current_offset = 20  # Start slightly off screen
             
-            self.place(x=self.current_x, y=target_y)
+            self.place(relx=1.0, x=self.current_offset, y=target_y, anchor="ne")
             self.lift()
             self._slide_in()
         except:
             # Fallback
-            self.place(x=target_x, y=target_y)
+            self.place(relx=1.0, x=-right_margin, y=target_y, anchor="ne")
 
     def _slide_in(self):
         if self._is_closing: return
         try:
-            if self.current_x > self.target_x:
-                self.current_x -= 35  # slide speed
-                if self.current_x <= self.target_x:
-                    self.current_x = self.target_x
-                    self.place(x=self.current_x)
+            if self.current_offset > self.target_offset:
+                self.current_offset -= 35  # slide speed
+                if self.current_offset <= self.target_offset:
+                    self.current_offset = self.target_offset
+                    self.place(relx=1.0, x=self.current_offset, anchor="ne")
                     return
-                self.place(x=self.current_x)
+                self.place(relx=1.0, x=self.current_offset, anchor="ne")
                 self.after(10, self._slide_in)
         except:
             pass
@@ -105,12 +104,13 @@ class NotificationToast(ctk.CTkFrame):
     def _slide_out(self):
         """Slide off screen to the right before destroying"""
         try:
-            screen_w = self.winfo_toplevel().winfo_width()
-            current_x = self.winfo_x()
-            
-            if current_x < screen_w:
-                self.place(x=current_x + 30)
-                self.after(10, self._slide_out)
+            if hasattr(self, 'current_offset'):
+                if self.current_offset < 50: # Arbitrary point where it's visibly offscreen
+                    self.current_offset += 30
+                    self.place(relx=1.0, x=self.current_offset, anchor="ne")
+                    self.after(10, self._slide_out)
+                else:
+                    self.destroy()
             else:
                 self.destroy()
         except Exception:
@@ -144,14 +144,8 @@ class NotificationManager:
         count = len(self.notifications)
         offset_y = self.start_y + (count * (self.height + self.spacing))
         
-        # We need the screen width to place it on the right side.
-        # Ensure we're reading the actual geometry if the window has rendered
-        self.root.update_idletasks()
-        screen_width = self.root.winfo_width()
-        target_x = screen_width - self.width - self.right_margin
-        
-        # Slide in animation
-        toast.animate_slide_in(target_x, offset_y)
+        # Slide in animation using purely relative placement
+        toast.animate_slide_in(offset_y, self.right_margin)
         
         self.notifications.append(toast)
         
@@ -173,7 +167,10 @@ class NotificationManager:
         for i, toast in enumerate(self.notifications):
             target_y = self.start_y + (i * (self.height + self.spacing))
             try:
-                # We can do a smooth vertical slide here too, but a snap is clean for stack rearranging
-                toast.place(y=target_y)
+                # We update just the y coordinate (relx and x are retained)
+                if hasattr(toast, 'current_offset'):
+                    toast.place(relx=1.0, x=toast.current_offset, y=target_y, anchor="ne")
+                else:
+                    toast.place(y=target_y)
             except tk.TclError:
                 pass

@@ -186,7 +186,7 @@ class ViolationLogsPage:
 
         dialog = ctk.CTkToplevel(self.frame)
         dialog.title("Violation Snapshot")
-        dialog.geometry("700x700")
+        dialog.geometry("800x850")
         dialog.configure(fg_color=Colors.BACKGROUND)
         
         dialog.attributes('-topmost', True)
@@ -218,8 +218,16 @@ class ViolationLogsPage:
         except Exception as e:
             ctk.CTkLabel(img_frame, text=f"Error loading image: {e}", text_color=Colors.DANGER).pack(expand=True)
 
+        # Description Input Box
+        desc_label = ctk.CTkLabel(inner, text="Add PDF Description (Optional):", font=('Segoe UI', 13, 'bold'), text_color=Colors.TEXT_MUTED)
+        desc_label.pack(anchor=tk.W, padx=20)
+        
+        desc_box = ctk.CTkTextbox(inner, height=80, fg_color="#1E293B", text_color=Colors.TEXT, corner_radius=8, border_width=1, border_color="#334155")
+        desc_box.pack(fill=tk.X, padx=20, pady=(5, 15))
+
         def download_pdf():
             try:
+                from PIL import ImageDraw, ImageFont
                 raw_time = log.get('created_at') or log.get('timestamp', 'log')
                 safe_time = raw_time.replace(':', '-').replace('.', '-')
                 pdf_path = filedialog.asksaveasfilename(
@@ -233,7 +241,44 @@ class ViolationLogsPage:
                     pdf_img = Image.open(image_path)
                     if pdf_img.mode == 'RGBA':
                         pdf_img = pdf_img.convert('RGB')
-                    pdf_img.save(pdf_path, "PDF", resolution=100.0)
+                        
+                    description = desc_box.get("1.0", "end-1c").strip()
+                    
+                    if description:
+                        # Append white space at the bottom for text
+                        margin = 40
+                        # Estimate text height roughly
+                        lines = description.split('\n')
+                        # 75px for headers + 25px per line of description + margins
+                        text_height_est = 75 + len(lines) * 25 + (margin * 2)
+                        
+                        new_img = Image.new('RGB', (pdf_img.width, pdf_img.height + text_height_est), color=(255, 255, 255))
+                        new_img.paste(pdf_img, (0, 0))
+                        
+                        draw = ImageDraw.Draw(new_img)
+                        try:
+                            # Try modern standard fonts or default
+                            font = ImageFont.truetype("arial.ttf", 20)
+                        except:
+                            font = ImageFont.load_default()
+                            
+                        y_text = pdf_img.height + margin
+                        
+                        # Add metadata and user description
+                        draw.text((margin, y_text), "Violation Details:", fill=(0, 0, 0), font=font)
+                        y_text += 25
+                        draw.text((margin, y_text), f"Date/Time: {safe_time.replace('-', ':')}", fill=(0, 0, 0), font=font)
+                        y_text += 25
+                        draw.text((margin, y_text), "Description:", fill=(0, 0, 0), font=font)
+                        y_text += 25
+                        for line in lines:
+                            draw.text((margin, y_text), line, fill=(0, 0, 0), font=font)
+                            y_text += 25
+                            
+                        new_img.save(pdf_path, "PDF", resolution=100.0)
+                    else:
+                        pdf_img.save(pdf_path, "PDF", resolution=100.0)
+                        
                     messagebox.showinfo("Success", "PDF saved successfully!", parent=dialog)
             except Exception as e:
                 messagebox.showerror("Error", f"Could not save PDF: {e}", parent=dialog)
@@ -244,7 +289,7 @@ class ViolationLogsPage:
              dialog.destroy()
              
         btn_frame = ctk.CTkFrame(inner, fg_color="transparent")
-        btn_frame.pack(fill=tk.X)
+        btn_frame.pack(fill=tk.X, padx=20, pady=(10, 0))
         
         ctk.CTkButton(btn_frame, text="Download as PDF", command=download_pdf, font=('Segoe UI', 13, 'bold'), fg_color=Colors.PRIMARY, hover_color=Colors.PRIMARY_DARK, corner_radius=8, height=40).pack(side=tk.RIGHT)
         ctk.CTkButton(btn_frame, text="Close", command=safely_close, font=('Segoe UI', 13, 'bold'), fg_color='transparent', hover_color='#334155', border_color='#334155', border_width=1, corner_radius=8, height=40).pack(side=tk.RIGHT, padx=10)

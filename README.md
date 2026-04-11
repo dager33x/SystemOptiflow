@@ -248,9 +248,8 @@ SystemOptiflow/
 ├── detection/                     # AI/ML modules
 │   ├── camera_manager.py         # OpenCV integration
 │   ├── yolo_detector.py          # YOLO detection
-│   ├── deep_q_learning.py        # DQN model
-│   └── traffic_optimizer.py      # Signal optimization
-│
+│   ├── dqn_rule_controller.py    # Strict Rule-Based Override Logic
+│   └── camera_manager.py         # Multi-camera interface
 └── views/                         # UI components
     ├── main_window.py            # Main layout
     ├── styles.py                 # Colors & fonts
@@ -305,9 +304,9 @@ print(f"Green time: {signal_timing['green_time']}s")
 
 ### Optimize Traffic Flow
 ```python
-from detection.traffic_optimizer import TrafficOptimizer
+from detection.traffic_controller import TrafficLightController
 
-optimizer = TrafficOptimizer()
+optimizer = TrafficLightController()
 optimization = optimizer.optimize_signal(vehicle_count=25)
 
 recommendations = optimizer.get_recommendations()

@@ -50,7 +50,7 @@ class SettingsPage:
         
         system_options = [
             ("Enable AI Detection", "enable_detection"),
-            ("Simulate Events", "enable_sim_events"), 
+            ("Violations & Accident Simulator", "enable_sim_events"), 
             ("Camera Filter (Invert)", "dark_mode_cam"),
             ("Enhance Video (CPU Heavy)", "enable_video_enhancement"),
         ]

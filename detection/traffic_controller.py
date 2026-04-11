@@ -54,6 +54,11 @@ from .deep_q_learning import (
     MAX_GREEN_NORMAL, MAX_GREEN_EMERGENCY, STARVATION_THRESHOLD,
     VEHICLE_WEIGHTS
 )
+from .dqn_rule_controller import (
+    DQNRuleController,
+    ACTION_EXTEND_GREEN,
+    CLASS_ACCIDENT, CLASS_EMERGENCY, CLASS_VIOLATION,
+)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Emergency overlay confirmation window (seconds of consistent detection needed)
@@ -90,13 +95,27 @@ class TrafficLightController:
             except Exception as e:
                 self.logger.warning(f"[Controller] Could not load model ({e}). Fresh network.")
 
+        # Rule-based safety layer (wraps DQN with priority overrides)
+        self.rule_controller = DQNRuleController(
+            dqn=self.dqn,
+            num_lanes=num_lanes,
+            screenshot_callback=None,   # set via set_screenshot_callback()
+        )
+
+        # Last rule audit result (exposed for dashboard / logging)
+        self.last_rule_audit: dict = {}
+
         # ── Phase state ──────────────────────────────────────────────────────
         self.active_lane          = 0
         self.current_phase        = 'green'     # 'green' | 'yellow' | 'all_red'
         self.phase_start_time     = time.time()
         self.phase_duration       = float(NORMAL_MIN_GREEN)
         self.elapsed_green        = 0.0
+        self.last_obs_elapsed     = 0.0
         self.buffer_locked        = True        # True during first 10 s of green
+        # One-time recalibration flag: set True once we extend at buffer-unlock.
+        # Prevents the extend logic from firing on every subsequent 1.5-s tick.
+        self._phase_recalibrated  = False
 
         # ── Per-lane statistics ──────────────────────────────────────────────
         self.lane_stats: Dict[int, Dict] = {
@@ -122,24 +141,8 @@ class TrafficLightController:
         # ── Rotation tracker (guarantees all 4 lanes served per cycle) ───────
         self.lanes_served_this_cycle: List[int] = [0]
 
-        # ── Emergency state machine ──────────────────────────────────────────
-        # Rule 4: detect → observe 2.5 s → confirm → activate
-        self._em_candidate_lane:   Optional[int]   = None   # lane under observation
-        self._em_observe_start:    Optional[float] = None   # when observation started
-        self._em_active:           bool             = False  # emergency green is live
-        self._em_cooldown:         Dict[int, float] = {}     # lane → cooldown_until
         self.is_emergency_active:  bool             = False  # green phase is emergency
-
-        # Rule 5: exact timer resume
-        # When a lane is interrupted by emergency, store remaining time precisely.
-        self._interrupted_lane:          Optional[int]   = None
-        self._interrupted_remaining:     float           = 0.0   # seconds remaining
-        self._interrupted_alloc:         float           = 0.0   # original allocation
-
-        # Pending emergency: confirmed mid-green, waiting for yellow → all_red → switch
-        self._pending_emergency_lane:    Optional[int]   = None
-        self._em_warned:                 bool            = False  # 10-s warning already issued
-
+        self.logger.info(f"[Controller] Initialized with {num_lanes} lanes")
         self.logger.info(f"[Controller] Initialized with {num_lanes} lanes")
 
     # ── Lane label helper ────────────────────────────────────────────────────
@@ -189,75 +192,27 @@ class TrafficLightController:
         }
 
     # ════════════════════════════════════════════════════════════════════════
-    # EMERGENCY OBSERVATION  (Rule 4)
-    # ════════════════════════════════════════════════════════════════════════
-    def _tick_emergency_observation(self, current_time: float) -> Optional[int]:
-        """
-        Run the 2.5-second observation window for emergency vehicles.
-
-        Returns the confirmed emergency lane index if ready to activate,
-        None otherwise.
-        """
-        # Scan red lanes for emergency vehicles (not on cooldown)
-        em_lanes = []
-        for i in range(self.num_lanes):
-            if i == self.active_lane:
-                continue
-            if not self.lane_stats[i].get('emergency_flag', False):
-                continue
-            if current_time <= self._em_cooldown.get(i, 0.0):
-                continue
-            em_lanes.append(i)
-
-        if not em_lanes:
-            # No emergency visible → reset observation
-            self._em_candidate_lane = None
-            self._em_observe_start  = None
-            return None
-
-        # Pick the highest-urgency candidate (largest bbox area proxy: wait time)
-        wait_times = [self.lane_stats[i]['wait_time'] for i in range(self.num_lanes)]
-        em_lanes.sort(key=lambda i: wait_times[i], reverse=True)
-        best_candidate = em_lanes[0]
-
-        if best_candidate != self._em_candidate_lane:
-            # New candidate → restart observation window
-            self._em_candidate_lane = best_candidate
-            self._em_observe_start  = current_time
-            self.logger.info(
-                f"[EM] Observation started: Lane {best_candidate} "
-                f"({self._lane_label(best_candidate)}) — watching for {EMERGENCY_CONFIRM_SECS}s"
-            )
-            return None
-
-        # Same candidate — check if 2.5 s window has elapsed
-        elapsed_obs = current_time - (self._em_observe_start or current_time)
-        if elapsed_obs >= EMERGENCY_CONFIRM_SECS:
-            self.logger.warning(
-                f"[EM] CONFIRMED after {elapsed_obs:.1f}s: "
-                f"Lane {best_candidate} ({self._lane_label(best_candidate)})"
-            )
-            self._em_candidate_lane = None
-            self._em_observe_start  = None
-            return best_candidate
-
-        return None
-
-    # ════════════════════════════════════════════════════════════════════════
     # DECISION ENGINE  (called from all_red → green transition)
     # ════════════════════════════════════════════════════════════════════════
+    # ── Public helper: wire in violation screenshot callback ────────────────
+    def set_screenshot_callback(self, callback):
+        """Provide a ``callback(lane_id, frame)`` for violation screenshots."""
+        self.rule_controller.screenshot_callback = callback
+
     def make_decision(self, all_lane_counts: List[int],
                        current_time: Optional[float] = None) -> Dict:
         """
         Choose the next green lane and its duration.
 
-        Priority hierarchy:
-          1. Emergency override (confirmed after 2.5 s observation)
-          2. Resume interrupted lane (exact remaining time from Rule 5)
-          3. DQN-assisted rotation (all 4 lanes guaranteed per cycle)
-          4. Starvation rescue (hard override for extreme waits)
+        Priority hierarchy (integrated with DQNRuleController):
+          1. Rule controller: buffer / emergency / fairness / accident / violation
+          2. Emergency override (confirmed after 2.5 s observation)
+          3. Resume interrupted lane (exact remaining time from Rule 5)
+          4. DQN-assisted rotation (all 4 lanes guaranteed per cycle)
+          5. Starvation rescue (hard override for extreme waits)
 
-        Green time uses relative congestion (Rule 2).
+        Green time uses relative congestion (Rule 2) +
+        congestion extension from DQNRuleController.
         """
         if current_time is None:
             current_time = time.time()
@@ -276,54 +231,38 @@ class TrafficLightController:
         next_lane       = None
         green_time      = NORMAL_MIN_GREEN
         mode_info       = ""
-        resume_duration = None    # set when resuming an interrupted lane
 
-        # ── PRIORITY 1: Resolve emergency candidate ───────────────────────────
-        # Either from the pending queue (confirmed mid-green + 10s warning served)
-        # or from a fresh 2.5-s observation tick (emergency appeared during all_red).
-        if self._pending_emergency_lane is not None:
-            confirmed_em = self._pending_emergency_lane
-            self._pending_emergency_lane = None
-            self._em_warned = False
-        else:
-            confirmed_em = self._tick_emergency_observation(current_time)
+        # ── RUN RULE CONTROLLER PIPELINE (Priorities 1-4) ────────────────────
+        # Emergency processing is fully self-contained in DQNRuleController.
+        # This directly respects exit buffers, lock times, and accident safety.
+        rule_action, audit = self.rule_controller.step(
+            lane_detections=lane_detections,
+            wait_times=wait_times,
+            active_lane=self.active_lane,
+            elapsed_green=self.elapsed_green,
+            buffer_locked=self.buffer_locked,
+            is_green_phase=False,
+        )
+        self.last_rule_audit = audit
 
-        # ── PRIORITY 2: Act on confirmed emergency ───────────────────────────
-        if confirmed_em is not None:
-            # By the time make_decision runs (from all_red), the green phase is
-            # already over — no mid-phase interrupt needed here.
-            # _interrupted_lane was already set in update_phase when the warning cut
-            # was applied; just activate the emergency lane.
-            next_lane    = confirmed_em
-            is_emergency = True
-            green_time   = MAX_GREEN_EMERGENCY
-            mode_info    = (f"EMERGENCY OVERRIDE "
-                            f"(after {EMERGENCY_CONFIRM_SECS}s observation)")
-            self._em_active = True
-            self._em_cooldown[next_lane] = current_time + EMERGENCY_COOLDOWN_SECS
+        rule_label  = audit.get('rule_fired', 'dqn')
+        rule_detail = audit.get('details', '')
 
-        # ── PRIORITY 3: Resume interrupted lane (Rule 5) ─────────────────────
-        elif self._interrupted_lane is not None:
-            next_lane       = self._interrupted_lane
-            resume_duration = self._interrupted_remaining
-            mode_info = (
-                f"RESUME Lane {next_lane} — "
-                f"{resume_duration:.1f}s remaining of "
-                f"{self._interrupted_alloc:.0f}s original"
-            )
-            self.logger.info(
-                f"[Resume] Restoring Lane {next_lane} "
-                f"({self._lane_label(next_lane)}) "
-                f"with EXACT {resume_duration:.1f}s remaining"
-            )
-            self._interrupted_lane      = None
-            self._interrupted_remaining = 0.0
-            self._interrupted_alloc     = 0.0
-            self._em_active = False
+        # High priority override from Rules
+        if rule_label not in ('dqn', 'buffer', 'emergency_lock', 'emergency_keep_green', 'emergency_exit_buffer'):
+            if rule_action != ACTION_EXTEND_GREEN:
+                next_lane = rule_action
+                mode_info = f"RULE:{rule_label.upper()} | {rule_detail}"
+                
+                # Check if it was an emergency trigger
+                if 'emergency' in rule_label:
+                    is_emergency = True
+                    green_time = MAX_GREEN_EMERGENCY
+                    self.is_emergency_active = True
 
-        # ── RULE 2/3: DQN-assisted rotation ──────────────────────────────────
+        # ── DQN rotation + scoring (fallback if no hard rule switch) ─────────
         if next_lane is None:
-            self._em_active = False
+            self.is_emergency_active = False
 
             # Mark active lane as served in this cycle
             if self.active_lane not in self.lanes_served_this_cycle:
@@ -344,25 +283,38 @@ class TrafficLightController:
                 st = torch.FloatTensor(state).unsqueeze(0).to(self.dqn.device)
                 q_values = self.dqn.policy_net(st).squeeze(0).cpu().numpy()
 
-            scored = []
-            for lane_idx in candidates:
-                q_score     = float(q_values[lane_idx])
-                pressure    = TrafficStateBuilder.relative_pressure(all_w[lane_idx], all_w)
-                wait_bonus  = wait_times[lane_idx] * 0.1
-                cong_bonus  = pressure * 10.0
-                scored.append((q_score + wait_bonus + cong_bonus, lane_idx))
+                scored = []
+                for lane_idx in candidates:
+                    q_score    = float(q_values[lane_idx])
+                    pressure   = TrafficStateBuilder.relative_pressure(all_w[lane_idx], all_w)
+                    # ── Well-weighted heuristic bonuses ───────────────────────────
+                    # wait_bonus: 60s wait → +24 pts  (was 0.1 → +6 max)
+                    wait_bonus = wait_times[lane_idx] * 0.4
+                    # cong_bonus: dominant lane (pressure=1.0) → +40 pts  (was 10 max)
+                    cong_bonus = pressure * 40.0
+                    # em_bonus: any emergency vehicle in this lane → +500 pts (instant win)
+                    em_bonus   = 500.0 if self.lane_stats[lane_idx].get('emergency_flag') else 0.0
+                    # acc_penalty: accident in candidate lane → −100 pts(was −50)
+                    acc_penalty = -100.0 if any(
+                        d.get('class_name') == CLASS_ACCIDENT
+                        for d in lane_detections[lane_idx]
+                    ) else 0.0
+                    total = q_score + wait_bonus + cong_bonus + em_bonus + acc_penalty
+                    scored.append((total, lane_idx))
 
-            scored.sort(reverse=True)
-            next_lane = scored[0][1]
+                scored.sort(reverse=True)
+                next_lane = scored[0][1]
 
-            pressure  = TrafficStateBuilder.relative_pressure(all_w[next_lane], all_w)
-            label     = TrafficStateBuilder.congestion_label(pressure)
-            mode_info = (
-                f"DQN+ROTATION | Q={q_values[next_lane]:.2f} | "
-                f"{label.upper()} {pressure*100:.0f}% | "
-                f"cycle {len(self.lanes_served_this_cycle)}/{self.num_lanes} | "
-                f"candidates={candidates}"
-            )
+                pressure  = TrafficStateBuilder.relative_pressure(all_w[next_lane], all_w)
+                label     = TrafficStateBuilder.congestion_label(pressure)
+                top_score = scored[0][0]
+                mode_info = (
+                    f"DQN+ROTATION | Q={q_values[next_lane]:.2f} | "
+                    f"{label.upper()} {pressure*100:.0f}% | "
+                    f"score={top_score:.1f} | "
+                    f"cycle {len(self.lanes_served_this_cycle)}/{self.num_lanes} | "
+                    f"candidates={candidates}"
+                )
 
         # ── RULE 2: Starvation rescue ─────────────────────────────────────────
         worst_wait  = max(wait_times)
@@ -374,24 +326,23 @@ class TrafficLightController:
             next_lane = starved
             mode_info = f"STARVATION RESCUE ({worst_wait:.0f}s wait)"
 
-        # ── RULE 2: Green time allocation ────────────────────────────────────
+        # ── GREEN TIME ALLOCATION ───────────────────────────────────────────
         if not is_emergency:
-            if resume_duration is not None:
-                # Rule 5: resume the EXACT remaining time (at least buffer)
-                green_time = max(float(MIN_BUFFER_TIME), resume_duration)
+            w_count = all_w[next_lane]
+            
+            green_time = float(TrafficStateBuilder.calculate_green_time(
+                w_count,
+                has_accident=self.lane_stats[next_lane].get('accident_flag', False),
+                has_violation=False
+            ))
+            mode_info += f" [RAW {w_count:.1f} → {int(green_time)}s]"
 
-            elif all_w[next_lane] < 1.0:
-                # Lane is EMPTY: give exactly the buffer minimum (10 s).
-                # The counter shows: 10, 9, 8 ... 1, 0 → YELLOW — clean and predictable.
-                green_time = float(MIN_BUFFER_TIME)
-                mode_info += " [EMPTY → 10s buffer only]"
-
-            else:
-                # Relative congestion: more vehicles relative to others = longer green.
-                green_time = float(TrafficStateBuilder.relative_green_time(next_lane, all_w))
-                pressure   = TrafficStateBuilder.relative_pressure(all_w[next_lane], all_w)
-                label      = TrafficStateBuilder.congestion_label(pressure)
-                mode_info += f" [{label.upper()} {pressure*100:.0f}%]"
+            # ── Honour congestion extension hint from last rule audit ───────
+            ext = self.last_rule_audit.get('green_extension', 0)
+            if ext > 0 and next_lane == self.last_rule_audit.get('target_lane', -1):
+                old_gt = green_time
+                green_time = min(float(MAX_GREEN_NORMAL), green_time + ext)
+                mode_info += f" [+{int(green_time - old_gt)}s cong-ext]"
 
             # Accident: halve green, floor at hard buffer
             if self.lane_stats[next_lane]['accident_flag']:
@@ -407,7 +358,9 @@ class TrafficLightController:
         self.phase_start_time    = current_time
         self.phase_duration      = green_time
         self.elapsed_green       = 0.0
+        self.last_obs_elapsed    = 0.0
         self.buffer_locked       = True
+        self._phase_recalibrated = False   # reset for the new phase
         self.is_emergency_active = is_emergency
         self.decisions_made     += 1
 
@@ -444,10 +397,12 @@ class TrafficLightController:
         Per-tick actions during GREEN:
           • Update buffer_locked flag.
           • Run emergency observation window (Rule 4).
-          • Apply dynamic green cut if congestion drops (Rule 3):
-              - Empty lane (w < 1) → cut to MIN_BUFFER_TIME (10 s).
-              - Lower congestion   → recalculate; trim if smaller.
-              - NEVER below 10 s from phase start.
+          • Apply dynamic green adjustment if congestion changes (Rule 3):
+              - Empty lane (w < 1) → trim to MIN_BUFFER_TIME + small safety margin.
+              - Vehicle count drops → trim GRADUALLY and PROPORTIONALLY (never abrupt).
+              - Vehicle count stays high → EXTEND phase_duration to prevent premature cut.
+              - NEVER below MIN_BUFFER_TIME absolute floor.
+              - Max extension capped at MAX_GREEN_NORMAL.
 
         Transitions:
           green → yellow → all_red → green (make_decision)
@@ -457,97 +412,111 @@ class TrafficLightController:
         self.elapsed_green = elapsed
         self.buffer_locked = (elapsed < float(MIN_BUFFER_TIME))
 
-        # ── Emergency early exit (Rule 4: vehicle cleared or max reached) ─────
-        if self.is_emergency_active and self.current_phase == 'green':
-            current_em = self.lane_stats[self.active_lane].get('emergency_flag', False)
-            if not current_em or elapsed >= MAX_GREEN_EMERGENCY:
-                # Emergency resolved — end green now
-                self.phase_duration = elapsed
-                self.logger.info(
-                    f"[EM] Emergency lane {self.active_lane} cleared @ {elapsed:.1f}s"
-                )
+        # ── LIVE DQN RULE EVALUATION (1-second cadence) ──────────────────────
+        if self.current_phase == 'green':
+            lane_detections = [self.lane_stats[i].get('detections', []) for i in range(self.num_lanes)]
+            wait_times      = [self.lane_stats[i].get('wait_time', 0.0) for i in range(self.num_lanes)]
+            
+            rule_action, audit = self.rule_controller.step(
+                lane_detections=lane_detections,
+                wait_times=wait_times,
+                active_lane=self.active_lane,
+                elapsed_green=elapsed,
+                buffer_locked=self.buffer_locked,
+                is_green_phase=True,
+            )
+            
+            # ── Dynamically update UI Timer for emergency buffers ──
+            if audit.get('rule_fired') == 'emergency_exit_buffer':
+                # Force the phase duration to visually track the 10s countdown
+                exit_timer = getattr(self.rule_controller, 'exit_timer', 0.0)
+                buffer_remaining = max(0.0, 10.0 - exit_timer)
+                self.phase_duration = elapsed + buffer_remaining
+            elif audit.get('rule_fired') == 'emergency_yield_buffer':
+                # Force the phase duration to track the 10s yield warning countdown
+                yield_start = getattr(self.rule_controller, '_yield_buffer_start', elapsed)
+                current_time_for_yield = time.time()
+                yield_timer = current_time_for_yield - yield_start
+                buffer_remaining = max(0.0, 10.0 - yield_timer)
+                self.phase_duration = elapsed + buffer_remaining
 
-        # ── Dynamic green cut  (Rule 1 + Rule 3) ─────────────────────────────
-        # Only after the 10-second buffer has fully elapsed.
+            # If the rule controller demands a switch (not EXTEND and not current lane)
+            elif rule_action != ACTION_EXTEND_GREEN and rule_action != self.active_lane:
+                # Do NOT cut the timer dynamically just because the DQN changed its mind midway.
+                if audit.get('rule_fired') in ('dqn', 'accident_redirect', 'accident_allow_no_alt'):
+                    pass
+                else:
+                    # Strict safety overrides (Emergency, Starvation) allow cutting the timer
+                    if elapsed > self.phase_duration - 0.5:
+                        pass # already ending
+                    else:
+                        self.logger.info(
+                            f"⚡ [Rule Interruption] Dynamic phase cut triggered "
+                            f"by {audit.get('rule_fired')} : {audit.get('details')}\n"
+                            f"Applying 10s warning buffer."
+                        )
+                        self.phase_duration = min(self.phase_duration, elapsed + 10.0)
+
+        # ── Dynamic green adjustment (1.5-Second Observation Loop) ───────────
+        #
+        # DESIGN: The timer must be STABLE — it should only count down, never
+        # jump upward. Two separate mechanisms achieve this:
+        #
+        #   A) ONE-TIME RECALIBRATION at buffer-unlock (elapsed just crossed
+        #      MIN_BUFFER_TIME): if the initial allocation was too short for
+        #      the actual live vehicle count, extend ONCE to the ideal total.
+        #      This handles starvation-rescue phases that were given a minimal
+        #      green time but still have heavy traffic.
+        #
+        #   B) CONTINUOUS TRIM-ONLY (every 1.5 s after recalibration): if
+        #      vehicles clear, gradually reduce phase_duration toward ideal.
+        #      STEP_RATE caps the reduction per tick so it is never abrupt.
+        #      The timer NEVER extends here — that would make it jump upward.
         if (self.current_phase == 'green'
-                and not self.buffer_locked
-                and not self.is_emergency_active):
+                and not getattr(self.rule_controller, 'emergency_active', False)
+                and not self.buffer_locked):   # never adjust during the hard 10s floor
 
-            lane_w = self.lane_stats[self.active_lane].get('weighted_count', 0.0)
-            all_w  = [self.lane_stats[i].get('weighted_count', 0.0)
-                      for i in range(self.num_lanes)]
+            lane_w      = self.lane_stats[self.active_lane].get('weighted_count', 0.0)
+            has_acc     = self.lane_stats[self.active_lane].get('accident_flag', False)
+            ideal_total = float(TrafficStateBuilder.calculate_green_time(lane_w, has_acc, False))
 
-            if lane_w < 1.0:
-                # ── EMPTY lane: the 10-s buffer has already elapsed → end green NOW.
-                # Setting phase_duration = elapsed triggers YELLOW on the very next FSM
-                # check. The lane received its guaranteed 10 s (buffer) before this runs.
-                if elapsed > self.phase_duration - 0.5:   # already near the end
-                    pass   # let the FSM handle it naturally in the next block
-                else:
+            # ── A) One-time upward recalibration right after buffer unlocks ──
+            # Fires only once per phase (flag prevents repeat).
+            if not self._phase_recalibrated:
+                self._phase_recalibrated = True
+                if ideal_total > self.phase_duration + 1.0:
+                    # Phase was under-allocated — correct it once, silently.
+                    new_duration = min(float(MAX_GREEN_NORMAL), ideal_total)
                     self.logger.info(
-                        f"LIVE CUT (EMPTY): Lane {self.active_lane} "
-                        f"has 0 vehicles — ending green @ {elapsed:.1f}s "
-                        f"(was {self.phase_duration:.0f}s)"
+                        f"RECALIBRATE ▲ (once): Lane {self.active_lane} | "
+                        f"vehicles≈{lane_w:.0f} | "
+                        f"initial={self.phase_duration:.0f}s → recal={new_duration:.0f}s"
                     )
-                    self.phase_duration = elapsed   # end on this tick
-            else:
-                # ── CONGESTION DROPPED: recalculate from live counts ────────────
-                desired = float(TrafficStateBuilder.relative_green_time(self.active_lane, all_w))
-                # Never cut below where we already are (elapsed is the new floor)
-                desired = max(elapsed, float(MIN_BUFFER_TIME), desired)
-                if desired < self.phase_duration:
-                    pressure = TrafficStateBuilder.relative_pressure(lane_w, all_w)
-                    label    = TrafficStateBuilder.congestion_label(pressure)
-                    self.logger.info(
-                        f"LIVE CUT ({label.upper()}): Lane {self.active_lane} "
-                        f"congestion dropped → {self.phase_duration:.0f}s → {desired:.0f}s "
-                        f"(pressure {pressure*100:.0f}%, elapsed {elapsed:.1f}s)"
-                    )
-                    self.phase_duration = desired
+                    self.phase_duration = new_duration
 
-        # ── Emergency observation + mid-green interrupt (Rule 4) ────────────────
-        # Every second we run the observation window regardless of phase.
-        # If an emergency is CONFIRMED while lane is GREEN and no warning
-        # has been issued yet, we apply a 10-second driver-warning cut:
-        #   new phase_duration = elapsed + 10  (at least 10 more seconds)
-        # The interrupted lane's remaining time is stored for resume (Rule 5).
-        if not self._em_active:
-            confirmed_em = self._tick_emergency_observation(current_time)
+            # ── B) Continuous trim-only (every 1.5 s, post-recalibration) ───
+            elif elapsed - getattr(self, 'last_obs_elapsed', 0.0) >= 1.5:
+                self.last_obs_elapsed = elapsed
 
-            if (confirmed_em is not None
-                    and self.current_phase == 'green'
-                    and not self._em_warned
-                    and self._pending_emergency_lane is None):
-
-                # ── Apply the 10-second warning cut ───────────────────────────
-                warning_end = elapsed + float(MIN_BUFFER_TIME)  # 10 more s
-
-                # Store interruption info for Rule 5 resume BEFORE cutting
-                natural_remaining = max(0.0, self.phase_duration - elapsed)
-                self._interrupted_lane      = self.active_lane
-                self._interrupted_remaining = natural_remaining
-                self._interrupted_alloc     = self.phase_duration
-                self._pending_emergency_lane = confirmed_em
-                self._em_warned              = True
-
-                if warning_end < self.phase_duration:
-                    # There is more than 10 s left — trim to give exactly 10 s
-                    self.logger.warning(
-                        f"⚠️ [EM] Emergency detected on Lane {confirmed_em} "
-                        f"({self._lane_label(confirmed_em)})! "
-                        f"Lane {self.active_lane} "
-                        f"({self._lane_label(self.active_lane)}) green cut: "
-                        f"{self.phase_duration:.0f}s → {warning_end:.0f}s "
-                        f"(10-second driver warning before yield)"
-                    )
-                    self.phase_duration = warning_end
-                else:
-                    # Phase already ending naturally within 10 s — no cut needed
-                    self.logger.info(
-                        f"⚠️ [EM] Emergency Lane {confirmed_em} queued. "
-                        f"Lane {self.active_lane} finishes naturally in "
-                        f"{natural_remaining:.0f}s (≤10s remaining, no cut)."
-                    )
+                if lane_w <= 5.0:
+                    new_duration = min(self.phase_duration, elapsed + 10.0)
+                    if new_duration < self.phase_duration:
+                        self.logger.info(
+                            f"LIVE TRIM ▼: Very low count! Reducing remaining time to 10s buffer. "
+                            f"duration {self.phase_duration:.1f}→{new_duration:.1f}s"
+                        )
+                        self.phase_duration = new_duration
+                elif ideal_total < self.phase_duration - 1.0:
+                    new_duration = max(ideal_total, elapsed + 10.0)
+                    new_duration = min(self.phase_duration, new_duration)
+                    if new_duration < self.phase_duration:
+                        self.logger.info(
+                            f"LIVE TRIM ▼: Proportionally reducing. Lane {self.active_lane} | "
+                            f"vehicles≈{lane_w:.0f} | "
+                            f"ideal={ideal_total:.0f}s | "
+                            f"duration {self.phase_duration:.1f}→{new_duration:.1f}s"
+                        )
+                        self.phase_duration = new_duration
 
         # ── Phase transition FSM ──────────────────────────────────────────────
         if elapsed >= self.phase_duration:
@@ -604,16 +573,21 @@ class TrafficLightController:
     def get_current_status(self) -> Dict:
         elapsed   = time.time() - self.phase_start_time
         remaining = max(0.0, self.phase_duration - elapsed)
+        
+        # Pull latest emergency state directly from Rule Engine
+        is_em = getattr(self.rule_controller, 'emergency_active', False)
+        em_lane = getattr(self.rule_controller, 'emergency_lane', None)
+
         return {
             'current_lane':       self.active_lane,
             'current_phase':      self.current_phase,
             'phase_elapsed':      elapsed,
             'phase_remaining':    remaining,
             'buffer_locked':      self.buffer_locked,
-            'is_emergency':       self.is_emergency_active,
-            'em_observing':       self._em_candidate_lane,
-            'interrupted_lane':   self._interrupted_lane,
-            'interrupted_remaining': self._interrupted_remaining,
+            'is_emergency':       is_em,
+            'em_observing':       em_lane,
+            'interrupted_lane':   None,
+            'interrupted_remaining': 0.0,
             'lane_stats':         self.lane_stats,
             'decisions_made':     self.decisions_made,
             'dqn_stats':          self.dqn.get_training_stats(),

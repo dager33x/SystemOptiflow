@@ -159,13 +159,15 @@ class TrafficStateBuilder:
 
     @staticmethod
     def calculate_green_time(weighted_count: float, has_accident: bool, has_violation: bool) -> int:
-        """Calculate green time extension based on congestion count."""
-        if weighted_count <= 5:
-            base_time = 25  # Small extension -> 25s
-        elif weighted_count <= 15:
-            base_time = 40  # Moderate extension -> 40s
+        """Calculate green time extension based on proportional congestion count."""
+        if weighted_count >= 40:
+            base_time = min(60.0, 40.0 + (weighted_count - 40.0))
+        elif weighted_count >= 15:
+            base_time = 20.0 + ((weighted_count - 15.0) / 24.0) * 20.0
+        elif weighted_count > 5:
+            base_time = 15.0 + ((weighted_count - 6.0) / 8.0) * 10.0
         else:
-            base_time = 60  # Longer extension -> 60s
+            base_time = float(MIN_BUFFER_TIME)
         
         # Accident restricted mode penalty -> reduce green extension
         if has_accident:
@@ -175,7 +177,8 @@ class TrafficStateBuilder:
         if has_violation:
             base_time -= 5
 
-        return max(NORMAL_MIN_GREEN, min(base_time, MAX_GREEN_NORMAL))
+        # Capped securely between NORMAL_MIN_GREEN (10s/15s) and MAX_GREEN_NORMAL (60s)
+        return max(MIN_BUFFER_TIME, min(int(base_time), MAX_GREEN_NORMAL))
 
     @staticmethod
     def relative_green_time(target_lane: int, all_w_counts: List[float], all_accidents: List[bool] = None, all_violations: List[bool] = None) -> int:
@@ -417,11 +420,11 @@ class TrafficLightDQN:
 
         # Wait time reduction
         delta_wait = sum(prev_wait_times) - sum(next_wait_times)
-        R_wait = delta_wait * 0.3
+        R_wait = delta_wait * 0.5
 
         # Queue length reduction
         delta_queue = sum(prev_queue_lengths) - sum(next_queue_lengths)
-        R_queue = delta_queue * 1.0
+        R_queue = delta_queue * 2.0
 
         R_emergency_green = 0.0
         R_emergency_ignore = 0.0
@@ -440,7 +443,7 @@ class TrafficLightDQN:
             if lane_idx != active_lane and wait >= STARVATION_THRESHOLD:
                 R_starvation -= 50.0 * (wait / STARVATION_THRESHOLD)
 
-        R_congestion = -0.5 * sum(next_queue_lengths)
+        R_congestion = -1.5 * sum(next_queue_lengths)
 
         # Accident-aware reward shaping
         R_accident = 0.0
@@ -463,9 +466,21 @@ class TrafficLightDQN:
         q_std = np.std(next_queue_lengths)
         R_balance = -2.0 * q_std
 
+        # Penalty for idle green lights (low vehicle count but long time)
+        R_idle = 0.0
+        if next_queue_lengths[active_lane] <= 5 and elapsed_green > 20:
+            R_idle = -20.0 * (elapsed_green / 20.0)
+
+        # Penalty for sudden unnecessary switching
+        R_switch = 0.0
+        is_switch = (action < NUM_LANES and action != active_lane)
+        if is_switch and prev_queue_lengths[active_lane] > 15:
+            R_switch = -40.0
+
         total = (R_wait + R_queue + R_emergency_green + R_emergency_ignore
                  + R_emergency_clear + R_buffer_violation + R_starvation 
-                 + R_congestion + R_accident + R_violation + R_balance)
+                 + R_congestion + R_accident + R_violation + R_balance
+                 + R_idle + R_switch)
 
         return float(np.clip(total, -500.0, 500.0))
 
@@ -594,13 +609,18 @@ class TrafficLightDQN:
     def load_model(self, filepath: str):
         try:
             ckpt = torch.load(filepath, map_location=self.device)
-            self.policy_net.load_state_dict(ckpt['policy_net'])
-            self.target_net.load_state_dict(ckpt['target_net'])
-            self.optimizer.load_state_dict(ckpt['optimizer'])
-            self.epsilon       = ckpt.get('epsilon', self.epsilon_end)
-            self.training_step = ckpt.get('training_step', 0)
-            self.episode_rewards = ckpt.get('episode_rewards', [])
-            self.losses        = ckpt.get('losses', [])
+            if isinstance(ckpt, dict) and 'policy_net' in ckpt:
+                self.policy_net.load_state_dict(ckpt['policy_net'])
+                self.target_net.load_state_dict(ckpt['target_net'])
+                if 'optimizer' in ckpt:
+                    self.optimizer.load_state_dict(ckpt['optimizer'])
+                self.epsilon       = ckpt.get('epsilon', self.epsilon_end)
+                self.training_step = ckpt.get('training_step', 0)
+                self.episode_rewards = ckpt.get('episode_rewards', [])
+                self.losses        = ckpt.get('losses', [])
+            else:
+                self.policy_net.load_state_dict(ckpt)
+                self.target_net.load_state_dict(ckpt)
             self.logger.info(f"[DQN] Model loaded ← {filepath}")
         except Exception as e:
             self.logger.error(f"[DQN] Load failed: {e}")
@@ -617,14 +637,18 @@ class TrafficLightDQN:
 
     # ── Action space helpers ──────────────────────────────────────────────
     @staticmethod
-    def get_allowed_actions(buffer_locked: bool, current_lane: int) -> List[int]:
+    def get_allowed_actions(phase_locked: bool, current_lane: int) -> List[int]:
         """
-        Return allowed action indices given the current buffer state.
+        Return allowed action indices given the current structural phase state.
 
-        If buffer_locked is True only 'extend' (action 4) and switching TO THE
-        SAME lane (which is equivalent to extend) are allowed — effectively
-        only action 4.  Once the buffer expires, all 5 actions are valid.
+        If phase_locked is True only 'extend' (action 4) is allowed, rigidly confining 
+        the AI while the intersection safely empties.
+        Once the phase strictly expires, force a lateral lane switch (0, 1, 2, 3).
         """
-        if buffer_locked:
-            return [4]          # can only extend within the 10-sec buffer
-        return list(range(ACTION_SIZE))   # all actions valid after buffer
+        if phase_locked:
+            return [4]          # force extend inside active mathematics
+        
+        allowed = list(range(NUM_LANES))
+        if current_lane in allowed:
+            allowed.remove(current_lane) # Ensure it physically switches
+        return allowed

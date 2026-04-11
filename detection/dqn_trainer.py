@@ -88,8 +88,11 @@ class TrafficSimulator:
         # Current green state
         self.active_lane      = random.randrange(self.num_lanes)
         self.elapsed_green    = 0.0
-        self.buffer_locked    = True     # start with buffer active
-        self.current_green_duration = float(NORMAL_MIN_GREEN)
+        self.last_obs_elapsed = 0.0
+        self.buffer_locked    = True     
+        self.phase_locked     = True
+        # Base mathematically starting green duration
+        self.current_green_duration = max(float(MIN_BUFFER_TIME), min(float(MAX_GREEN_NORMAL), self.queues[self.active_lane] * 1.5))
 
         # Time counter
         self.time_step = 0
@@ -113,37 +116,45 @@ class TrafficSimulator:
         self.time_step += 1
         self.elapsed_green += 1.0
 
-        # ─── Enforce minimum buffer (10 seconds) ───────────────────────
+        # ─── Simulated 1.5s Observation Dynamic Trim ─────────────────────
+        if not self.emergency[self.active_lane]:
+            if self.elapsed_green - getattr(self, 'last_obs_elapsed', 0.0) >= 1.5:
+                self.last_obs_elapsed = self.elapsed_green
+                remaining_needed = self.queues[self.active_lane] * 1.5
+                new_dur = self.elapsed_green + remaining_needed
+                new_dur = max(float(MIN_BUFFER_TIME), min(self.current_green_duration, new_dur))
+                if new_dur < self.current_green_duration - 0.5:
+                    self.current_green_duration = new_dur
+
+        # ─── Update Locks ────────────────────────────────────────────────
         self.buffer_locked = (self.elapsed_green < MIN_BUFFER_TIME)
+        self.phase_locked  = (self.elapsed_green < self.current_green_duration)
         buffer_violated    = False
 
         prev_wait_times  = self.wait_times.copy()
         prev_queue_lens  = [int(q) for q in self.raw_queues]
 
         # ─── Emergency prioritization override ─────────────────────────
-        # If any non-active lane has emergency AND buffer is expired → force switch
         emergency_override_lane = self._check_emergency_override()
         effective_action = action
 
         if emergency_override_lane is not None:
-            # Override DQN — switch to emergency lane immediately
             effective_action = emergency_override_lane
-        elif self.buffer_locked and action < NUM_LANES and action != self.active_lane:
-            # DQN tried to switch but buffer is still active
+        elif self.phase_locked and action < NUM_LANES and action != self.active_lane:
             buffer_violated  = True
-            effective_action = 4   # force extend
+            effective_action = 4
 
         # ─── Apply action ───────────────────────────────────────────────
         switched = False
         if effective_action < NUM_LANES and effective_action != self.active_lane:
-            # Lane switch
             self.active_lane              = effective_action
             self.elapsed_green            = 0.0
+            self.last_obs_elapsed         = 0.0
             self.buffer_locked            = True
-            # Assign green duration based on weighted congestion across all lanes
-            self.current_green_duration   = float(
-                TrafficStateBuilder.relative_green_time(self.active_lane, self.queues, self.accident, self.violation)
-            )
+            self.phase_locked             = True
+            
+            # Initial Proportional Assignment logic: count * 1.5
+            self.current_green_duration   = max(float(MIN_BUFFER_TIME), min(float(MAX_GREEN_NORMAL), self.queues[self.active_lane] * 1.5))
             switched = True
 
         # If EXTEND action or action == current lane → just continue
@@ -258,7 +269,7 @@ class TrafficSimulator:
             wait_times      = self.wait_times,
             active_lane     = self.active_lane,
             elapsed_green   = self.elapsed_green,
-            buffer_locked   = self.buffer_locked,
+            buffer_locked   = self.phase_locked, # Mirror true rigid phase locking into the observation stream
         )
 
     def _generate_detections(self) -> List[List[Dict]]:
@@ -360,7 +371,7 @@ class DQNTrainer:
             while not done:
                 # Determine which actions are currently allowed
                 allowed = TrafficLightDQN.get_allowed_actions(
-                    buffer_locked = self.simulator.buffer_locked,
+                    phase_locked  = getattr(self.simulator, 'phase_locked', False),
                     current_lane  = self.simulator.active_lane,
                 )
 
@@ -475,7 +486,7 @@ class DQNTrainer:
 
             while not done:
                 allowed = TrafficLightDQN.get_allowed_actions(
-                    buffer_locked = self.simulator.buffer_locked,
+                    phase_locked  = getattr(self.simulator, 'phase_locked', False),
                     current_lane  = self.simulator.active_lane,
                 )
                 action = self.model.get_action(state, training=False, allowed_actions=allowed)

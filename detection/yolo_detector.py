@@ -230,7 +230,7 @@ class YOLODetector:
     def detect_vehicles(self, frame: np.ndarray) -> List[Dict]:
         """Detect vehicles specifically"""
         result = self.detect(frame)
-        vehicles = [d for d in result["detections"] if d["class_name"] in ["car", "bus", "truck", "motorcycle", "bicycle", "emergency_vehicle", "z_accident", "jeepney"]]
+        vehicles = [d for d in result["detections"] if d["class_name"] in ["car", "bus", "truck", "motorcycle", "bicycle", "emergency_vehicle", "z_accident", "jeepney", "z_jaywalker", "z_non-jaywalker"]]
         return vehicles
     
     def detect_traffic_lights(self, frame: np.ndarray) -> List[Dict]:
@@ -242,5 +242,3 @@ class YOLODetector:
     def set_confidence_threshold(self, threshold: float):
         """Set confidence threshold for detections"""
         self.confidence_threshold = max(0, min(1, threshold))
-
-

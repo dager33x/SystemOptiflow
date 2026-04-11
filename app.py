@@ -13,6 +13,23 @@ from controllers.auth_controller import AuthController
 from controllers.violation_controller import ViolationController
 from controllers.accident_controller import AccidentController
 from controllers.emergency_controller import EmergencyController
+import customtkinter as ctk
+import platform
+import ctypes
+
+def enable_dpi_awareness():
+    """Enable DPI awareness for Windows to ensure crisp fonts while keeping layout safe"""
+    if platform.system() == 'Windows':
+        import ctypes
+        try:
+            # 1 = PROCESS_SYSTEM_DPI_AWARE (Safe for Tkinter complex grid layouts on laptops)
+            # This makes fonts clear but lets Windows handle seamless screen scaling
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
 
 
 class AppManager:
@@ -21,6 +38,13 @@ class AppManager:
     def __init__(self, root):
         self.root = root
         self.root.withdraw()  # Hide initially
+        
+        # Track initial screen resolution for dynamic adjustments
+        self.current_screen_width = self.root.winfo_screenwidth()
+        self.current_screen_height = self.root.winfo_screenheight()
+        
+        # Bind configure event to detect screen changes
+        self.root.bind("<Configure>", self.on_window_configure)
         
         # Initialize database
         self.db = TrafficDB()
@@ -61,6 +85,10 @@ class AppManager:
         self.root.grid_rowconfigure(0, weight=1)
         self.root.grid_columnconfigure(0, weight=1)
         
+        # Apply scaling based on DPI if needed
+        # (With SetProcessDpiAwareness(2), modern Tkinter handles the scaling factor automatically)
+
+        
         # Disable resize for auth pages
         self.root.resizable(False, False)
         
@@ -71,16 +99,21 @@ class AppManager:
         self.root.protocol("WM_DELETE_WINDOW", on_close)
     
     def set_auth_window_size(self):
-        """Set window size for authentication pages (851x545)"""
+        """Set window size for authentication pages dynamically based on active scaling"""
         # Restore window state if it was maximized/zoomed
         try:
             self.root.state('normal')
         except:
             pass
             
-        window_width = 851
-        window_height = 545
-        self.root.geometry(f"{window_width}x{window_height}")
+        # Get active scaling factor from CTK to prevent UI tearing on laptops
+        try:
+            scale = ctk.ScalingTracker.get_window_dpi_scaling(self.root)
+        except Exception:
+            scale = ctk.get_window_scaling() if hasattr(ctk, 'get_window_scaling') else 1.0
+            
+        window_width = int(851 * scale)
+        window_height = int(545 * scale)
         
         # Center window on screen
         screen_width = self.root.winfo_screenwidth()
@@ -113,6 +146,47 @@ class AppManager:
             self.root.state('zoomed')
         except:
             pass
+            
+    def on_window_configure(self, event):
+        """Monitor screen resolution and dynamically adjust if moved to a different display"""
+        # Only process events for the root window itself, not its children
+        if event.widget == self.root:
+            screen_width = self.root.winfo_screenwidth()
+            screen_height = self.root.winfo_screenheight()
+            
+            # Detect if screen resolution changed (e.g., moved to an external larger monitor)
+            if screen_width != self.current_screen_width or screen_height != self.current_screen_height:
+                self.current_screen_width = screen_width
+                self.current_screen_height = screen_height
+                
+                # Re-center or adjust window if we are on auth pages
+                if hasattr(self, 'auth') and not self.auth.get_current_user():
+                    try:
+                        scale = ctk.ScalingTracker.get_window_dpi_scaling(self.root)
+                    except Exception:
+                        scale = ctk.get_window_scaling() if hasattr(ctk, 'get_window_scaling') else 1.0
+                        
+                    window_width = int(851 * scale)
+                    window_height = int(545 * scale)
+                    x_position = (screen_width - window_width) // 2
+                    y_position = (screen_height - window_height) // 2
+                    # Ensure it's not maximized and update centered position
+                    if self.root.state() != 'normal':
+                        self.root.state('normal')
+                    self.root.geometry(f"{window_width}x{window_height}+{x_position}+{y_position}")
+                    
+                # If we are in the main dashboard, ensure seamless full-screen adaptions
+                elif hasattr(self, 'auth') and self.auth.get_current_user():
+                    # If the display is larger (like an external monitor >= 1600 width), auto-maximize
+                    if screen_width >= 1600:
+                        try:
+                            self.root.state('zoomed')
+                        except Exception:
+                            pass
+                    else:
+                        # Optional: restore to standard flexible window for smaller screens if it was maximized
+                        # but usually keeping it zoomed is a good user experience.
+                        pass
     
     def clear_window(self):
         """Clear all widgets from window"""
@@ -283,6 +357,9 @@ class AppManager:
 
 def main():
     """Main application entry point"""
+    
+    # Enable crisp fonts and real-time DPI awareness prior to initializing Tk
+    enable_dpi_awareness()
     
     try:
         # Initialize root window
