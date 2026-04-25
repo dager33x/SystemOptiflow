@@ -32,6 +32,8 @@ class ViolationController:
         try:
             result = self.db.save_violation(vehicle_id, lane, violation_type, source="SYSTEM", image_url=image_url)
             if result:
+                if image_url:
+                    self._save_image_mapping(result, image_url)
                 return
         except Exception:
             pass # Fallback
@@ -45,7 +47,40 @@ class ViolationController:
         logs = self.db.get_recent_violations(limit=50)
         if not logs:
             return self._get_local_logs()
+            
+        # Merge local images mapped by violation_id
+        import os
+        import json
+        if os.path.exists("image_mapping.json"):
+            try:
+                with open("image_mapping.json", "r") as f:
+                    image_map = json.load(f)
+                for log in logs:
+                    vid = log.get("violation_id")
+                    if vid in image_map and not log.get("image_url"):
+                        log["image_url"] = image_map[vid]
+            except Exception:
+                pass
+                
         return logs
+
+    def _save_image_mapping(self, vid, url):
+        import os
+        import json
+        image_map = {}
+        file_path = "image_mapping.json"
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, "r") as f:
+                    image_map = json.load(f)
+            except Exception:
+                pass
+        image_map[vid] = url
+        try:
+            with open(file_path, "w") as f:
+                json.dump(image_map, f)
+        except Exception:
+            pass
 
     def clear_logs(self):
         """Clear all violation logs"""

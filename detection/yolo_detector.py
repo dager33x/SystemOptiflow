@@ -28,31 +28,27 @@ class YOLODetector:
             10: "fire hydrant", 11: "stop sign", 12: "parking meter"
         }
         
+        # Class names reflect the actual best.pt model (6 classes only).
+        # z_accident / z_jaywalker / z_non-jaywalker are NOT present in this model.
         self.custom_class_names = {
             0: 'bus',
             1: 'car',
             2: 'emergency_vehicle',
             3: 'jeepney',
             4: 'motorcycle',
-            5: 'truck',
-            6: 'z_accident',
-            7: 'z_jaywalker',
-            8: 'z_non-jaywalker'
+            5: 'truck'
         }
         
         self.color_map = {
-            "car": (0, 255, 0),       # Green
-            "motorcycle": (0, 255, 255), # Yellow
-            "bus": (255, 255, 0),     # Cyan
-            "truck": (0, 165, 255),   # Orange
-            "bicycle": (255, 0, 255), # Magenta
-            "person": (255, 255, 255),# White
-            "traffic light": (0, 0, 255), # Red (default)
+            "car": (0, 255, 0),            # Green
+            "motorcycle": (0, 255, 255),   # Yellow
+            "bus": (255, 255, 0),          # Cyan
+            "truck": (0, 165, 255),        # Orange
+            "bicycle": (255, 0, 255),      # Magenta
+            "person": (255, 255, 255),     # White
+            "traffic light": (0, 0, 255),  # Red (default)
             "emergency_vehicle": (255, 0, 0), # Blue
-            "z_accident": (0, 0, 255), # Red
-            "jeepney": (128, 0, 128), # Purple
-            "z_jaywalker": (255, 128, 0), # Light Blue
-            "z_non-jaywalker": (0, 255, 128) # Light Green
+            "jeepney": (128, 0, 128)       # Purple
         }
         self.load_models()
     
@@ -60,11 +56,21 @@ class YOLODetector:
         """Load YOLOv8 models"""
         try:
             from ultralytics import YOLO
-            self.pretrained_model = YOLO(self.pretrained_model_name)
+            import sys
+            import os
+            workspace_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if workspace_dir not in sys.path:
+                sys.path.insert(0, workspace_dir)
+            from utils.paths import get_resource_path
+            
+            ptr_path = get_resource_path(self.pretrained_model_name)
+            cus_path = get_resource_path(self.custom_model_name)
+
+            self.pretrained_model = YOLO(ptr_path)
             self.pretrained_model.to(self.device)
             self.logger.info(f"YOLO pretrained model {self.pretrained_model_name} loaded successfully on {self.device}")
             
-            self.custom_model = YOLO(self.custom_model_name)
+            self.custom_model = YOLO(cus_path)
             self.custom_model.to(self.device)
             self.logger.info(f"YOLO custom model {self.custom_model_name} loaded successfully on {self.device}")
             return True
@@ -144,7 +150,8 @@ class YOLODetector:
                         cls_id = int(box.cls[0])
                         class_name = self.custom_class_names.get(cls_id)
                         # We specifically want the custom model for these classes:
-                        if class_name in ['emergency_vehicle', 'jeepney', 'z_accident', 'z_jaywalker', 'z_non-jaywalker']:
+                        # (best.pt only has 6 classes; no z_accident/z_jaywalker in this model)
+                        if class_name in ['emergency_vehicle', 'jeepney']:
                             # Scale coordinates back to original frame size
                             x1 = int(box.xyxy[0][0] * x_scale)
                             y1 = int(box.xyxy[0][1] * y_scale)
@@ -230,7 +237,7 @@ class YOLODetector:
     def detect_vehicles(self, frame: np.ndarray) -> List[Dict]:
         """Detect vehicles specifically"""
         result = self.detect(frame)
-        vehicles = [d for d in result["detections"] if d["class_name"] in ["car", "bus", "truck", "motorcycle", "bicycle", "emergency_vehicle", "z_accident", "jeepney", "z_jaywalker", "z_non-jaywalker"]]
+        vehicles = [d for d in result["detections"] if d["class_name"] in ["car", "bus", "truck", "motorcycle", "bicycle", "emergency_vehicle", "jeepney"]]
         return vehicles
     
     def detect_traffic_lights(self, frame: np.ndarray) -> List[Dict]:

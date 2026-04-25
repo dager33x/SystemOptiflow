@@ -56,13 +56,21 @@ class MainController:
         # Initialize YOLO and DQN-based Traffic Controller
         # Try to load the best trained model; fall back to fresh model if not found
         import os as _os
+        import sys
+        
+        # PyInstaller safe paths
+        workspace_dir = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        if workspace_dir not in sys.path:
+            sys.path.insert(0, workspace_dir)
+        from utils.paths import get_resource_path
+            
         _model_candidates = [
             "Optiflow_Dqn.pth",
             "models/dqn/dqn_best.pth",
             "models/dqn/dqn_final.pth",
         ]
         _selected_model = next(
-            (p for p in _model_candidates if _os.path.exists(p)), None
+            (get_resource_path(p) for p in _model_candidates if _os.path.exists(get_resource_path(p))), None
         )
         self.yolo_detector = YOLODetector("best.pt")
         self.traffic_controller = TrafficLightController(
@@ -105,6 +113,11 @@ class MainController:
         
         # specific counters
         self.session_violations = 0
+        
+        # Per-lane accident tracking for multi-frame confirmation
+        # Counts consecutive frames where a collision candidate is detected.
+        # Accident is only confirmed after ACCIDENT_CONFIRM_FRAMES consecutive hits.
+        self._accident_frame_counts = {i: 0 for i in range(4)}
         
         # Threading
         self.camera_thread = None
@@ -385,46 +398,78 @@ class MainController:
                                 # We create 2 overlapping boxes to simulate a crash
                                 if random.random() < 0.02: # 2% chance per frame
                                     cx, cy = 320, 240
+                                    acc_box1 = [cx-50, cy-40, cx+20, cy+30]
+                                    acc_box2 = [cx-10, cy-30, cx+55, cy+40]
                                     detections.append({
-                                        'class_name': 'z_accident', 
-                                        'confidence': 0.99,
-                                        'bbox': [cx-40, cy-40, cx+20, cy+20],
-                                        'center': (cx, cy)
+                                        'class_name': 'car',
+                                        'confidence': 0.95,
+                                        'bbox': acc_box1,
+                                        'center': (cx - 15, cy)
                                     })
                                     detections.append({
-                                        'class_name': 'car', 
-                                        'confidence': 0.90,
-                                        'bbox': [cx-20, cy-20, cx+40, cy+40],
-                                        'center': (cx+10, cy+10)
+                                        'class_name': 'truck',
+                                        'confidence': 0.92,
+                                        'bbox': acc_box2,
+                                        'center': (cx + 22, cy + 5)
                                     })
-                                    
+
+                                    # Compute collision zone coordinates (always needed for text label)
+                                    zone_x1 = min(acc_box1[0], acc_box2[0]) - 8
+                                    zone_y1 = min(acc_box1[1], acc_box2[1]) - 8
+                                    zone_x2 = max(acc_box1[2], acc_box2[2]) + 8
+                                    zone_y2 = max(acc_box1[3], acc_box2[3]) + 8
+
+                                    # Draw accident bounding boxes explicitly on the frame
+                                    if show_boxes:
+                                        # Vehicle 1 box (red)
+                                        cv2.rectangle(frame, (acc_box1[0], acc_box1[1]), (acc_box1[2], acc_box1[3]), (0, 0, 255), 2)
+                                        cv2.rectangle(frame, (acc_box1[0], acc_box1[1] - 20), (acc_box1[0] + 70, acc_box1[1]), (0, 0, 255), -1)
+                                        cv2.putText(frame, "car 0.95", (acc_box1[0], acc_box1[1] - 5),
+                                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                                        # Vehicle 2 box (orange)
+                                        cv2.rectangle(frame, (acc_box2[0], acc_box2[1]), (acc_box2[2], acc_box2[3]), (0, 100, 255), 2)
+                                        cv2.rectangle(frame, (acc_box2[0], acc_box2[1] - 20), (acc_box2[0] + 80, acc_box2[1]), (0, 100, 255), -1)
+                                        cv2.putText(frame, "truck 0.92", (acc_box2[0], acc_box2[1] - 5),
+                                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                                        # Collision zone highlight rectangle + connecting line
+                                        cv2.rectangle(frame, (zone_x1, zone_y1), (zone_x2, zone_y2), (0, 0, 255), 3)
+                                        cv2.line(frame, (cx - 15, cy), (cx + 22, cy + 5), (0, 0, 255), 2)
+                                        # Label banner
+                                        cv2.rectangle(frame, (zone_x1, zone_y1 - 28), (zone_x1 + 210, zone_y1), (0, 0, 255), -1)
+                                        cv2.putText(frame, "ACCIDENT DETECTED!", (zone_x1 + 4, zone_y1 - 8),
+                                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
                                     # Save Simulate Accident
                                     current_time = time.time()
                                     last_acc = getattr(self, 'last_accident_log', 0)
                                     if hasattr(self, 'accident_controller') and self.accident_controller:
-                                         if current_time - last_acc > 10.0:
+                                        if current_time - last_acc > 10.0:
                                             self.accident_controller.report_accident(lane=lane_id, severity="High", description="Simulated Multi-Vehicle Crash")
                                             self.last_accident_log = current_time
                                             self.logger.info(f"Simulated Accident recorded for {direction}")
                                             # Notify
                                             self.root.after(0, lambda: self.notification_manager.show("Crash Detected", f"Accident simulated on Lane {lane_id}", "error"))
-
-                                    cv2.putText(frame, "⚠️ ACCIDENT DETECTED!", (150, 100), 
-                                              cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
                                 
                                 # 2. Simulate VIOLATION (If Light is RED)
-                                # We simulate a car moving fast through the frame
+                                # We simulate a car running through the stop line
                                 if state['signal_state'] == 'RED' and random.random() < 0.03: # 3% chance when Red
-                                    # Force a "detection" that represents a runner
+                                    viol_box = [100, 300, 210, 380]
                                     detections.append({
-                                        'class_name': 'violation', 
+                                        'class_name': 'car',
                                         'confidence': 0.98,
-                                        'bbox': [100, 100, 200, 200], # Arbitrary box
-                                        'center': (150, 150)
+                                        'bbox': viol_box,
+                                        'center': (155, 340)
                                     })
-                                    cv2.putText(frame, "🚫 RED LIGHT VIOLATION!", (100, 150), 
-                                              cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 165, 255), 3)
-                                    
+
+                                    # Draw violation bounding box explicitly
+                                    if show_boxes:
+                                        cv2.rectangle(frame, (viol_box[0], viol_box[1]), (viol_box[2], viol_box[3]), (0, 165, 255), 3)
+                                        cv2.rectangle(frame, (viol_box[0], viol_box[1] - 20), (viol_box[0] + 90, viol_box[1]), (0, 165, 255), -1)
+                                        cv2.putText(frame, "car 0.98", (viol_box[0], viol_box[1] - 5),
+                                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                                    cv2.putText(frame, "RED LIGHT VIOLATION!", (viol_box[0], viol_box[1] - 28),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+
                                     # Save simulated violation
                                     current_time = time.time()
                                     if hasattr(self, 'violation_controller') and self.violation_controller:
@@ -577,64 +622,128 @@ class MainController:
                                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
 
-                                # 2. Accident Detection (Real Logic - Box Overlap & Native AI)
-                                accident_detected = False
-                                accident_desc = ""
+                                # ─── 2. Accident Detection (Real Logic) ──────────────────────
+                                # YOLO draws TIGHT individual boxes. After a crash they TOUCH
+                                # but rarely overlap → IoU ≈ 0. We use a gap-based check:
+                                #
+                                # Candidate if EITHER condition is true:
+                                #  A) Center distance < (half_w1+half_w2)*1.1  (x-axis close)
+                                #     AND center distance < (half_h1+half_h2)*1.4  (y-axis close)
+                                #     → catches head-on / rear-end / side-impact
+                                #  B) Bounding boxes within GAP_PX pixels of each other
+                                #     in both x and y → catches touching-but-not-overlapping
+                                #
+                                # Size-ratio guard avoids tiny artefacts vs big trucks.
+                                # 3-frame confirmation eliminates single-frame false positives.
+                                # ─────────────────────────────────────────────────────────────
+                                CONFIRM_FRAMES = 3   # consecutive frames to confirm accident
+                                GAP_PX         = 25  # pixel gap tolerance for touching boxes
+                                SIZE_RATIO_MIN = 0.10  # min(area1,area2)/max(area1,area2)
 
-                                # Check direct AI classification first
-                                for det in detections:
-                                    if det.get('class_name') == 'z_accident':
-                                        accident_detected = True
-                                        accident_desc = "AI Classified Accident (z_accident)"
-                                        cv2.putText(annotated_frame, "⚠️ ACCIDENT DETECTED!", (50, 150), 
-                                                  cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+                                vehicle_classes = ['car', 'truck', 'bus', 'motorcycle', 'jeepney']
+                                vehicle_dets = [d for d in detections if d['class_name'] in vehicle_classes]
+
+                                accident_candidate = False
+                                candidate_d1 = candidate_d2 = None
+                                candidate_score = 0.0  # proximity score for label
+
+                                for _i, d1 in enumerate(vehicle_dets):
+                                    for _j, d2 in enumerate(vehicle_dets):
+                                        if _i >= _j:
+                                            continue
+
+                                        x1a, y1a, x2a, y2a = d1['bbox']
+                                        x1b, y1b, x2b, y2b = d2['bbox']
+                                        w1 = max(1, x2a - x1a)
+                                        h1 = max(1, y2a - y1a)
+                                        w2 = max(1, x2b - x1b)
+                                        h2 = max(1, y2b - y1b)
+
+                                        # Size-ratio guard (filter tiny artefacts)
+                                        a1, a2 = w1 * h1, w2 * h2
+                                        if min(a1, a2) / max(a1, a2) < SIZE_RATIO_MIN:
+                                            continue
+
+                                        cx1 = (x1a + x2a) / 2;  cy1 = (y1a + y2a) / 2
+                                        cx2 = (x1b + x2b) / 2;  cy2 = (y1b + y2b) / 2
+                                        dx  = abs(cx1 - cx2)
+                                        dy  = abs(cy1 - cy2)
+
+                                        # Condition A: center-to-center within combined half-sizes
+                                        half_x_sum = (w1 / 2 + w2 / 2) * 1.1
+                                        half_y_sum = (h1 / 2 + h2 / 2) * 1.4
+                                        cond_a = (dx < half_x_sum) and (dy < half_y_sum)
+
+                                        # Condition B: boxes within GAP_PX pixels of each other
+                                        gap_x = max(0, max(x1a, x1b) - min(x2a, x2b))
+                                        gap_y = max(0, max(y1a, y1b) - min(y2a, y2b))
+                                        cond_b = (gap_x <= GAP_PX) and (gap_y <= GAP_PX)
+
+                                        if not (cond_a or cond_b):
+                                            continue  # Neither condition satisfied
+
+                                        # Compute a proximity score: 0.0 = touching, 1.0 = just passing
+                                        dist = (dx**2 + dy**2) ** 0.5
+                                        avg_half = ((half_x_sum + half_y_sum) / 2) + 1e-6
+                                        prox_score = max(0.0, 1.0 - dist / avg_half)
+
+                                        if prox_score > candidate_score:
+                                            accident_candidate = True
+                                            candidate_d1, candidate_d2 = d1, d2
+                                            candidate_score = prox_score
+                                        break  # Best pair already found for this d1
+                                    if accident_candidate:
                                         break
 
-                                # Fallback: heuristic overlapping boxes of high confidence
-                                if not accident_detected:
-                                    for i, d1 in enumerate(detections):
-                                        for j, d2 in enumerate(detections):
-                                            if i >= j: continue # Avoid double check
-                                            
-                                            # Only check vehicles
-                                            vehicles = ['car', 'truck', 'bus', 'motorcycle']
-                                            if d1['class_name'] in vehicles and d2['class_name'] in vehicles:
-                                                # Box 1
-                                                x1a, y1a, x2a, y2a = d1['bbox']
-                                                # Box 2
-                                                x1b, y1b, x2b, y2b = d2['bbox']
-                                                
-                                                # IoU / Overlap Check
-                                                xi1 = max(x1a, x1b)
-                                                yi1 = max(y1a, y1b)
-                                                xi2 = min(x2a, x2b)
-                                                yi2 = min(y2a, y2b)
-                                                
-                                                inter_area = max(0, xi2 - xi1) * max(0, yi2 - yi1)
-                                                
-                                                if inter_area > 0:
-                                                    box1_area = (x2a - x1a) * (y2a - y1a)
-                                                    box2_area = (x2b - x1b) * (y2b - y1b)
-                                                    union_area = box1_area + box2_area - inter_area
-                                                    iou = inter_area / union_area
-                                                    
-                                                    # Threshold raised from 0.35 to 0.75 to completely avoid false 
-                                                    # positives from bumper-to-bumper perspective stacking
-                                                    if iou > 0.75:
-                                                        cv2.putText(annotated_frame, "⚠️ ACCIDENT ALERT!", (50, 150), 
-                                                                  cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 165, 255), 3)
-                                                        # Draw connecting line
-                                                        c1 = d1['center']
-                                                        c2 = d2['center']
-                                                        cv2.line(annotated_frame, c1, c2, (0, 0, 255), 3)
-                                                        
-                                                        accident_detected = True
-                                                        accident_desc = f"Collision heuristic ({iou:.2f} IoU)"
-                                            
-                                            if accident_detected:
-                                                break
-                                        if accident_detected:
-                                            break
+                                # Multi-frame counter (Stage 4)
+                                if accident_candidate:
+                                    self._accident_frame_counts[lane_id] = \
+                                        self._accident_frame_counts.get(lane_id, 0) + 1
+                                else:
+                                    self._accident_frame_counts[lane_id] = max(
+                                        0, self._accident_frame_counts.get(lane_id, 0) - 1
+                                    )
+
+                                frame_count = self._accident_frame_counts.get(lane_id, 0)
+                                accident_detected = frame_count >= CONFIRM_FRAMES
+
+                                # ── Visualisation ──────────────────────────────────────────
+                                if accident_candidate and candidate_d1 and candidate_d2:
+                                    x1a, y1a, x2a, y2a = candidate_d1['bbox']
+                                    x1b, y1b, x2b, y2b = candidate_d2['bbox']
+                                    zone_x1 = max(0, min(x1a, x1b) - 10)
+                                    zone_y1 = max(0, min(y1a, y1b) - 10)
+                                    zone_x2 = max(x2a, x2b) + 10
+                                    zone_y2 = max(y2a, y2b) + 10
+
+                                    if accident_detected:
+                                        box_color  = (0, 0, 255)       # Red — confirmed
+                                        label_text = f"ACCIDENT! Score:{candidate_score:.2f}"
+                                    else:
+                                        box_color  = (0, 165, 255)     # Orange — warming up
+                                        label_text = f"Possible Accident ({frame_count}/{CONFIRM_FRAMES})"
+
+                                    cv2.rectangle(annotated_frame,
+                                                  (zone_x1, zone_y1), (zone_x2, zone_y2),
+                                                  box_color, 3)
+                                    c1 = candidate_d1['center']
+                                    c2 = candidate_d2['center']
+                                    cv2.line(annotated_frame, c1, c2, box_color, 2)
+                                    lbl_w = len(label_text) * 11
+                                    cv2.rectangle(annotated_frame,
+                                                  (zone_x1, max(0, zone_y1 - 28)),
+                                                  (zone_x1 + lbl_w, zone_y1),
+                                                  box_color, -1)
+                                    cv2.putText(annotated_frame, label_text,
+                                                (zone_x1 + 4, max(5, zone_y1 - 8)),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                                                (255, 255, 255), 2)
+                                # ─────────────────────────────────────────────────────────────
+
+                                accident_desc = (
+                                    f"Proximity collision (score:{candidate_score:.2f})"
+                                    if accident_detected else ""
+                                )
 
                                 if accident_detected:
                                     # Notify and Save (Throttled)
@@ -642,9 +751,16 @@ class MainController:
                                     last_acc = getattr(self, 'last_accident_log', 0)
                                     if hasattr(self, 'accident_controller') and self.accident_controller:
                                         if current_time - last_acc > 10.0:
-                                            self.accident_controller.report_accident(lane=lane_id, severity="Severe", description=accident_desc)
+                                            self.accident_controller.report_accident(
+                                                lane=lane_id, severity="Severe",
+                                                description=accident_desc
+                                            )
                                             self.last_accident_log = current_time
-                                            self.root.after(0, lambda: self.notification_manager.show("Accident Alert", f"Collision detected on Lane {lane_id}", "error"))
+                                            self.root.after(0, lambda: self.notification_manager.show(
+                                                "Accident Alert",
+                                                f"Collision confirmed on Lane {lane_id}",
+                                                "error"
+                                            ))
                             # -------------------------------------------------------------
                         
                     # Apply final filters (Dark Mode)
@@ -654,7 +770,7 @@ class MainController:
                     # Store detections
                     state['detections'] = detections
                     state['vehicle_count'] = len([d for d in detections
-                                                  if d.get('class_name') != 'emergency_vehicle'])
+                                                  if d.get('class_name') not in ['emergency_vehicle']])
                     all_lane_counts.append(state['vehicle_count'])
                     
                     # Log vehicle detections (only if count > 0 to avoid spam)
@@ -779,12 +895,58 @@ class MainController:
                         elif phase_name == 'all_red':
                             self.logger.info("🔴 ALL LANES → RED (clearance)")
                 
-                # Update time remaining for all lanes (real-time countdown)
+                # ── Sync time_remaining for ALL lanes from the controller ──────
+                # The active green lane decrements display at the real wall-clock
+                # rate every loop iteration (0.1s) for smooth continuous countdown.
+                # The controller's live remaining acts as an authoritative ceiling:
+                # if it's trimmed by more than 2s the display snaps down to match,
+                # preventing both drift and abrupt UI jumps from adaptive trims.
+                # Red lanes use proper delta-time decrement with a stored timestamp.
+                ctrl_remaining_live = max(
+                    0.0,
+                    self.traffic_controller.phase_duration -
+                    (current_time - self.traffic_controller.phase_start_time)
+                )
+
+                # Initialise per-lane display trackers once
+                if not hasattr(self, '_display_remaining'):
+                    self._display_remaining = {d: 0.0 for d in self.directions}
+                if not hasattr(self, '_display_last_tick'):
+                    self._display_last_tick = {d: current_time for d in self.directions}
+
                 for direction in self.directions:
-                    st = self.states[direction]
-                    dt_d = current_time - st['last_update_time']
+                    st  = self.states[direction]
+                    i_d = self.directions.index(direction)
+                    dt_since_last = current_time - self._display_last_tick[direction]
+                    self._display_last_tick[direction] = current_time
+
+                    if i_d == ctrl_lane and ctrl_phase in ('green', 'yellow'):
+                        # Green/Yellow lane: decrement display at wall-clock rate
+                        prev_disp = self._display_remaining[direction]
+                        # Natural decrement
+                        new_disp = max(0.0, prev_disp - dt_since_last)
+                        # Snap DOWN only if controller's value is significantly lower
+                        # (phase was trimmed, not just normal countdown drift)
+                        if ctrl_remaining_live < new_disp - 2.0:
+                            new_disp = ctrl_remaining_live
+                        # Initialise display on a new phase (display is far below ctrl)
+                        if ctrl_remaining_live > new_disp + 3.0:
+                            new_disp = ctrl_remaining_live
+                        self._display_remaining[direction] = new_disp
+                        st['time_remaining'] = new_disp
+                    else:
+                        # Red lanes: decrement display at wall-clock rate
+                        prev_disp = self._display_remaining.get(direction, st['time_remaining'])
+                        new_disp  = max(0.0, prev_disp - dt_since_last)
+                        
+                        # Snap to the estimated time if it drifts or is initialised at 0
+                        target_red_time = st['time_remaining']
+                        if abs(new_disp - target_red_time) > 3.0:
+                            new_disp = target_red_time
+                            
+                        self._display_remaining[direction] = new_disp
+                        st['time_remaining'] = new_disp
                     st['last_update_time'] = current_time
-                    st['time_remaining']   = max(0, st['time_remaining'] - dt_d)
                     
             except Exception as e:
                 self.logger.error(f"Error in DQN traffic light control: {e}", exc_info=True)

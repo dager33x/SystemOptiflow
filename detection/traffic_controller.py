@@ -143,7 +143,6 @@ class TrafficLightController:
 
         self.is_emergency_active:  bool             = False  # green phase is emergency
         self.logger.info(f"[Controller] Initialized with {num_lanes} lanes")
-        self.logger.info(f"[Controller] Initialized with {num_lanes} lanes")
 
     # ── Lane label helper ────────────────────────────────────────────────────
     @staticmethod
@@ -440,22 +439,30 @@ class TrafficLightController:
                 buffer_remaining = max(0.0, 10.0 - yield_timer)
                 self.phase_duration = elapsed + buffer_remaining
 
+            elif audit.get('rule_fired') == 'emergency_lock':
+                # Freeze the timer visually while emergency is passing
+                self.phase_duration = elapsed + 5.0  # Keep pushing it forward
+
             # If the rule controller demands a switch (not EXTEND and not current lane)
             elif rule_action != ACTION_EXTEND_GREEN and rule_action != self.active_lane:
                 # Do NOT cut the timer dynamically just because the DQN changed its mind midway.
                 if audit.get('rule_fired') in ('dqn', 'accident_redirect', 'accident_allow_no_alt'):
                     pass
+                elif audit.get('rule_fired') == 'emergency_switch':
+                    # Emergency yield buffer is already complete. Switch immediately.
+                    if elapsed < self.phase_duration:
+                        self.phase_duration = elapsed
                 else:
-                    # Strict safety overrides (Emergency, Starvation) allow cutting the timer
+                    # Strict safety overrides (Starvation) allow cutting the timer
                     if elapsed > self.phase_duration - 0.5:
                         pass # already ending
                     else:
                         self.logger.info(
                             f"⚡ [Rule Interruption] Dynamic phase cut triggered "
                             f"by {audit.get('rule_fired')} : {audit.get('details')}\n"
-                            f"Applying 10s warning buffer."
+                            f"Applying 20s warning buffer."
                         )
-                        self.phase_duration = min(self.phase_duration, elapsed + 10.0)
+                        self.phase_duration = min(self.phase_duration, elapsed + 20.0)
 
         # ── Dynamic green adjustment (1.5-Second Observation Loop) ───────────
         #
@@ -506,8 +513,24 @@ class TrafficLightController:
                             f"duration {self.phase_duration:.1f}→{new_duration:.1f}s"
                         )
                         self.phase_duration = new_duration
+                elif lane_w <= 15.0:
+                    new_duration = min(self.phase_duration, elapsed + 20.0)
+                    if new_duration < self.phase_duration:
+                        self.logger.info(
+                            f"LIVE TRIM ▼: Medium count! Reducing remaining time to 20s buffer. "
+                            f"duration {self.phase_duration:.1f}→{new_duration:.1f}s"
+                        )
+                        self.phase_duration = new_duration
                 elif ideal_total < self.phase_duration - 1.0:
-                    new_duration = max(ideal_total, elapsed + 10.0)
+                    # Smoothly trim by at most 2 seconds per tick
+                    desired_trim = self.phase_duration - ideal_total
+                    actual_trim = min(desired_trim, 2.0)
+                    new_duration = max(ideal_total, self.phase_duration - actual_trim)
+                    
+                    # Prevent going below a 20s remaining buffer if traffic is still substantial (>15)
+                    min_remaining = 20.0 if lane_w > 15.0 else 10.0
+                    new_duration = max(new_duration, elapsed + min_remaining)
+                    
                     new_duration = min(self.phase_duration, new_duration)
                     if new_duration < self.phase_duration:
                         self.logger.info(

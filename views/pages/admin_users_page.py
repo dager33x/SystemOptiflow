@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import customtkinter as ctk
 from ..styles import Colors, Fonts
+import re
 
 class AdminUsersPage:
     """Admin User Management Page using CustomTkinter"""
@@ -10,6 +11,7 @@ class AdminUsersPage:
         self.frame = tk.Frame(parent, bg=Colors.BACKGROUND)
         self.auth = auth_controller
         self.selected_user = None
+        self.all_users = []
         
         # Initialize CTk explicitly for rendering mode (dark)
         ctk.set_appearance_mode("dark")
@@ -30,6 +32,15 @@ class AdminUsersPage:
         buttons_frame = ctk.CTkFrame(title_section, fg_color="transparent")
         buttons_frame.pack(side=tk.RIGHT)
         
+        # Search Bar
+        search_frame = ctk.CTkFrame(buttons_frame, fg_color="#0B111D", corner_radius=8, border_width=1, border_color="#2c3a52")
+        search_frame.pack(side=tk.LEFT, padx=(0, 15), fill=tk.Y)
+        
+        ctk.CTkLabel(search_frame, text="🔍", text_color=Colors.TEXT_MUTED).pack(side=tk.LEFT, padx=(10, 5))
+        self.search_entry = ctk.CTkEntry(search_frame, placeholder_text="Search users...", font=('Segoe UI', 13), fg_color="transparent", border_width=0, width=180)
+        self.search_entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        self.search_entry.bind("<KeyRelease>", lambda e: self.display_users(self.search_entry.get()))
+
         self.create_button(buttons_frame, "+ Add User", Colors.SUCCESS, Colors.SUCCESS_DARK, self.show_add_user_dialog)
         self.create_button(buttons_frame, "✏️ Edit", Colors.INFO, Colors.INFO_DARK, self.show_edit_user_dialog)
         self.create_button(buttons_frame, "🗑️ Delete", Colors.DANGER, Colors.DANGER_DARK, self.delete_selected_user)
@@ -98,17 +109,29 @@ class AdminUsersPage:
         return btn
 
     def load_users(self):
+        self.all_users = self.auth.get_all_users()
+        # Reset search if refreshed
+        if hasattr(self, 'search_entry'):
+            self.search_entry.delete(0, tk.END)
+        self.display_users()
+
+    def display_users(self, query=""):
         # Clear existing
         for item in self.users_tree.get_children():
             self.users_tree.delete(item)
             
-        users = self.auth.get_all_users()
-        if users:
-            for user in users:
-                user_id = user.get("user_id", "")[:8]
+        if self.all_users:
+            query = query.lower()
+            for user in self.all_users:
                 username = user.get("username", "")
                 email = user.get("email", "")
                 role = user.get("role", "").upper()
+                
+                # Apply search filter
+                if query and query not in username.lower() and query not in email.lower() and query not in role.lower():
+                    continue
+                    
+                user_id = user.get("user_id", "")[:8]
                 status = "✓ Active" if user.get("is_active", True) else "✗ Inactive"
                 created = user.get("created_at", "")[:10]
                 
@@ -180,6 +203,14 @@ class AdminUsersPage:
                 messagebox.showerror("Error", "All fields are required", parent=dialog)
                 return
                 
+            # Validate email
+            if "@" not in e:
+                messagebox.showerror("Error", "Invalid Email", parent=dialog)
+                return
+            if not re.match(r'^[a-zA-Z0-9.@]+$', e):
+                messagebox.showerror("Error", "Invalid Email: No special characters", parent=dialog)
+                return
+                
             if self.auth.add_user(u, e, p, r):
                 dialog.attributes('-topmost', False)
                 dialog.destroy()
@@ -243,7 +274,17 @@ class AdminUsersPage:
         ctk.CTkRadioButton(role_frame, text="Admin", variable=role_var, value="admin", font=('Segoe UI', 13)).pack(side=tk.LEFT)
         
         def save():
-            if self.auth.edit_user(self.selected_user, email_entry.get().strip(), role_var.get()):
+            e = email_entry.get().strip()
+            
+            # Validate email
+            if "@" not in e:
+                messagebox.showerror("Error", "Invalid Email", parent=dialog)
+                return
+            if not re.match(r'^[a-zA-Z0-9.@]+$', e):
+                messagebox.showerror("Error", "Invalid Email: No special characters", parent=dialog)
+                return
+                
+            if self.auth.edit_user(self.selected_user, e, role_var.get()):
                 dialog.attributes('-topmost', False)
                 dialog.destroy()
                 self.load_users()

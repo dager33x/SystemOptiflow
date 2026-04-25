@@ -63,6 +63,17 @@ class IncidentHistoryPage:
                                     corner_radius=8,
                                     width=120, height=36)
         refresh_btn.pack(side=tk.RIGHT)
+
+        # Export Button
+        export_btn = ctk.CTkButton(btn_frame, text="📥 Export CSV",
+                                    command=self.export_csv,
+                                    font=('Segoe UI', 13, 'bold'),
+                                    fg_color='#10B981', # Green color for export
+                                    hover_color='#059669',
+                                    text_color=Colors.TEXT,
+                                    corner_radius=8,
+                                    width=120, height=36)
+        export_btn.pack(side=tk.RIGHT, padx=(0, 10))
         
         # Main content - Premium card styling
         content_frame = ctk.CTkFrame(self.frame, fg_color='#161F33', corner_radius=15, border_width=1, border_color='#2c3a52')
@@ -125,6 +136,40 @@ class IncidentHistoryPage:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
         self.tree.configure(yscrollcommand=scrollbar.set)
         
+    def export_csv(self):
+        """Export treeview data to CSV"""
+        import csv
+        from tkinter import filedialog, messagebox
+        
+        if not self.tree.get_children():
+            messagebox.showinfo("No Data", "There is no data to export.", parent=self.frame)
+            return
+            
+        file_path = filedialog.asksaveasfilename(
+            parent=self.frame,
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Export Incident Logs"
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, mode='w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    
+                    # Write headers
+                    headers = [self.tree.heading(col)['text'] for col in self.tree['columns']]
+                    writer.writerow(headers)
+                    
+                    # Write rows
+                    for item_id in self.tree.get_children():
+                        row = self.tree.item(item_id)['values']
+                        writer.writerow(row)
+                        
+                messagebox.showinfo("Success", "Logs successfully exported to CSV.", parent=self.frame)
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not export logs: {e}", parent=self.frame)
+
     def load_data(self):
         """Load data from controller"""
         if not self.controller:
@@ -154,10 +199,14 @@ class IncidentHistoryPage:
                 date_part = "Unknown"
                 time_part = "Unknown"
             
+            lane_id = inc.get('lane', '?')
+            lane_map = {0: 'North Lane', 1: 'South Lane', 2: 'East Lane', 3: 'West Lane', '0': 'North Lane', '1': 'South Lane', '2': 'East Lane', '3': 'West Lane'}
+            lane_name = lane_map.get(lane_id, f"Lane {lane_id}")
+
             self.tree.insert('', tk.END, values=(
                 date_part,
                 time_part,
-                f"Lane {inc.get('lane', '?')}",
+                lane_name,
                 "Accident", # Type is implicitly accident here
                 inc.get('severity', 'Moderate').upper(),
                 inc.get('description', '')

@@ -361,42 +361,49 @@ class DQNRuleController:
         if current_time < self.em_cooldown_until:
             return
 
-        best_lane = None
-        best_score = -1
-
+        # Update consecutive detection counters for all lanes
         for i in range(self.num_lanes):
-            # parse emergency flag for lane
             em_dets = [d for d in lane_detections[i] if d.get('class_name') == CLASS_EMERGENCY]
-            
             if em_dets:
                 self.em_consecutive_detections[i] += 1
             else:
                 self.em_consecutive_detections[i] = 0
 
-            # Detection must be STABLE: instant response for emergency vehicles!
-            if em_dets:
-                # 1. Largest bounding box (closest) OR 2. Longest waiting time
-                max_area = 0.0
-                for d in em_dets:
-                    bbox = d.get('bbox', [0, 0, 0, 0])
-                    # (x2 - x1) * (y2 - y1)
-                    area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
-                    if area > max_area:
-                        max_area = area
+        # If already in an active emergency, just keep tracking if it's still visible
+        if self.emergency_active:
+            # Only update last detected time if it's STILL in the emergency lane
+            if self.em_consecutive_detections[self.emergency_lane] > 0:
+                self.em_last_detected_time = current_time
+            return
 
-                # combination score to choose best lane
-                score = (max_area * 0.1) + wait_times[i]
-                if score > best_score:
-                    best_score = score
-                    best_lane = i
+        # If NOT active, look for a new emergency vehicle (needs STABLE detection)
+        best_lane = None
+        best_score = -1
+
+        for i in range(self.num_lanes):
+            # Require 3 consecutive frames (~0.3s) to confirm it's a real emergency vehicle
+            if self.em_consecutive_detections[i] >= 3:
+                em_dets = [d for d in lane_detections[i] if d.get('class_name') == CLASS_EMERGENCY]
+                if em_dets:
+                    max_area = 0.0
+                    for d in em_dets:
+                        bbox = d.get('bbox', [0, 0, 0, 0])
+                        area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                        if area > max_area:
+                            max_area = area
+
+                    # combination score to choose best lane
+                    score = (max_area * 0.1) + wait_times[i]
+                    if score > best_score:
+                        best_score = score
+                        best_lane = i
 
         if best_lane is not None:
             self.em_last_detected_time = current_time
-            if not self.emergency_active:
-                self.emergency_active = True
-                self.emergency_lane   = best_lane
-                self._yield_buffer_start = current_time
-                self.logger.warning(f"[EM] Triggered for Lane {self.emergency_lane}.")
+            self.emergency_active = True
+            self.emergency_lane   = best_lane
+            self._yield_buffer_start = current_time
+            self.logger.warning(f"[EM] Triggered for Lane {self.emergency_lane}.")
 
     def handle_emergency_entry(self, active_lane: int, elapsed_green: float, is_green_phase: bool, current_time: float, audit: Dict) -> Optional[int]:
         """3. BEFORE SWITCHING (RESPECT BUFFER)"""

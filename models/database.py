@@ -12,8 +12,18 @@ except ImportError:
 
 from typing import Dict, List, Optional, Any
 
+import os
+import sys
+
+# Add root folder to sys.path if not there (for when called globally)
+workspace_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if workspace_dir not in sys.path:
+    sys.path.insert(0, workspace_dir)
+
+from utils.paths import get_resource_path
+
 # Load environment variables from .env file FIRST - with absolute path
-env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
+env_path = get_resource_path('.env')
 load_dotenv(dotenv_path=env_path, override=True)
 
 class TrafficDB:
@@ -97,7 +107,18 @@ class TrafficDB:
             if image_url:
                 data["image_url"] = image_url
                 
-            response = self.supabase.table("violations").insert(data).execute()
+            try:
+                response = self.supabase.table("violations").insert(data).execute()
+            except Exception as e:
+                error_str = str(e).lower()
+                if "could not find the 'image_url' column" in error_str or "image_url" in error_str:
+                    self.logger.warning("Supabase 'image_url' schema cache error detected. Retrying insertion without 'image_url' to avoid dropping the log...")
+                    if "image_url" in data:
+                        del data["image_url"]
+                    response = self.supabase.table("violations").insert(data).execute()
+                else:
+                    raise e
+                    
             self.save_system_log("VIOLATION_DETECTED", f"{violation_type} on lane {lane}")
             return response.data[0]['violation_id']
         except Exception as e:

@@ -67,6 +67,16 @@ class ViolationLogsPage:
                                     width=120, height=36)
         refresh_btn.pack(side=tk.RIGHT)
 
+        # Export Button
+        export_btn = ctk.CTkButton(btn_frame, text="📥 Export CSV",
+                                    command=self.export_csv,
+                                    font=('Segoe UI', 13, 'bold'),
+                                    fg_color='#10B981', # Green color for export
+                                    hover_color='#059669',
+                                    text_color=Colors.TEXT,
+                                    corner_radius=8,
+                                    width=120, height=36)
+        export_btn.pack(side=tk.RIGHT, padx=(0, 10))
 
         # Main content Card
         content_frame = ctk.CTkFrame(self.frame, fg_color='#161F33', corner_radius=15, border_width=1, border_color='#2c3a52')
@@ -118,6 +128,40 @@ class ViolationLogsPage:
         # Bind double-click event
         self.tree.bind("<Double-1>", self.on_item_double_click)
 
+    def export_csv(self):
+        """Export treeview data to CSV"""
+        import csv
+        from tkinter import filedialog, messagebox
+        
+        if not self.tree.get_children():
+            messagebox.showinfo("No Data", "There is no data to export.", parent=self.frame)
+            return
+            
+        file_path = filedialog.asksaveasfilename(
+            parent=self.frame,
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Export Violation Logs"
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, mode='w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    
+                    # Write headers
+                    headers = [self.tree.heading(col)['text'] for col in self.tree['columns']]
+                    writer.writerow(headers)
+                    
+                    # Write rows
+                    for item_id in self.tree.get_children():
+                        row = self.tree.item(item_id)['values']
+                        writer.writerow(row)
+                        
+                messagebox.showinfo("Success", "Logs successfully exported to CSV.", parent=self.frame)
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not export logs: {e}", parent=self.frame)
+
     def refresh_data(self):
         """Fetch and display logs from controller"""
         # Clear existing items
@@ -136,15 +180,16 @@ class ViolationLogsPage:
             try:
                 date_str_raw = log.get('created_at') or log.get('timestamp', '')
                 dt_obj = datetime.fromisoformat(date_str_raw.replace('Z', '+00:00'))
-                date_str = dt_obj.strftime('%Y-%m-%d')
-                time_str = dt_obj.strftime('%H:%M:%S')
+                dt_local = dt_obj.astimezone()
+                date_str = dt_local.strftime('%Y-%m-%d')
+                time_str = dt_local.strftime('%I:%M:%S %p')
             except:
                 date_str = "Unknown"
                 time_str = "Unknown"
                 
             # Map lane ID to Direction Name
             lane_id = log.get('lane', '?')
-            lane_map = {0: 'North', 1: 'South', 2: 'East', 3: 'West', '0': 'North', '1': 'South', '2': 'East', '3': 'West'}
+            lane_map = {0: 'North Lane', 1: 'South Lane', 2: 'East Lane', 3: 'West Lane', '0': 'North Lane', '1': 'South Lane', '2': 'East Lane', '3': 'West Lane'}
             lane = lane_map.get(lane_id, f"Lane {lane_id}")
             
             v_type = log.get('violation_type', 'Unknown')
@@ -249,8 +294,8 @@ class ViolationLogsPage:
                         margin = 40
                         # Estimate text height roughly
                         lines = description.split('\n')
-                        # 75px for headers + 25px per line of description + margins
-                        text_height_est = 75 + len(lines) * 25 + (margin * 2)
+                        # 125px for headers + 25px per line of description + margins
+                        text_height_est = 125 + len(lines) * 25 + (margin * 2)
                         
                         new_img = Image.new('RGB', (pdf_img.width, pdf_img.height + text_height_est), color=(255, 255, 255))
                         new_img.paste(pdf_img, (0, 0))
@@ -264,15 +309,33 @@ class ViolationLogsPage:
                             
                         y_text = pdf_img.height + margin
                         
+                        lane_id = log.get('lane', '?')
+                        lane_map = {0: 'North Lane', 1: 'South Lane', 2: 'East Lane', 3: 'West Lane', '0': 'North Lane', '1': 'South Lane', '2': 'East Lane', '3': 'West Lane'}
+                        lane_str = lane_map.get(lane_id, f"Lane {lane_id}")
+                        v_type = log.get('violation_type', 'Unknown')
+                        
+                        # Format date cleanly
+                        try:
+                            from datetime import datetime
+                            dt_obj = datetime.fromisoformat(raw_time.replace('Z', '+00:00'))
+                            dt_local = dt_obj.astimezone()
+                            readable_time = dt_local.strftime('%B %d, %Y at %I:%M %p')
+                        except Exception:
+                            readable_time = safe_time.replace('-', ':')
+                        
                         # Add metadata and user description
                         draw.text((margin, y_text), "Violation Details:", fill=(0, 0, 0), font=font)
                         y_text += 25
-                        draw.text((margin, y_text), f"Date/Time: {safe_time.replace('-', ':')}", fill=(0, 0, 0), font=font)
+                        draw.text((margin, y_text), f"- Date/Time: {readable_time}", fill=(0, 0, 0), font=font)
                         y_text += 25
-                        draw.text((margin, y_text), "Description:", fill=(0, 0, 0), font=font)
+                        draw.text((margin, y_text), f"- Event Type: {v_type}", fill=(0, 0, 0), font=font)
+                        y_text += 25
+                        draw.text((margin, y_text), f"- Accident / Lane Location: {lane_str}", fill=(0, 0, 0), font=font)
+                        y_text += 25
+                        draw.text((margin, y_text), "- Description:", fill=(0, 0, 0), font=font)
                         y_text += 25
                         for line in lines:
-                            draw.text((margin, y_text), line, fill=(0, 0, 0), font=font)
+                            draw.text((margin + 20, y_text), line, fill=(0, 0, 0), font=font)
                             y_text += 25
                             
                         new_img.save(pdf_path, "PDF", resolution=100.0)
