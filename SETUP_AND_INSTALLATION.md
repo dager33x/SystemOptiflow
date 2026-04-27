@@ -6,27 +6,31 @@ This guide provides step-by-step instructions for setting up the SystemOptiflow 
 
 Before you begin, ensure you have the following installed on your system:
 
-*   **Python 3.9 or higher**: [Download Python](https://www.python.org/downloads/)
+*   **Python 3.10+**: [Download Python](https://www.python.org/downloads/)
 *   **Git**: [Download Git](https://git-scm.com/downloads)
-*   **Supabase Account**: You will need a project URL and API Key from [Supabase](https://supabase.com).
+*   **Supabase Account (Optional)**: Only required if you want cloud database-backed pages (violations/reports/users) via [Supabase](https://supabase.com).
+*   **Camera (Optional)**: If no physical camera is available, the app can still run, but camera-related features may be limited.
 
-## 2. Project Structure
+## 2. Project Structure (Current)
 
-Ensure your project folder contains the following necessary directories and files:
+Ensure your project folder contains the following key directories and files:
 
 ```text
 SystemOptiflow/
-├── controllers/          # Application logic and controllers
-├── detection/            # Object detection (YOLO) and traffic logic
-├── models/               # Database models and DQN models
-├── utils/                # Utility scripts
-├── views/                # UI components (pages, styles, widgets)
-├── .env                  # Environment variables (To be created)
-├── app.py                # Main entry point
-├── requirements.txt      # Main Python dependencies
-├── requirements_dqn.txt  # AI/ML dependencies
-├── unified_schema.sql    # Database schema for Supabase
-└── best.pt               # YOLO custom trained model weights
+├── app.py                    # Main entry point
+├── controllers/              # Application logic and controllers
+├── detection/                # Object detection (YOLO) and traffic logic
+├── models/                   # Database models (Supabase) and data models
+├── utils/                    # Utility scripts (paths, email service, helpers)
+├── views/                    # UI components (pages, styles, widgets)
+├── requirements.txt          # Main Python dependencies
+├── requirements_dqn.txt      # AI/ML dependencies (optional training-related)
+├── unified_schema.sql        # Supabase database schema (recommended)
+├── DATABASE_SETUP.md         # Schema + policies reference (readable docs)
+├── supabase_guide/           # Manual Supabase connection guide
+├── build.bat                 # Windows build helper (optional)
+├── best.pt                   # YOLO custom trained model weights (optional)
+└── .env / .env.example       # Local environment variables (DO NOT COMMIT .env)
 ```
 
 ## 3. Installation Steps
@@ -58,38 +62,61 @@ source .venv/bin/activate
 
 ### Step 3: Install Dependencies
 
-Install the required Python packages from both requirements files.
+Install the required Python packages.
 
 ```powershell
 pip install -r requirements.txt
+```
+
+**Optional (Training / DQN extras):**
+
+```powershell
 pip install -r requirements_dqn.txt
 ```
 
-### Step 4: Configure Environment Variables
+### Step 4: Configure Environment Variables (Recommended)
 
-Create a file named `.env` in the root directory (same folder as `app.py`).
+Use the provided `.env.example` template and copy it to `.env` in the project root (same folder as `app.py`).
 
-**Command to create template (Windows):**
+**Windows (PowerShell):**
+
 ```powershell
-New-Item -Path .env -ItemType File
+Copy-Item .env.example .env
 ```
 
-Open the `.env` file and add your Supabase credentials. You need to replace the placeholders with your actual keys from the Supabase dashboard.
+Open `.env` and replace placeholders with your own values.
 
-**Content of `.env`:**
+**Minimum (Supabase optional):**
+
 ```ini
 SUPABASE_URL=https://your-project-id.supabase.co
 SUPABASE_KEY=your-anon-public-key
 ```
 
-### Step 5: Database Setup
+**Optional (Email verification / password reset):**
+
+These are used by `utils/email_service.py`.
+
+```ini
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=587
+SENDER_EMAIL=your_email@gmail.com
+SENDER_PASSWORD=your_gmail_app_password
+```
+
+> Important: `.env` is meant to be local-only. Do not commit secrets.
+
+### Step 5: Database Setup (Optional: Supabase)
 
 You need to set up the database tables in Supabase.
 
 1.  Log in to your [Supabase Dashboard](https://supabase.com/dashboard).
 2.  Go to the **SQL Editor**.
-3.  Open the `unified_schema.sql` file in this project, copy its contents, and paste them into the SQL Editor.
-4.  Click **Run** to create the necessary tables (`users`, `vehicles`, `violations`, `reports`, etc.).
+3.  Use **one** of the following:
+    - `unified_schema.sql` (recommended), or
+    - `DATABASE_SETUP.md` (reference copy), or
+    - `supabase_guide/CONNECT_MANUAL.md` (manual steps)
+4.  Click **Run** to create the necessary tables (`users`, `vehicles`, `violations`, `accidents`, `reports`, `emergency_events`, `system_logs`, etc.).
 
 ## 4. Running the Application
 
@@ -97,6 +124,12 @@ Once everything is set up, you can start the application.
 
 ```powershell
 python app.py
+```
+
+If you created the virtual environment at `.venv`, you can run with the explicit interpreter:
+
+```powershell
+.\.venv\Scripts\python.exe app.py
 ```
 
 ## 5. Troubleshooting
@@ -107,7 +140,9 @@ python app.py
     pip install matplotlib
     ```
 *   **Supabase Connection Error**: Double-check your `SUPABASE_URL` and `SUPABASE_KEY` in the `.env` file. Ensure there are no extra spaces or quotes around the values.
-*   **Camera Issues**: If the simulated camera feed does not appear, check the logs in the terminal for any OpenCV errors. The system defaults to simulation mode if no physical camera is found, but it requires the `best.pt` file.
+*   **Supabase Not Configured**: This is allowed — the app can run in UI-only mode, but database-backed pages may be empty/limited.
+*   **Camera Issues**: If the camera feed does not appear, check the terminal logs for OpenCV errors and verify camera permissions/availability. Some detection features may require model weights (`best.pt`) depending on your configuration.
+*   **Email Not Sending**: If email is not configured, the app may fall back to printing a verification code in the terminal (dev mode behavior).
 
 ## 6. Developer Notes
 
