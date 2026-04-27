@@ -853,55 +853,58 @@ class MainController:
                     ctrl_is_emergency = self.traffic_controller.is_emergency_active
                     ctrl_buffer_locked = self.traffic_controller.buffer_locked
                     
-                    # Map controller's numeric active_lane back to directions
+                    # ── Map controller phase → per-direction signal states ──
+                    # Normal mode: NS = North+South GREEN, EW = East+West GREEN
+                    # Emergency mode: only the single emergency lane is GREEN
+                    ctrl_green_lanes = self.traffic_controller._green_lanes()
+                    ctrl_tl_states   = self.traffic_controller.get_traffic_light_states()
+
                     for i, direction in enumerate(self.directions):
-                        if i == ctrl_lane and ctrl_phase == 'green':
-                            self.states[direction]['signal_state'] = 'GREEN'
-                            self.states[direction]['time_remaining'] = ctrl_remaining
-                        elif i == ctrl_lane and ctrl_phase == 'yellow':
-                            self.states[direction]['signal_state'] = 'YELLOW'
+                        lane_signal = ctrl_tl_states.get(i, 'RED')
+                        # During yellow the FSM string is 'yellow'
+                        if ctrl_phase == 'yellow' and i in ctrl_green_lanes:
+                            lane_signal = 'YELLOW'
+                        self.states[direction]['signal_state'] = lane_signal
+
+                        if lane_signal in ('GREEN', 'YELLOW'):
                             self.states[direction]['time_remaining'] = ctrl_remaining
                         else:
-                            self.states[direction]['signal_state'] = 'RED'
-                            # Estimated wait: hops × avg_phase_duration
-                            hops = (i - ctrl_lane) % len(self.directions)
-                            # Estimate based on congestion-weighted average
-                            est_phase = 25 + 5   # 25s avg green + 5s clearance
-                            if hops == 0:
-                                self.states[direction]['time_remaining'] = ctrl_remaining
-                            else:
-                                self.states[direction]['time_remaining'] = (
-                                    ctrl_remaining + (hops - 1) * est_phase
-                                )
+                            # Red lanes: rough wait estimate
+                            est_phase = 25 + 5  # avg green + clearance
+                            red_lanes = [j for j in range(len(self.directions)) if j not in ctrl_green_lanes]
+                            hop = (red_lanes.index(i) + 1) if i in red_lanes else 1
+                            self.states[direction]['time_remaining'] = ctrl_remaining + (hop - 1) * est_phase
                     
                     # Log meaningful transitions
                     if decision is not None:
                         phase_name = decision.get('phase', 'unknown')
                         if phase_name == 'green':
-                            lane_id  = decision.get('lane_id', ctrl_lane)
-                            gtime    = decision.get('green_time', 15)
-                            mode     = decision.get('mode', '')
-                            vcnt     = decision.get('vehicle_count', 0)
-                            em_flag  = '🚨 EMERGENCY |' if decision.get('is_emergency') else ''
-                            buf_flag = '🔒 Buffer active' if ctrl_buffer_locked else ''
+                            active_ph  = decision.get('active_phase', 0)
+                            green_lns  = decision.get('green_lanes', [])
+                            sec_lane   = decision.get('secondary_lane')
+                            ph_label   = 'NS (North+South)' if active_ph == 0 else 'EW (East+West)'
+                            gtime      = decision.get('green_time', 20)
+                            em_flag    = '🚨 EMERGENCY |' if decision.get('is_emergency') else ''
+                            em_lane    = decision.get('emergency_lane')
+                            em_str     = f' Lane {em_lane} ONLY' if em_lane is not None else ''
+                            sec_str    = ''
+                            if sec_lane is not None and not decision.get('is_emergency'):
+                                sec_str = f' + {self.directions[sec_lane].upper()} turning(15s)'
                             self.logger.info(
-                                f"🟢 {self.directions[lane_id].upper()} → GREEN {gtime}s "
-                                f"| {vcnt} vehicles | {em_flag}{mode} {buf_flag}"
+                                f'🟢 {ph_label}{em_str}{sec_str} → GREEN {gtime}s '
+                                f'| lanes={green_lns} | {em_flag}'
                             )
                         elif phase_name == 'yellow':
-                            self.logger.info(
-                                f"🟡 {self.directions[ctrl_lane].upper()} → YELLOW"
-                            )
+                            green_lns = decision.get('green_lanes', [])
+                            self.logger.info(f"🟡 YELLOW | lanes={green_lns}")
                         elif phase_name == 'all_red':
                             self.logger.info("🔴 ALL LANES → RED (clearance)")
                 
-                # ── Sync time_remaining for ALL lanes from the controller ──────
-                # The active green lane decrements display at the real wall-clock
-                # rate every loop iteration (0.1s) for smooth continuous countdown.
-                # The controller's live remaining acts as an authoritative ceiling:
-                # if it's trimmed by more than 2s the display snaps down to match,
-                # preventing both drift and abrupt UI jumps from adaptive trims.
-                # Red lanes use proper delta-time decrement with a stored timestamp.
+                # ── Always read live state from controller (runs every 0.1s) ─────
+                # These must be outside the 1-second gate so the display loop
+                # always has valid values — even between 1-second ticks.
+                ctrl_green_lanes    = self.traffic_controller._green_lanes()
+                ctrl_phase          = self.traffic_controller.current_phase
                 ctrl_remaining_live = max(
                     0.0,
                     self.traffic_controller.phase_duration -
@@ -920,30 +923,26 @@ class MainController:
                     dt_since_last = current_time - self._display_last_tick[direction]
                     self._display_last_tick[direction] = current_time
 
-                    if i_d == ctrl_lane and ctrl_phase in ('green', 'yellow'):
-                        # Green/Yellow lane: decrement display at wall-clock rate
+                    # Green/Yellow: any lane in the currently active green set
+                    is_active_green = (
+                        i_d in ctrl_green_lanes and
+                        ctrl_phase in ('green', 'yellow')
+                    )
+                    if is_active_green:
                         prev_disp = self._display_remaining[direction]
-                        # Natural decrement
-                        new_disp = max(0.0, prev_disp - dt_since_last)
-                        # Snap DOWN only if controller's value is significantly lower
-                        # (phase was trimmed, not just normal countdown drift)
+                        new_disp  = max(0.0, prev_disp - dt_since_last)
                         if ctrl_remaining_live < new_disp - 2.0:
                             new_disp = ctrl_remaining_live
-                        # Initialise display on a new phase (display is far below ctrl)
                         if ctrl_remaining_live > new_disp + 3.0:
                             new_disp = ctrl_remaining_live
                         self._display_remaining[direction] = new_disp
                         st['time_remaining'] = new_disp
                     else:
-                        # Red lanes: decrement display at wall-clock rate
                         prev_disp = self._display_remaining.get(direction, st['time_remaining'])
                         new_disp  = max(0.0, prev_disp - dt_since_last)
-                        
-                        # Snap to the estimated time if it drifts or is initialised at 0
                         target_red_time = st['time_remaining']
                         if abs(new_disp - target_red_time) > 3.0:
                             new_disp = target_red_time
-                            
                         self._display_remaining[direction] = new_disp
                         st['time_remaining'] = new_disp
                     st['last_update_time'] = current_time
