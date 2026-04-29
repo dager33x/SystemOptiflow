@@ -35,4 +35,32 @@ SETTINGS = {
     
     # ── RTMP / ngrok metadata (used by Settings quick-setup panel) ────────────
     "ngrok_rtmp_base": "",
+
+    # ── RTSP transport (tcp recommended inside Docker; set via RTSP_TRANSPORT env var) ──
+    "rtsp_transport": "tcp",
 }
+
+# ── Docker / environment variable overrides ───────────────────────────────────
+# These env vars let you configure cameras in docker-compose.yml or .env without
+# editing Python source code.
+#
+#   CAMERA_SOURCE_NORTH  CAMERA_SOURCE_SOUTH  CAMERA_SOURCE_EAST  CAMERA_SOURCE_WEST
+#   RTSP_TRANSPORT       AI_THROTTLE_SECONDS
+# ─────────────────────────────────────────────────────────────────────────────
+import os as _os
+
+for _key in ("camera_source_north", "camera_source_south", "camera_source_east", "camera_source_west"):
+    _val = _os.getenv(_key.upper())
+    if _val:
+        SETTINGS[_key] = _val
+
+_rtsp = _os.getenv("RTSP_TRANSPORT")
+if _rtsp:
+    SETTINGS["rtsp_transport"] = _rtsp
+
+_throttle = _os.getenv("AI_THROTTLE_SECONDS")
+if _throttle:
+    try:
+        SETTINGS["ai_throttle_seconds"] = float(_throttle)
+    except ValueError:
+        pass

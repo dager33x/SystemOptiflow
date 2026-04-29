@@ -6,13 +6,14 @@ from .styles import Colors
 class LoginPage(ctk.CTkFrame):
     """Modern Login page using CustomTkinter"""
     
-    def __init__(self, parent, on_login_callback=None, on_signup_callback=None, 
-                 on_forgot_password_callback=None):
+    def __init__(self, parent, on_login_callback=None, on_signup_callback=None,
+                 on_forgot_password_callback=None, initial_server_url=""):
         super().__init__(parent, fg_color=Colors.BACKGROUND)
         self.on_login_callback = on_login_callback
         self.on_signup_callback = on_signup_callback
         self.on_forgot_password_callback = on_forgot_password_callback
-        
+        self.initial_server_url = initial_server_url
+
         self.create_widgets()
     
     def create_widgets(self):
@@ -53,7 +54,34 @@ class LoginPage(ctk.CTkFrame):
         # Welcome text
         ctk.CTkLabel(inner_form, text="Welcome Back", font=("Segoe UI", 24, "bold"), text_color="white").pack(anchor=tk.W, pady=(0, 5))
         ctk.CTkLabel(inner_form, text="Sign in to your account", font=("Segoe UI", 13), text_color=Colors.TEXT_MUTED).pack(anchor=tk.W, pady=(0, 30))
-        
+
+        self.server_url_entry = ctk.CTkEntry(
+            inner_form,
+            placeholder_text="Server URL (optional for live mode)",
+            width=320,
+            height=45,
+            corner_radius=8,
+            border_width=1,
+            border_color="#2c3a52",
+            fg_color="#0f1522",
+            font=("Segoe UI", 13),
+        )
+        if self.initial_server_url:
+            self.server_url_entry.insert(0, self.initial_server_url)
+        self.server_url_entry.pack(fill=tk.X, pady=(0, 14))
+        self.server_url_entry.bind("<KeyRelease>", self._update_mode_hint)
+        self.server_url_entry.bind("<FocusOut>", self._update_mode_hint)
+
+        self.mode_hint = ctk.CTkLabel(
+            inner_form,
+            text="",
+            font=("Segoe UI", 11),
+            text_color=Colors.TEXT_MUTED,
+            justify="left",
+        )
+        self.mode_hint.pack(anchor=tk.W, pady=(0, 16))
+        self._update_mode_hint()
+
         # Username field
         self.username_entry = ctk.CTkEntry(inner_form, placeholder_text="Username", width=320,
                                            height=45, corner_radius=8, border_width=1, 
@@ -103,10 +131,24 @@ class LoginPage(ctk.CTkFrame):
         else:
             self.password_entry.configure(show="*")
 
+    def _update_mode_hint(self, event=None):
+        server_url = self.server_url_entry.get().strip()
+        if server_url:
+            self.mode_hint.configure(
+                text="Live mode ready. The desktop app will authenticate against the saved server.",
+                text_color=Colors.PRIMARY,
+            )
+        else:
+            self.mode_hint.configure(
+                text="Local demo mode. Leave the server URL blank to use standalone login.",
+                text_color=Colors.TEXT_MUTED,
+            )
+
     def handle_login(self):
         """Handle login button click"""
         username = self.username_entry.get().strip()
         password = self.password_entry.get().strip()
+        server_url = self.server_url_entry.get().strip()
         
         if not username:
             messagebox.showwarning("Input Error", "Please enter username")
@@ -117,12 +159,12 @@ class LoginPage(ctk.CTkFrame):
             return
         
         if self.on_login_callback:
-            self.on_login_callback(username, password)
+            self.on_login_callback(username, password, server_url)
     
     def handle_signup(self):
         if self.on_signup_callback:
-            self.on_signup_callback()
-    
+            self.on_signup_callback(self.server_url_entry.get().strip())
+
     def handle_forgot_password(self):
         if self.on_forgot_password_callback:
-            self.on_forgot_password_callback()
+            self.on_forgot_password_callback(self.server_url_entry.get().strip())

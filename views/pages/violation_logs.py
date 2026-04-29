@@ -5,6 +5,7 @@ import customtkinter as ctk
 from ..styles import Colors, Fonts
 from datetime import datetime
 import os
+from io import BytesIO
 
 class ViolationLogsPage:
     """Violation logs page with traffic violations database mapped to CustomTkinter"""
@@ -216,14 +217,24 @@ class ViolationLogsPage:
             return
             
         image_url = log.get('image_url')
-        if not image_url or not os.path.exists(image_url):
+        if not image_url:
             from tkinter import messagebox
             messagebox.showinfo("No Image", "No image available for this violation.", parent=self.frame)
             return
-            
-        self.show_image_popup(log)
 
-    def show_image_popup(self, log):
+        image_bytes = None
+        if hasattr(self.controller, "fetch_image_bytes"):
+            image_bytes = self.controller.fetch_image_bytes(log)
+            if image_bytes is None:
+                return
+        elif not os.path.exists(image_url):
+            from tkinter import messagebox
+            messagebox.showinfo("No Image", "No image available for this violation.", parent=self.frame)
+            return
+
+        self.show_image_popup(log, image_bytes=image_bytes)
+
+    def show_image_popup(self, log, image_bytes=None):
         from tkinter import filedialog, messagebox
         from PIL import Image, ImageTk
 
@@ -249,9 +260,12 @@ class ViolationLogsPage:
         # Frame just to hold image centered
         img_frame = ctk.CTkFrame(inner, fg_color="#0B111D", corner_radius=10)
         img_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 20), padx=20)
-        
+
         try:
-            img = Image.open(image_path)
+            if image_bytes is not None:
+                img = Image.open(BytesIO(image_bytes))
+            else:
+                img = Image.open(image_path)
             # Resize
             img.thumbnail((640, 480))
             tk_img = ImageTk.PhotoImage(img)
@@ -283,7 +297,10 @@ class ViolationLogsPage:
                     initialfile=f"violation_{safe_time}.pdf"
                 )
                 if pdf_path:
-                    pdf_img = Image.open(image_path)
+                    if image_bytes is not None:
+                        pdf_img = Image.open(BytesIO(image_bytes))
+                    else:
+                        pdf_img = Image.open(image_path)
                     if pdf_img.mode == 'RGBA':
                         pdf_img = pdf_img.convert('RGB')
                         

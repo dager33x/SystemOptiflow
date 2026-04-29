@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="dashboard-body">
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">SystemOptiflow</p>
+      <h1>Live traffic dashboard</h1>
+    </div>
+    <div class="topbar-actions">
+      <span class="badge">{{ user.username }} - {{ user.role }}</span>
+      <button id="logout-button" class="ghost">Log out</button>
+    </div>
+  </header>
+
+  <main class="dashboard-grid">
+    <section class="panel panel-wide">
+      <div class="panel-header">
+        <h2>Lane streams</h2>
+        <p>MJPEG preview backed by the shared runtime buffer.</p>
+      </div>
+      <div class="camera-grid">
+        {% for lane in lanes %}
+        <article class="camera-card">
+          <div class="camera-meta">
+            <strong>{{ lane|upper }}</strong>
+            <span id="status-{{ lane }}">waiting</span>
+          </div>
+          <img src="/api/streams/{{ lane }}.mjpeg" alt="{{ lane }} stream" loading="lazy">
+          <div class="camera-stats">
+            <span id="count-{{ lane }}">0 vehicles</span>
+            <span id="signal-{{ lane }}">RED</span>
+            <span id="timer-{{ lane }}">0.0s</span>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Controller</h2>
+        <p>Signal state and runtime health.</p>
+      </div>
+      <dl class="metric-list">
+        <div><dt>Database</dt><dd id="db-status">unknown</dd></div>
+        <div><dt>Phase</dt><dd id="phase-name">-</dd></div>
+        <div><dt>Remaining</dt><dd id="phase-remaining">0.0s</dd></div>
+        <div><dt>Emergency</dt><dd id="emergency-state">no</dd></div>
+      </dl>
+      <p id="runtime-error" class="error-text" hidden></p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Alerts</h2>
+        <p>Latest persisted runtime events.</p>
+      </div>
+      <ul id="alerts" class="alert-list"></ul>
+    </section>
+  </main>
+
+  <script>
+    const setText = (id, value) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    };
+
+    const alertsEl = document.getElementById("alerts");
+    const runtimeErrorEl = document.getElementById("runtime-error");
+
+    const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/dashboard`);
+    socket.onmessage = ({ data }) => {
+      const payload = JSON.parse(data);
+      setText("db-status", payload.db_connected ? "connected" : "offline");
+      setText("phase-name", payload.controller.current_phase || "-");
+      setText("phase-remaining", `${payload.controller.phase_remaining?.toFixed?.(1) ?? "0.0"}s`);
+      setText("emergency-state", payload.controller.is_emergency ? "yes" : "no");
+
+      if (payload.runtime_error) {
+        runtimeErrorEl.textContent = payload.runtime_error;
+        runtimeErrorEl.hidden = false;
+      } else {
+        runtimeErrorEl.hidden = true;
+      }
+
+      Object.entries(payload.lanes || {}).forEach(([lane, laneData]) => {
+        setText(`status-${lane}`, `${laneData.camera_status} - ${laneData.source}`);
+        setText(`count-${lane}`, `${laneData.vehicle_count} vehicles`);
+        setText(`signal-${lane}`, laneData.signal_state);
+        setText(`timer-${lane}`, `${Number(laneData.time_remaining || 0).toFixed(1)}s`);
+      });
+
+      alertsEl.innerHTML = "";
+      (payload.alerts || []).slice(0, 8).forEach((alert) => {
+        const item = document.createElement("li");
+        item.textContent = `${alert.timestamp} - ${alert.lane.toUpperCase()} - ${alert.message}`;
+        item.className = `alert-item ${alert.level}`;
+        alertsEl.appendChild(item);
+      });
+    };
+
+    document.getElementById("logout-button").addEventListener("click", async () => {
+      await fetch("/api/auth/logout", { method: "POST" });
+      window.location.href = "/login";
+    });
+  </script>
+</body>
+</html>

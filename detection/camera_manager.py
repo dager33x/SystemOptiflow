@@ -1,5 +1,7 @@
 # detection/camera_manager.py
 import logging
+import os
+import time
 import cv2
 import numpy as np
 import threading
@@ -21,6 +23,8 @@ class CameraManager:
     latest one in a buffer so get_frame() is always instant.
     """
 
+    _MAX_CONSECUTIVE_FAILURES = 30
+
     def __init__(self, camera_index: int = 0):
         self.logger = logging.getLogger(__name__)
         self.camera: Optional[cv2.VideoCapture] = None
@@ -34,6 +38,10 @@ class CameraManager:
         self._latest_frame: Optional[np.ndarray] = None
         self._frame_lock = threading.Lock()
         self._capture_thread: Optional[threading.Thread] = None
+
+        # ── Staleness tracking ──
+        self._last_frame_time: float = 0.0
+        self._consecutive_failures: int = 0
     
     def initialize_camera(self, camera_index: int = 0) -> bool:
         """Initialize a LOCAL USB/webcam by integer index."""
@@ -73,26 +81,39 @@ class CameraManager:
           • Any URL accepted by cv2.VideoCapture
         """
         try:
-            self.logger.info(f"[CameraManager] Connecting to phone stream: {url}")
+            self.logger.info(f"[CameraManager] Connecting to stream: {url}")
+
+            # Force TCP transport for RTSP — UDP fails across Docker bridge NAT.
+            # stimeout is in microseconds (5 s); max_delay caps jitter buffer (500 ms).
+            if url.lower().startswith(("rtsp://", "rtsps://")):
+                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+                    "rtsp_transport;tcp|stimeout;5000000|max_delay;500000"
+                )
+
             # Use ffmpeg backend for network streams — more robust than DSHOW for URLs
             self.camera = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
 
             # Reduce buffer to stay near real-time
             self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            # Hard timeouts so a stalled connection doesn't block the capture thread
+            self.camera.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
+            self.camera.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000)
 
             if self.camera.isOpened():
                 self.is_running = True
+                self._last_frame_time = 0.0
+                self._consecutive_failures = 0
                 self._capture_thread = threading.Thread(
                     target=self._capture_loop, daemon=True, name=f"cam-url"
                 )
                 self._capture_thread.start()
-                self.logger.info(f"[CameraManager] Phone stream connected: {url}")
+                self.logger.info(f"[CameraManager] Stream connected: {url}")
                 return True
             else:
                 self.logger.error(f"[CameraManager] Failed to open stream: {url}")
                 return False
         except Exception as e:
-            self.logger.error(f"[CameraManager] Error connecting to phone stream: {e}")
+            self.logger.error(f"[CameraManager] Error connecting to stream: {e}")
             return False
 
     def initialize_source(self, source: Union[int, str]) -> bool:
@@ -112,17 +133,38 @@ class CameraManager:
             self.logger.error(f"[CameraManager] Unrecognised source: {url}")
             return False
 
+    def is_stale(self, timeout_seconds: float = 15.0) -> bool:
+        """Return True if no frame has arrived within timeout_seconds."""
+        if not self.is_running:
+            return True
+        if self._last_frame_time == 0.0:
+            return False  # thread started but hasn't received its first frame yet
+        return (time.time() - self._last_frame_time) > timeout_seconds
+
     def _capture_loop(self):
         """
         Background thread: continuously pull frames from the hardware buffer.
         Stores only the most recent frame. This drains the camera buffer to
         avoid lag, and makes get_frame() a near-instantaneous operation.
+
+        Self-terminates after _MAX_CONSECUTIVE_FAILURES read failures so
+        CameraRuntime's staleness check can detect the dead stream and retry.
         """
         while self.is_running and self.camera and self.camera.isOpened():
             ret, frame = self.camera.read()
             if ret and frame is not None:
                 with self._frame_lock:
                     self._latest_frame = frame
+                self._last_frame_time = time.time()
+                self._consecutive_failures = 0
+            else:
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= self._MAX_CONSECUTIVE_FAILURES:
+                    self.logger.warning(
+                        f"[CameraManager] {self._consecutive_failures} consecutive read failures — stopping capture thread"
+                    )
+                    self.is_running = False
+                    break
             # No sleep here — we want to drain the buffer as fast as possible
 
     def get_frame(self) -> Optional[np.ndarray]:

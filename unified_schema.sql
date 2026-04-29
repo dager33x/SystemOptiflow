@@ -79,6 +79,19 @@ CREATE TABLE IF NOT EXISTS public.system_logs (
     timestamp TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 8. VERIFICATION CODES TABLE
+CREATE TABLE IF NOT EXISTS public.verification_codes (
+    verification_id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    email TEXT NOT NULL,
+    username TEXT,
+    code TEXT NOT NULL,
+    code_type TEXT NOT NULL, -- 'signup' or 'reset_password'
+    payload JSONB DEFAULT '{}'::jsonb,
+    expires_at TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- 8. ROW LEVEL SECURITY (RLS)
 -- Enable RLS
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
@@ -88,6 +101,7 @@ ALTER TABLE public.violations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.accidents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.emergency_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.system_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.verification_codes ENABLE ROW LEVEL SECURITY;
 
 -- Policies for USERS
 -- Allow users to view their own data
@@ -103,6 +117,7 @@ CREATE POLICY "Enable read access for violations" ON public.violations FOR SELEC
 CREATE POLICY "Enable read access for accidents" ON public.accidents FOR SELECT USING (true);
 CREATE POLICY "Enable read access for emergency" ON public.emergency_events FOR SELECT USING (true);
 CREATE POLICY "Enable read access for logs" ON public.system_logs FOR SELECT USING (true);
+CREATE POLICY "Enable read access for verification codes" ON public.verification_codes FOR SELECT USING (true);
 
 -- Insert Access for System/Authenticated Users
 -- Allow authenticated users to insert reports
@@ -113,9 +128,12 @@ CREATE POLICY "Enable insert for violations" ON public.violations FOR INSERT WIT
 CREATE POLICY "Enable insert for accidents" ON public.accidents FOR INSERT WITH CHECK (true);
 CREATE POLICY "Enable insert for emergency" ON public.emergency_events FOR INSERT WITH CHECK (true);
 CREATE POLICY "Enable insert for logs" ON public.system_logs FOR INSERT WITH CHECK (true);
+CREATE POLICY "Enable insert for verification codes" ON public.verification_codes FOR INSERT WITH CHECK (true);
 
 -- Allow admins/authors to update reports
 CREATE POLICY "Enable update for users based on email" ON public.reports
+    FOR UPDATE USING (true);
+CREATE POLICY "Enable update for verification codes" ON public.verification_codes
     FOR UPDATE USING (true);
 
 -- 9. INDEXES
@@ -124,3 +142,4 @@ CREATE INDEX IF NOT EXISTS idx_reports_priority ON public.reports(priority);
 CREATE INDEX IF NOT EXISTS idx_users_username ON public.users(username);
 CREATE INDEX IF NOT EXISTS idx_accidents_time ON public.accidents(timestamp);
 CREATE INDEX IF NOT EXISTS idx_violations_time ON public.violations(timestamp);
+CREATE INDEX IF NOT EXISTS idx_verification_codes_email_type ON public.verification_codes(email, code_type);

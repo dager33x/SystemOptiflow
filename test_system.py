@@ -1,80 +1,67 @@
-import unittest
+import importlib.util
 import os
-import sys
-
-# Ensure the app root is in the path
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+import unittest
 
 from utils.app_config import SETTINGS
 from utils.paths import get_resource_path
 
-class TestSystemFeatures(unittest.TestCase):
 
-    def test_01_configuration_feature(self):
-        """Configuration Management Feature"""
-        self.assertIn("enable_detection", SETTINGS)
-        self.assertTrue(isinstance(SETTINGS["ai_throttle_seconds"], float))
+FASTAPI_AVAILABLE = all(
+    importlib.util.find_spec(package) is not None
+    for package in ("fastapi", "itsdangerous", "jinja2", "email_validator")
+)
+DESKTOP_AVAILABLE = all(
+    importlib.util.find_spec(package) is not None
+    for package in ("customtkinter", "cv2")
+)
 
-    def test_02_path_resolution_feature(self):
-        """Resource Path Resolution Feature"""
-        path = get_resource_path("assets")
-        self.assertIsInstance(path, str)
 
-    def test_03_accident_detection_logic_feature(self):
-        """Accident Detection Controller Feature"""
-        from controllers.accident_controller import AccidentController
-        self.assertTrue(callable(AccidentController))
+class TestSystemOptiflowWeb(unittest.TestCase):
+    def test_01_settings_include_lane_sources(self):
+        for lane in ("north", "south", "east", "west"):
+            self.assertIn(f"camera_source_{lane}", SETTINGS)
 
-    def test_04_violation_logging_feature(self):
-        """Violation Controller Feature"""
-        from controllers.violation_controller import ViolationController
-        self.assertTrue(callable(ViolationController))
+    def test_02_model_assets_exist(self):
+        self.assertTrue(os.path.exists(get_resource_path("yolov8n.pt")))
+        self.assertTrue(os.path.exists(get_resource_path("best.pt")))
+        self.assertTrue(os.path.exists(get_resource_path("Optiflow_Dqn.pth")))
 
-    def test_05_authentication_feature(self):
-        """Authentication Controller Feature"""
-        from controllers.auth_controller import AuthController
-        self.assertTrue(callable(AuthController))
+    @unittest.skipUnless(DESKTOP_AVAILABLE, "Desktop UI dependencies are not installed")
+    def test_03_desktop_entrypoint_imports(self):
+        import app
 
-    def test_06_main_traffic_controller_feature(self):
-        """Main Traffic Logic Feature"""
-        from controllers.main_controller import MainController
-        self.assertTrue(callable(MainController))
+        self.assertTrue(callable(app.main))
 
-    def test_07_emergency_vehicle_feature(self):
-        """Emergency Vehicle Detection Feature"""
-        from controllers.emergency_controller import EmergencyController
-        self.assertTrue(callable(EmergencyController))
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI dependencies are not installed")
+    def test_04_web_server_entrypoint_exports_app(self):
+        import web_server
 
-    def test_08_ai_models_feature(self):
-        """AI Models Readiness Feature"""
-        self.assertTrue(os.path.exists(get_resource_path("yolov8n.pt")), "YOLO model not found")
-        self.assertTrue(os.path.exists(get_resource_path("Optiflow_Dqn.pth")), "DQN model not found")
+        self.assertIsNotNone(web_server.app)
 
-if __name__ == '__main__':
-    print("=====================================================")
-    print(" RUNNING UNIT TESTS FOR ALL SYSTEM FEATURES          ")
-    print("=====================================================")
-    
-    # Run tests programmatically to capture and format output
-    suite = unittest.TestLoader().loadTestsFromTestCase(TestSystemFeatures)
-    
-    # Capture standard output to prevent verbose unittest prints if we just want clean output
-    runner = unittest.TextTestRunner(stream=open(os.devnull, 'w'), verbosity=0)
-    result = runner.run(suite)
-    
-    print("\n=================== TEST RESULTS ====================")
-    if result.wasSuccessful():
-        # Iterate over test methods defined in the class to print their docstrings
-        for method_name in dir(TestSystemFeatures):
-            if method_name.startswith("test_"):
-                doc = getattr(TestSystemFeatures, method_name).__doc__
-                print(f"[Feature Tested]: {doc} -> REMARK: PASSED")
-        print("=====================================================")
-        print("OVERALL SYSTEM STATUS: ALL FEATURES TESTED SUCCESSFULLY.")
-        print("FINAL REMARK: PASSED")
-    else:
-        for i, (test, traceback) in enumerate(result.failures + result.errors):
-            print(f"[Feature Tested]: {test._testMethodDoc} -> REMARK: FAILED")
-            print(f"Details: {traceback}")
-        print("=====================================================")
-        print("OVERALL SYSTEM STATUS: SOME TESTS FAILED.")
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI dependencies are not installed")
+    def test_05_fastapi_app_starts_without_gui(self):
+        os.environ["OPTIFLOW_SKIP_RUNTIME_STARTUP"] = "1"
+        from fastapi.testclient import TestClient
+        from webapp.main import create_app
+
+        with TestClient(create_app()) as client:
+            response = client.get("/health")
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertIn("status", payload)
+            self.assertIn("db_connected", payload)
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI dependencies are not installed")
+    def test_06_login_page_renders(self):
+        os.environ["OPTIFLOW_SKIP_RUNTIME_STARTUP"] = "1"
+        from fastapi.testclient import TestClient
+        from webapp.main import create_app
+
+        with TestClient(create_app()) as client:
+            response = client.get("/login")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("SystemOptiflow", response.text)
+
+
+if __name__ == "__main__":
+    unittest.main()

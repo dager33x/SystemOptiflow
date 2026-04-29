@@ -29,26 +29,28 @@ class EmailService:
         """Generate a random verification code"""
         return ''.join(random.choices(string.digits, k=length))
     
-    def send_verification_email(self, recipient_email, username):
+    def send_verification_email(self, recipient_email, username, code=None):
         """Send verification email with code"""
         # Generate code
-        code = self.generate_verification_code()
+        generated_code = code or self.generate_verification_code()
         
-        # Store code with expiration (10 minutes)
-        self.verification_codes[recipient_email] = {
-            'code': code,
-            'expires': datetime.now() + timedelta(minutes=10),
-            'username': username
-        }
+        # Store code with expiration (10 minutes) only when the caller did not
+        # already persist the code elsewhere.
+        if code is None:
+            self.verification_codes[recipient_email] = {
+                'code': generated_code,
+                'expires': datetime.now() + timedelta(minutes=10),
+                'username': username
+            }
         
         # Check if using default credentials or missing credentials
         email_sent = False
         
         if self.sender_password == "your_app_password" or not self.sender_password:
-            print(f"\n[DEV MODE] Email not configured. Verification code: {code}\n")
-            logger.warning(f"Email not configured. Verification code for {recipient_email}: {code}")
+            print(f"\n[DEV MODE] Email not configured. Verification code: {generated_code}\n")
+            logger.warning(f"Email not configured. Verification code for {recipient_email}: {generated_code}")
             # In dev mode, we consider it "handled" but email_sent is False
-            return True, code, False
+            return True, generated_code, False
         
         try:
             # Create message
@@ -63,7 +65,7 @@ class EmailService:
             
             Welcome to OptiFlow Traffic Management System!
             
-            Your verification code is: {code}
+            Your verification code is: {generated_code}
             
             This code will expire in 10 minutes.
             
@@ -87,7 +89,7 @@ class EmailService:
                   
                   <div style="background-color: #0f172a; padding: 25px; border-radius: 12px; text-align: center; margin: 30px 0; border: 1px solid #3b82f6;">
                     <p style="color: #94a3b8; font-size: 13px; margin: 0 0 10px 0; text-transform: uppercase; letter-spacing: 1px;">Verification Code</p>
-                    <h1 style="color: #3b82f6; letter-spacing: 8px; margin: 0; font-size: 36px; font-weight: bold;">{code}</h1>
+                    <h1 style="color: #3b82f6; letter-spacing: 8px; margin: 0; font-size: 36px; font-weight: bold;">{generated_code}</h1>
                   </div>
                   
                   <p style="color: #94a3b8; font-size: 14px; text-align: center;">This code will expire in <strong>10 minutes</strong>.</p>
@@ -117,11 +119,11 @@ class EmailService:
             
         except Exception as e:
             logger.error(f"Error sending email to {recipient_email}: {e}")
-            print(f"\n[FALLBACK] Failed to send email. Verification code: {code}\n")
+            print(f"\n[FALLBACK] Failed to send email. Verification code: {generated_code}\n")
             # Email failed, but we still generated a valid code
             email_sent = False
         
-        return True, code, email_sent
+        return True, generated_code, email_sent
 
     def verify_code(self, email, code):
         """Verify the provided code"""
@@ -147,25 +149,26 @@ class EmailService:
         """Check if email is already verified"""
         return email not in self.verification_codes
     
-    def send_password_reset_email(self, recipient_email, username):
+    def send_password_reset_email(self, recipient_email, username, code=None):
         """Send password reset email with code"""
         # Generate code
-        code = self.generate_verification_code()
+        generated_code = code or self.generate_verification_code()
         
-        # Store code with expiration (15 minutes for password reset)
-        self.verification_codes[f"reset_{recipient_email}"] = {
-            'code': code,
-            'expires': datetime.now() + timedelta(minutes=15),
-            'username': username,
-            'type': 'reset'
-        }
+        # Store code locally only when the caller did not already persist it.
+        if code is None:
+            self.verification_codes[f"reset_{recipient_email}"] = {
+                'code': generated_code,
+                'expires': datetime.now() + timedelta(minutes=15),
+                'username': username,
+                'type': 'reset'
+            }
         
         # Check if using default credentials or missing credentials
         email_sent = False
         if self.sender_password == "your_app_password" or not self.sender_password:
-            print(f"\n[DEV MODE] Email not configured. Password reset code: {code}\n")
-            logger.warning(f"Email not configured. Reset code for {recipient_email}: {code}")
-            return True, code, False
+            print(f"\n[DEV MODE] Email not configured. Password reset code: {generated_code}\n")
+            logger.warning(f"Email not configured. Reset code for {recipient_email}: {generated_code}")
+            return True, generated_code, False
         
         try:
             # Create message
@@ -180,7 +183,7 @@ class EmailService:
             
             We received a request to reset your password for your OptiFlow account.
             
-            Your password reset code is: {code}
+            Your password reset code is: {generated_code}
             
             This code will expire in 15 minutes.
             
@@ -204,7 +207,7 @@ class EmailService:
                   
                   <div style="background-color: #0f172a; padding: 25px; border-radius: 12px; text-align: center; margin: 30px 0; border: 1px solid #ef4444;">
                     <p style="color: #94a3b8; font-size: 13px; margin: 0 0 10px 0; text-transform: uppercase; letter-spacing: 1px;">Password Reset Code</p>
-                    <h1 style="color: #ef4444; letter-spacing: 8px; margin: 0; font-size: 36px; font-weight: bold;">{code}</h1>
+                    <h1 style="color: #ef4444; letter-spacing: 8px; margin: 0; font-size: 36px; font-weight: bold;">{generated_code}</h1>
                   </div>
                   
                   <p style="color: #94a3b8; font-size: 14px; text-align: center;">This code will expire in <strong>15 minutes</strong>.</p>
@@ -235,10 +238,10 @@ class EmailService:
             
         except Exception as e:
             logger.error(f"Error sending password reset email to {recipient_email}: {e}")
-            print(f"\n[FALLBACK] Failed to send email. Password reset code: {code}\n")
+            print(f"\n[FALLBACK] Failed to send email. Password reset code: {generated_code}\n")
             email_sent = False
         
-        return True, code, email_sent
+        return True, generated_code, email_sent
     
     def verify_reset_code(self, email, code):
         """Verify password reset code"""

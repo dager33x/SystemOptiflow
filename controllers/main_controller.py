@@ -19,7 +19,7 @@ from views.components.notification import NotificationManager
 class MainController:
     """Main application controller with 4-way camera and AI integration"""
     
-    def __init__(self, root, view, db=None, current_user=None, auth_controller=None, on_logout_callback=None, violation_controller=None, accident_controller=None):
+    def __init__(self, root, view, db=None, current_user=None, auth_controller=None, on_logout_callback=None, violation_controller=None, accident_controller=None, connection_profile=None):
         self.root = root
         self.view = view
         self.db = db
@@ -28,6 +28,7 @@ class MainController:
         self.violation_controller = violation_controller
         self.accident_controller = accident_controller
         self.on_logout_callback = on_logout_callback
+        self.connection_profile = connection_profile
         
         # Initialize Notification System
         self.notification_manager = NotificationManager(root)
@@ -137,7 +138,10 @@ class MainController:
             self.pages['traffic_reports'] = TrafficReportsPage(self.view.content_area)
             self.pages['incident_history'] = IncidentHistoryPage(self.view.content_area, self.accident_controller, self.current_user)
             self.pages['violation_logs'] = ViolationLogsPage(self.view.content_area, self.violation_controller, self.current_user)
-            self.pages['settings'] = SettingsPage(self.view.content_area)
+            self.pages['settings'] = SettingsPage(
+                self.view.content_area,
+                connection_profile=self.connection_profile,
+            )
             
             # Admin Pages
             if self.current_user and self.current_user.get('role') == 'admin':

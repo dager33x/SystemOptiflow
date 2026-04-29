@@ -42,11 +42,11 @@ CSV_LOG_PATH   = 'logs/traffic_log.csv'
 class TrafficLightController:
     LANE_NAMES = ['NORTH', 'SOUTH', 'EAST', 'WEST']
 
-    def __init__(self, num_lanes=NUM_LANES, model_path=None, use_pretrained=True):
+    def __init__(self, num_lanes=NUM_LANES, model_path=None, use_pretrained=True, load_detector=True):
         self.logger    = logging.getLogger(__name__)
         self.num_lanes = num_lanes
 
-        self.yolo = YOLODetector()
+        self.yolo = YOLODetector() if load_detector else None
         self.sb3_model = SB3DQNAdapter.load(SB3_MODEL_PATH)
         self.dqn = TrafficLightDQN(state_size=10, action_size=2, hidden_size=128)
 
@@ -177,6 +177,8 @@ class TrafficLightController:
         self._frame_number += 1
 
     def process_camera_frame(self, frame, lane_id: int) -> Dict:
+        if self.yolo is None:
+            raise RuntimeError('YOLO detector is disabled for this controller instance.')
         dets = self.yolo.detect_vehicles(frame)
         self.update_lane_detections(lane_id, dets)
         return {'lane_id': lane_id, 'detections': dets,

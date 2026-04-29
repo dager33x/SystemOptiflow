@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="login-body">
+  <main class="login-shell">
+    <section class="login-card">
+      <p class="eyebrow">SystemOptiflow</p>
+      <h1>Traffic command center</h1>
+      <p class="lede">Headless web deployment for streaming, signal control, and incident monitoring.</p>
+      <form id="login-form" class="stack">
+        <label>
+          <span>Username</span>
+          <input type="text" name="username" value="{{ demo_username }}" required>
+        </label>
+        <label>
+          <span>Password</span>
+          <input type="password" name="password" value="admin123" required>
+        </label>
+        <button type="submit">Sign in</button>
+      </form>
+      <p id="error" class="error-text" hidden></p>
+      <p class="hint">If Supabase is offline, the default demo login is <code>{{ demo_username }}</code> / <code>admin123</code>.</p>
+    </section>
+  </main>
+  <script>
+    const form = document.getElementById("login-form");
+    const errorEl = document.getElementById("error");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      errorEl.hidden = true;
+      const body = new URLSearchParams(new FormData(form));
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({ detail: "Login failed." }));
+        errorEl.textContent = payload.detail || "Login failed.";
+        errorEl.hidden = false;
+        return;
+      }
+      window.location.href = "/dashboard";
+    });
+  </script>
+</body>
+</html>
