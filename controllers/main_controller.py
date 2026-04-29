@@ -150,40 +150,54 @@ class MainController:
         name_map = {
             'north': 'North Gate',
             'south': 'South Junction',
-            'east': 'East Portal',
-            'west': 'West Avenue'
+            'east':  'East Portal',
+            'west':  'West Avenue'
         }
-        
+
         cameras_data = []
         for direction in self.directions:
             manager = self.camera_managers.get(direction)
             state = self.states.get(direction, {})
             current_source = state.get("current_source", "Simulated")
-            
+
             base_name = name_map.get(direction, direction.title())
-            
-            if current_source.startswith("Camera") and manager and manager.is_running:
-                status = "active"
-                # Make it dynamic: show hardware/source name
-                display_name = f"{base_name} ({current_source.replace('Camera', 'Cam')})"
-            elif current_source != "Simulated" and manager and manager.is_running:
-                status = "active"
-                # If it's a video file, clip the name or just show 'Video'
-                if len(current_source) > 10:
-                    src_short = current_source[:7] + "..."
-                else:
-                    src_short = current_source
-                display_name = f"{base_name} ({src_short})"
-            else:
-                status = "simulated" 
+
+            if current_source == "Simulated":
+                status = "simulated"
                 display_name = f"{base_name} (Sim)"
+
+            elif current_source.startswith("Camera") and manager and manager.is_running:
+                status = "active"
+                display_name = f"📷 {base_name} ({current_source.replace('Camera', 'Cam')})"
+
+            elif current_source.startswith(("rtsp://", "http://", "https://", "rtsps://")) and manager and manager.is_running:
+                status = "active"
+                # Show a tidy label: extract the host/IP from the URL
+                try:
+                    from urllib.parse import urlparse
+                    parsed = urlparse(current_source)
+                    host = parsed.hostname or current_source[:15]
+                except Exception:
+                    host = current_source[:15]
+                display_name = f"📱 {base_name} ({host})"
+
+            elif self._is_live_source(current_source) and manager and manager.is_running:
+                # Generic live source fallback
+                status = "active"
+                src_short = current_source[:12] + "..." if len(current_source) > 12 else current_source
+                display_name = f"{base_name} ({src_short})"
+
+            else:
+                # Live source configured but not yet connected
+                status = "simulated"
+                display_name = f"{base_name} (Connecting…)"
 
             cameras_data.append({
                 "name": display_name,
                 "status": status,
                 "id": direction
             })
-            
+
         return cameras_data
     
     def update_sidebar_navigation(self):
@@ -218,25 +232,52 @@ class MainController:
         except Exception as e:
             print(f"Navigation error: {e}")
     
+    # ── Phone/IP camera URL helper ────────────────────────────────────────────
+    @staticmethod
+    def _is_live_source(source: str) -> bool:
+        """
+        Return True when the source string represents a live hardware or
+        network stream (USB camera index OR phone IP/RTSP/MJPEG URL).
+        Returns False only for the built-in "Simulated" mode.
+        """
+        if source == "Simulated":
+            return False
+        if source.startswith("Camera"):
+            return True          # "Camera 0" / "Camera 1" …
+        # Phone stream URLs
+        return source.startswith(("rtsp://", "http://", "https://", "rtsps://"))
+
+    @staticmethod
+    def _resolve_source(source: str):
+        """
+        Convert a settings string to the value that CameraManager.initialize_source()
+        expects.
+          "Camera 0"  → int(0)
+          URL string  → the URL string unchanged
+        """
+        if source.startswith("Camera"):
+            try:
+                return int(source.split(" ")[1])
+            except (IndexError, ValueError):
+                return 0
+        return source  # already a URL or unknown
+
     def start_camera_feed(self):
         """Start camera feeds in background thread"""
         from utils.app_config import SETTINGS
         # Initialize all cameras based on SETTINGS
-        for i, direction in enumerate(self.directions):
+        for direction in self.directions:
             source = SETTINGS.get(f"camera_source_{direction}", "Simulated")
             self.states[direction]["current_source"] = source
-            if source.startswith("Camera"):
-                try:
-                    cam_idx = int(source.split(" ")[1])
-                    self.camera_managers[direction].initialize_camera(cam_idx)
-                except ValueError:
-                    pass
-            
+            if self._is_live_source(source):
+                resolved = self._resolve_source(source)
+                self.camera_managers[direction].initialize_source(resolved)
+
         self.camera_thread = threading.Thread(target=self.camera_loop, daemon=True)
         self.camera_thread.start()
-        
+
         self.logger.info("Camera feed started with DQN traffic control")
-    
+
     def camera_loop(self):
         """Background thread for camera processing with DQN decision making"""
         
@@ -314,17 +355,14 @@ class MainController:
                     # Check if source changed
                     if camera_source != state.get("current_source", "Simulated"):
                         self.camera_managers[direction].release()
-                        if camera_source.startswith("Camera"):
-                            try:
-                                cam_idx = int(camera_source.split(" ")[1])
-                                self.camera_managers[direction].initialize_camera(cam_idx)
-                            except ValueError:
-                                pass
+                        if self._is_live_source(camera_source):
+                            resolved = self._resolve_source(camera_source)
+                            self.camera_managers[direction].initialize_source(resolved)
                         state["current_source"] = camera_source
                     
                     # Get Frame
                     frame = None
-                    if camera_source.startswith("Camera"):
+                    if self._is_live_source(camera_source):
                         frame = self.camera_managers[direction].get_frame()
                     
                     if frame is None:
@@ -635,17 +673,29 @@ class MainController:
                                 #
                                 # Size-ratio guard avoids tiny artefacts vs big trucks.
                                 # 3-frame confirmation eliminates single-frame false positives.
-                                # ─────────────────────────────────────────────────────────────
-                                CONFIRM_FRAMES = 3   # consecutive frames to confirm accident
-                                GAP_PX         = 25  # pixel gap tolerance for touching boxes
-                                SIZE_RATIO_MIN = 0.10  # min(area1,area2)/max(area1,area2)
+                                # ────────────────────────────────────────────────────────────
+                                # Accident detection — overlap-based, strict confirmation
+                                # ────────────────────────────────────────────────────────────
+                                # We require ACTUAL bounding-box overlap (IoU > 0) between two
+                                # distinct vehicles, not just proximity.  This prevents normal
+                                # stop-and-go traffic (closely spaced but NOT overlapping) from
+                                # triggering false accidents.
+                                #
+                                # Confirmation: 7 consecutive frames (~0.7 s at 10 FPS).
+                                # The same static pair of vehicles parked next to each other
+                                # would need to overlap for >0.7 s — still possible but much
+                                # harder to trigger falsely.
+                                # ────────────────────────────────────────────────────────────
+                                CONFIRM_FRAMES = 7       # was 3 — stricter
+                                MIN_OVERLAP_IOU = 0.05   # boxes must physically touch/overlap
+                                SIZE_RATIO_MIN  = 0.15   # filter tiny noise vs large vehicle
 
                                 vehicle_classes = ['car', 'truck', 'bus', 'motorcycle', 'jeepney']
                                 vehicle_dets = [d for d in detections if d['class_name'] in vehicle_classes]
 
                                 accident_candidate = False
                                 candidate_d1 = candidate_d2 = None
-                                candidate_score = 0.0  # proximity score for label
+                                candidate_score = 0.0
 
                                 for _i, d1 in enumerate(vehicle_dets):
                                     for _j, d2 in enumerate(vehicle_dets):
@@ -659,53 +709,42 @@ class MainController:
                                         w2 = max(1, x2b - x1b)
                                         h2 = max(1, y2b - y1b)
 
-                                        # Size-ratio guard (filter tiny artefacts)
+                                        # Size-ratio guard (filter dust/tiny artefacts)
                                         a1, a2 = w1 * h1, w2 * h2
                                         if min(a1, a2) / max(a1, a2) < SIZE_RATIO_MIN:
                                             continue
 
-                                        cx1 = (x1a + x2a) / 2;  cy1 = (y1a + y2a) / 2
-                                        cx2 = (x1b + x2b) / 2;  cy2 = (y1b + y2b) / 2
-                                        dx  = abs(cx1 - cx2)
-                                        dy  = abs(cy1 - cy2)
+                                        # ── Require actual IoU overlap ──────────────────
+                                        # Compute IoU between the two vehicle boxes
+                                        ix1 = max(x1a, x1b); iy1 = max(y1a, y1b)
+                                        ix2 = min(x2a, x2b); iy2 = min(y2a, y2b)
+                                        if ix2 <= ix1 or iy2 <= iy1:
+                                            continue   # boxes do NOT overlap at all
+                                        inter = (ix2 - ix1) * (iy2 - iy1)
+                                        iou_pair = inter / (a1 + a2 - inter + 1e-6)
+                                        if iou_pair < MIN_OVERLAP_IOU:
+                                            continue   # overlap below minimum threshold
 
-                                        # Condition A: center-to-center within combined half-sizes
-                                        half_x_sum = (w1 / 2 + w2 / 2) * 1.1
-                                        half_y_sum = (h1 / 2 + h2 / 2) * 1.4
-                                        cond_a = (dx < half_x_sum) and (dy < half_y_sum)
-
-                                        # Condition B: boxes within GAP_PX pixels of each other
-                                        gap_x = max(0, max(x1a, x1b) - min(x2a, x2b))
-                                        gap_y = max(0, max(y1a, y1b) - min(y2a, y2b))
-                                        cond_b = (gap_x <= GAP_PX) and (gap_y <= GAP_PX)
-
-                                        if not (cond_a or cond_b):
-                                            continue  # Neither condition satisfied
-
-                                        # Compute a proximity score: 0.0 = touching, 1.0 = just passing
-                                        dist = (dx**2 + dy**2) ** 0.5
-                                        avg_half = ((half_x_sum + half_y_sum) / 2) + 1e-6
-                                        prox_score = max(0.0, 1.0 - dist / avg_half)
-
-                                        if prox_score > candidate_score:
+                                        # Score: higher IoU = higher severity
+                                        if iou_pair > candidate_score:
                                             accident_candidate = True
                                             candidate_d1, candidate_d2 = d1, d2
-                                            candidate_score = prox_score
-                                        break  # Best pair already found for this d1
-                                    if accident_candidate:
-                                        break
+                                            candidate_score = iou_pair
 
-                                # Multi-frame counter (Stage 4)
+                                # Multi-frame confirmation counter
                                 if accident_candidate:
-                                    self._accident_frame_counts[lane_id] = \
+                                    self._accident_frame_counts[lane_id] = (
                                         self._accident_frame_counts.get(lane_id, 0) + 1
+                                    )
                                 else:
+                                    # Decay by 2 per non-candidate frame so it clears quickly
                                     self._accident_frame_counts[lane_id] = max(
-                                        0, self._accident_frame_counts.get(lane_id, 0) - 1
+                                        0, self._accident_frame_counts.get(lane_id, 0) - 2
                                     )
 
                                 frame_count = self._accident_frame_counts.get(lane_id, 0)
                                 accident_detected = frame_count >= CONFIRM_FRAMES
+
 
                                 # ── Visualisation ──────────────────────────────────────────
                                 if accident_candidate and candidate_d1 and candidate_d2:
@@ -768,9 +807,12 @@ class MainController:
                         annotated_frame = cv2.bitwise_not(annotated_frame)
                     
                     # Store detections
+                    # Only count actual traffic vehicles — exclude specialist/violation classes
+                    _TRAFFIC_CLASSES = {'car', 'bus', 'truck', 'motorcycle', 'bicycle', 'jeepney'}
                     state['detections'] = detections
-                    state['vehicle_count'] = len([d for d in detections
-                                                  if d.get('class_name') not in ['emergency_vehicle']])
+                    state['vehicle_count'] = len(
+                        [d for d in detections if d.get('class_name') in _TRAFFIC_CLASSES]
+                    )
                     all_lane_counts.append(state['vehicle_count'])
                     
                     # Log vehicle detections (only if count > 0 to avoid spam)
@@ -852,61 +894,53 @@ class MainController:
                     )
                     ctrl_is_emergency = self.traffic_controller.is_emergency_active
                     ctrl_buffer_locked = self.traffic_controller.buffer_locked
-                    
-                    # Map controller's numeric active_lane back to directions
-                    for i, direction in enumerate(self.directions):
-                        if i == ctrl_lane and ctrl_phase == 'green':
-                            self.states[direction]['signal_state'] = 'GREEN'
-                            self.states[direction]['time_remaining'] = ctrl_remaining
-                        elif i == ctrl_lane and ctrl_phase == 'yellow':
-                            self.states[direction]['signal_state'] = 'YELLOW'
-                            self.states[direction]['time_remaining'] = ctrl_remaining
-                        else:
-                            self.states[direction]['signal_state'] = 'RED'
-                            # Estimated wait: hops × avg_phase_duration
-                            hops = (i - ctrl_lane) % len(self.directions)
-                            # Estimate based on congestion-weighted average
-                            est_phase = 25 + 5   # 25s avg green + 5s clearance
-                            if hops == 0:
-                                self.states[direction]['time_remaining'] = ctrl_remaining
-                            else:
-                                self.states[direction]['time_remaining'] = (
-                                    ctrl_remaining + (hops - 1) * est_phase
-                                )
-                    
+
+                    # Signal states and timers are now owned by the live 0.1 s
+                    # refresh block further below. Keep ctrl_green_lanes only for
+                    # use in the decision logging section.
+                    ctrl_green_lanes = self.traffic_controller._green_lanes()
+
                     # Log meaningful transitions
                     if decision is not None:
                         phase_name = decision.get('phase', 'unknown')
                         if phase_name == 'green':
-                            lane_id  = decision.get('lane_id', ctrl_lane)
-                            gtime    = decision.get('green_time', 15)
-                            mode     = decision.get('mode', '')
-                            vcnt     = decision.get('vehicle_count', 0)
-                            em_flag  = '🚨 EMERGENCY |' if decision.get('is_emergency') else ''
-                            buf_flag = '🔒 Buffer active' if ctrl_buffer_locked else ''
+                            active_ph  = decision.get('active_phase', 0)
+                            green_lns  = decision.get('green_lanes', [])
+                            sec_lane   = decision.get('secondary_lane')
+                            ph_label   = 'NS (North+South)' if active_ph == 0 else 'EW (East+West)'
+                            gtime      = decision.get('green_time', 20)
+                            em_flag    = '🚨 EMERGENCY |' if decision.get('is_emergency') else ''
+                            em_lane    = decision.get('emergency_lane')
+                            em_str     = f' Lane {em_lane} ONLY' if em_lane is not None else ''
+                            sec_str    = ''
+                            if sec_lane is not None and not decision.get('is_emergency'):
+                                sec_str = f' + {self.directions[sec_lane].upper()} turning(15s)'
                             self.logger.info(
-                                f"🟢 {self.directions[lane_id].upper()} → GREEN {gtime}s "
-                                f"| {vcnt} vehicles | {em_flag}{mode} {buf_flag}"
+                                f'🟢 {ph_label}{em_str}{sec_str} → GREEN {gtime}s '
+                                f'| lanes={green_lns} | {em_flag}'
                             )
                         elif phase_name == 'yellow':
-                            self.logger.info(
-                                f"🟡 {self.directions[ctrl_lane].upper()} → YELLOW"
-                            )
+                            green_lns = decision.get('green_lanes', [])
+                            self.logger.info(f"🟡 YELLOW | lanes={green_lns}")
                         elif phase_name == 'all_red':
                             self.logger.info("🔴 ALL LANES → RED (clearance)")
                 
-                # ── Sync time_remaining for ALL lanes from the controller ──────
-                # The active green lane decrements display at the real wall-clock
-                # rate every loop iteration (0.1s) for smooth continuous countdown.
-                # The controller's live remaining acts as an authoritative ceiling:
-                # if it's trimmed by more than 2s the display snaps down to match,
-                # preventing both drift and abrupt UI jumps from adaptive trims.
-                # Red lanes use proper delta-time decrement with a stored timestamp.
+                # ── Always read live state from controller (runs every 0.1s) ─────
+                # Re-read on every tick so YELLOW propagates within 0.1 s.
+                ctrl_green_lanes    = self.traffic_controller._green_lanes()
+                ctrl_phase          = self.traffic_controller.current_phase
                 ctrl_remaining_live = max(
                     0.0,
                     self.traffic_controller.phase_duration -
                     (current_time - self.traffic_controller.phase_start_time)
                 )
+                # Live signal states from controller (includes YELLOW correctly)
+                ctrl_tl_states_live = self.traffic_controller.get_traffic_light_states()
+
+                # Secondary lane info for per-direction countdown
+                sec_lane      = self.traffic_controller._secondary_lane
+                sec_state     = self.traffic_controller._secondary_state
+                sec_remaining = self.traffic_controller.get_secondary_remaining()
 
                 # Initialise per-lane display trackers once
                 if not hasattr(self, '_display_remaining'):
@@ -920,30 +954,35 @@ class MainController:
                     dt_since_last = current_time - self._display_last_tick[direction]
                     self._display_last_tick[direction] = current_time
 
-                    if i_d == ctrl_lane and ctrl_phase in ('green', 'yellow'):
-                        # Green/Yellow lane: decrement display at wall-clock rate
+                    # ── Signal state: refresh every 0.1 s from live controller ──
+                    live_signal = ctrl_tl_states_live.get(i_d, 'RED')
+                    st['signal_state'] = live_signal
+
+                    # ── Timer: main green/yellow lanes count down the phase ────
+                    is_active = live_signal in ('GREEN', 'YELLOW')
+
+                    # Secondary turn lane: show its own independent countdown
+                    is_secondary = (i_d == sec_lane and sec_state in ('GREEN', 'YELLOW'))
+
+                    if is_secondary:
+                        # Count down from SECONDARY_SECS (15 s) independently
+                        self._display_remaining[direction] = sec_remaining
+                        st['time_remaining'] = sec_remaining
+                    elif is_active:
                         prev_disp = self._display_remaining[direction]
-                        # Natural decrement
-                        new_disp = max(0.0, prev_disp - dt_since_last)
-                        # Snap DOWN only if controller's value is significantly lower
-                        # (phase was trimmed, not just normal countdown drift)
+                        new_disp  = max(0.0, prev_disp - dt_since_last)
                         if ctrl_remaining_live < new_disp - 2.0:
                             new_disp = ctrl_remaining_live
-                        # Initialise display on a new phase (display is far below ctrl)
                         if ctrl_remaining_live > new_disp + 3.0:
                             new_disp = ctrl_remaining_live
                         self._display_remaining[direction] = new_disp
                         st['time_remaining'] = new_disp
                     else:
-                        # Red lanes: decrement display at wall-clock rate
                         prev_disp = self._display_remaining.get(direction, st['time_remaining'])
                         new_disp  = max(0.0, prev_disp - dt_since_last)
-                        
-                        # Snap to the estimated time if it drifts or is initialised at 0
                         target_red_time = st['time_remaining']
                         if abs(new_disp - target_red_time) > 3.0:
                             new_disp = target_red_time
-                            
                         self._display_remaining[direction] = new_disp
                         st['time_remaining'] = new_disp
                     st['last_update_time'] = current_time
@@ -988,6 +1027,23 @@ class MainController:
 
     def stop_camera(self):
         """Stop camera feed"""
+        self.is_running = False
+        for cam in self.camera_managers.values():
+            cam.release()
+        
+        # Save DQN model
+        try:
+            self.traffic_controller.save_model("models/dqn/traffic_model.pth")
+            self.logger.info("DQN model saved")
+        except Exception as e:
+            self.logger.error(f"Failed to save DQN model: {e}")
+    
+    def logout(self):
+        """Handle logout"""
+        self.stop_camera()
+        if self.on_logout_callback:
+            self.on_logout_callback()
+
         self.is_running = False
         for cam in self.camera_managers.values():
             cam.release()

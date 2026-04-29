@@ -20,9 +20,19 @@ SETTINGS = {
     # Notification Settings
     "enable_notifications": True,  # Enable UI notifications?
     
-    # Lane Camera Sources (Options: "Simulated", "Camera 0", "Camera 1", "Camera 2", "Camera 3")
-    "camera_source_north": "Camera 0", # Same as first lane (usually working)
+    # ── Lane Camera Sources ───────────────────────────────────────────────────
+    # Options:
+    #   "Simulated"                      → built-in traffic simulator (no hardware)
+    #   "Camera 0" / "Camera 1" / ...    → local USB/webcam by index
+    #   "http://<phone-ip>:8080/video"   → Android IP Webcam app (MJPEG)
+    #   "rtsp://<phone-ip>:8554/..."     → DroidCam / Larix / etc. (RTSP)
+    #   Any valid cv2.VideoCapture URL   → MJPEG, RTSP, HLS, etc.
+    # ─────────────────────────────────────────────────────────────────────────
+    "camera_source_north": "Simulated",
     "camera_source_south": "Simulated",
-    "camera_source_east": "Simulated",
-    "camera_source_west": "Simulated",
+    "camera_source_east":  "Simulated",
+    "camera_source_west":  "Simulated",
+    
+    # ── RTMP / ngrok metadata (used by Settings quick-setup panel) ────────────
+    "ngrok_rtmp_base": "",
 }
