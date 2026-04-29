@@ -63,6 +63,35 @@
       </div>
       <ul id="alerts" class="alert-list"></ul>
     </section>
+
+    <section class="panel panel-wide">
+      <div class="panel-header" id="settings-toggle">
+        <h2>&#9881; Camera Sources <span id="settings-chevron">&#9660;</span></h2>
+        <p>Configure live RTSP / USB / IP Webcam streams for each lane.</p>
+      </div>
+      <div id="settings-body" hidden>
+        <div class="settings-grid">
+          {% for lane in lanes %}
+          <label class="settings-field">
+            <span>{{ lane|upper }}</span>
+            <input type="text" id="src-{{ lane }}" placeholder="Simulated">
+          </label>
+          {% endfor %}
+          <label class="settings-field">
+            <span>RTSP transport</span>
+            <select id="src-rtsp-transport">
+              <option value="tcp">TCP (recommended inside Docker)</option>
+              <option value="udp">UDP</option>
+            </select>
+          </label>
+        </div>
+        <p class="hint">Examples: &nbsp;<code>Simulated</code> &nbsp;&bull;&nbsp; <code>Camera 0</code> &nbsp;&bull;&nbsp; <code>http://192.168.x.x:8080/video</code> &nbsp;&bull;&nbsp; <code>rtsp://mediamtx:8554/north</code></p>
+        <div class="settings-actions">
+          <button id="settings-save">Save &amp; apply</button>
+          <span id="settings-msg"></span>
+        </div>
+      </div>
+    </section>
   </main>
 
   <script>
@@ -108,6 +137,54 @@
     document.getElementById("logout-button").addEventListener("click", async () => {
       await fetch("/api/auth/logout", { method: "POST" });
       window.location.href = "/login";
+    });
+
+    // ── Settings panel ──────────────────────────────────────────────────────
+    const settingsBody = document.getElementById("settings-body");
+    const settingsChevron = document.getElementById("settings-chevron");
+
+    document.getElementById("settings-toggle").addEventListener("click", () => {
+      const open = !settingsBody.hidden;
+      settingsBody.hidden = open;
+      settingsChevron.textContent = open ? "\u25BC" : "\u25B2";
+      if (!open) loadSettings();
+    });
+
+    async function loadSettings() {
+      const res = await fetch("/api/settings");
+      if (!res.ok) return;
+      const { settings } = await res.json();
+      ["north", "south", "east", "west"].forEach(lane => {
+        const el = document.getElementById(`src-${lane}`);
+        if (el) el.value = settings[`camera_source_${lane}`] ?? "Simulated";
+      });
+      const transport = document.getElementById("src-rtsp-transport");
+      if (transport) transport.value = settings.rtsp_transport ?? "tcp";
+    }
+
+    document.getElementById("settings-save").addEventListener("click", async () => {
+      const msg = document.getElementById("settings-msg");
+      const updates = {};
+      ["north", "south", "east", "west"].forEach(lane => {
+        const val = (document.getElementById(`src-${lane}`)?.value ?? "").trim();
+        updates[`camera_source_${lane}`] = val || "Simulated";
+      });
+      const transport = document.getElementById("src-rtsp-transport")?.value;
+      if (transport) updates.rtsp_transport = transport;
+
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings: updates }),
+      });
+      if (res.ok) {
+        msg.style.color = "var(--accent-2)";
+        msg.textContent = "Saved. Streams will reconnect within 30 s.";
+      } else {
+        msg.style.color = "var(--danger)";
+        msg.textContent = "Save failed.";
+      }
+      setTimeout(() => { msg.textContent = ""; }, 4000);
     });
   </script>
 </body>
