@@ -76,4 +76,5 @@ services:
       --dns-duckdns-token ${DUCKDNS_TOKEN}
       --dns-duckdns-propagation-seconds 60
       --cert-name optiflow
+      --force-renewal
       -d ${DOMAIN}
