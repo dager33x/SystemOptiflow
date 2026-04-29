@@ -365,6 +365,39 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Violation image file is unavailable.")
         return FileResponse(local_path)
 
+    @app.get("/stream", response_class=HTMLResponse)
+    async def stream_page(request: Request):
+        user = request.session.get("user")
+        if not user:
+            return RedirectResponse(url="/login", status_code=303)
+        return templates.TemplateResponse(
+            "stream.html",
+            {"request": request, "title": "Phone Camera Stream", "user": user, "lanes": LANES},
+        )
+
+    @app.websocket("/ws/stream/{lane}")
+    async def stream_ws(websocket: WebSocket, lane: str):
+        if lane not in LANES:
+            await websocket.close(code=1008)
+            return
+        user = websocket.session.get("user")
+        if not user:
+            await websocket.close(code=1008)
+            return
+        await websocket.accept()
+        settings_service.apply({f"camera_source_{lane}": "Browser"})
+        try:
+            while True:
+                data = await websocket.receive_bytes()
+                runtime.inject_browser_frame(lane, data)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+        finally:
+            settings_service.apply({f"camera_source_{lane}": "Simulated"})
+            runtime.browser_frames[lane] = None
+
     @app.websocket("/ws/dashboard")
     async def dashboard_ws(websocket: WebSocket):
         await websocket.accept()

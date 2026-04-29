@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <style>
+    .stream-body { padding: 16px; }
+    .stream-shell { min-height: calc(100vh - 32px); display: grid; place-items: center; }
+    .stream-card {
+      width: min(480px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 24px;
+      box-shadow: 0 24px 80px rgba(0,0,0,.35);
+      backdrop-filter: blur(14px);
+      padding: 28px 24px;
+    }
+    .stream-card h1 { font-size: 1.25rem; margin-bottom: 4px; }
+    .stream-card .lede { margin: 0 0 24px; font-size: 0.9rem; }
+    .stream-preview {
+      width: 100%;
+      max-height: 180px;
+      object-fit: cover;
+      border-radius: 12px;
+      background: #000;
+      display: block;
+      margin-bottom: 16px;
+    }
+    .stream-controls { display: grid; gap: 14px; }
+    .stream-status {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .stream-status.idle     { background: rgba(159,183,201,.15); color: var(--muted); }
+    .stream-status.connecting { background: rgba(255,200,87,.15); color: var(--warning); }
+    .stream-status.live     { background: rgba(156,242,141,.15); color: var(--accent-2); }
+    .stream-status.error    { background: rgba(255,123,114,.15); color: var(--danger); }
+    .stream-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    #toggle-btn { width: auto; padding: 12px 28px; touch-action: manipulation; }
+    .back-link { display: inline-block; margin-top: 20px; color: var(--muted); font-size: 0.85rem; text-decoration: none; }
+    .back-link:hover { color: var(--accent); }
+    canvas { display: none; }
+  </style>
+</head>
+<body class="stream-body">
+  <main class="stream-shell">
+    <section class="stream-card">
+      <p class="eyebrow">SystemOptiflow</p>
+      <h1>&#128247; Phone Camera Stream</h1>
+      <p class="lede">Stream your phone camera to a traffic lane — no app needed.</p>
+
+      <video id="preview" class="stream-preview" autoplay playsinline muted></video>
+      <canvas id="canvas" width="640" height="480"></canvas>
+
+      <div class="stream-controls">
+        <label>
+          <span>Target lane</span>
+          <select id="lane-select">
+            {% for lane in lanes %}
+            <option value="{{ lane }}">{{ lane|upper }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <div class="stream-row">
+          <button id="toggle-btn" type="button">Start Streaming</button>
+          <span id="status" class="stream-status idle">Idle</span>
+        </div>
+      </div>
+
+      <a class="back-link" href="/dashboard">&#8592; Back to Dashboard</a>
+    </section>
+  </main>
+
+  <script>
+    const preview   = document.getElementById("preview");
+    const canvas    = document.getElementById("canvas");
+    const ctx       = canvas.getContext("2d");
+    const toggleBtn = document.getElementById("toggle-btn");
+    const laneSelect = document.getElementById("lane-select");
+    const statusEl  = document.getElementById("status");
+
+    let ws = null;
+    let captureInterval = null;
+    let stream = null;
+    let active = false;
+
+    function setStatus(state, text) {
+      statusEl.className = "stream-status " + state;
+      statusEl.textContent = text;
+    }
+
+    async function startStreaming() {
+      const lane = laneSelect.value;
+      setStatus("connecting", "Connecting…");
+      toggleBtn.disabled = true;
+      laneSelect.disabled = true;
+
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment", width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false,
+        });
+        preview.srcObject = stream;
+      } catch (err) {
+        setStatus("error", "Camera denied");
+        toggleBtn.textContent = "Start Streaming";
+        toggleBtn.disabled = false;
+        laneSelect.disabled = false;
+        return;
+      }
+
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(`${proto}//${location.host}/ws/stream/${lane}`);
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = () => {
+        active = true;
+        setStatus("live", "Live");
+        toggleBtn.textContent = "Stop Streaming";
+        toggleBtn.disabled = false;
+        captureInterval = setInterval(captureAndSend, 100);
+      };
+
+      ws.onerror = () => {
+        setStatus("error", "Connection error");
+        stopStreaming();
+      };
+
+      ws.onclose = () => {
+        if (active) {
+          setStatus("idle", "Disconnected");
+          stopStreaming();
+        }
+      };
+    }
+
+    function captureAndSend() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ctx.drawImage(preview, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(blob => {
+        if (blob && ws && ws.readyState === WebSocket.OPEN) {
+          blob.arrayBuffer().then(buf => ws.send(buf));
+        }
+      }, "image/jpeg", 0.7);
+    }
+
+    function stopStreaming() {
+      active = false;
+      if (captureInterval) { clearInterval(captureInterval); captureInterval = null; }
+      if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+      ws = null;
+      if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+      preview.srcObject = null;
+      toggleBtn.textContent = "Start Streaming";
+      toggleBtn.disabled = false;
+      laneSelect.disabled = false;
+      if (statusEl.classList.contains("live") || statusEl.classList.contains("connecting")) {
+        setStatus("idle", "Idle");
+      }
+    }
+
+    toggleBtn.addEventListener("click", () => {
+      if (active) {
+        stopStreaming();
+        setStatus("idle", "Idle");
+      } else {
+        startStreaming();
+      }
+    });
+
+    // Stop cleanly on page leave
+    window.addEventListener("beforeunload", stopStreaming);
+  </script>
+</body>
+</html>

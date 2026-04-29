@@ -154,6 +154,7 @@ class TrafficRuntime:
         self.traffic_controller = None
         self.runtime_error: Optional[str] = None
         self.alerts: Deque[Dict[str, Any]] = deque(maxlen=50)
+        self.browser_frames: Dict[str, Any] = {lane: None for lane in LANES}
         self.states: Dict[str, Dict[str, Any]] = {
             lane: {
                 "lane": lane,
@@ -289,7 +290,16 @@ class TrafficRuntime:
         source = SETTINGS.get(f"camera_source_{lane}", "Simulated")
         throttle_seconds = float(SETTINGS.get("ai_throttle_seconds", 0.2))
 
-        if source == "Simulated":
+        if source == "Browser":
+            frame = self.browser_frames.get(lane)
+            if frame is not None:
+                detections, annotated = self.detection_runtime.process(lane, frame, throttle_seconds)
+                state["note"] = "Browser stream active."
+            else:
+                frame, detections = self._simulate_frame(lane)
+                annotated = frame
+                state["note"] = "Waiting for browser stream…"
+        elif source == "Simulated":
             frame, detections = self._simulate_frame(lane)
             annotated = frame
         else:
@@ -380,6 +390,16 @@ class TrafficRuntime:
             "alerts": list(self.alerts),
             "controller": controller_status,
         }
+
+    def inject_browser_frame(self, lane: str, jpeg_bytes: bytes) -> None:
+        """Accept a JPEG frame pushed from a browser WebSocket client."""
+        import cv2
+        import numpy as np
+
+        arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is not None:
+            self.browser_frames[lane] = frame
 
     def mjpeg_frame(self, lane: str) -> Optional[bytes]:
         with self.lock:
