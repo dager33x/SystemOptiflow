@@ -1,0 +1,56 @@
+# MediaMTX configuration
+# Docs: https://github.com/bluenviron/mediamtx
+#
+# Phones push RTSP streams to this server:
+#   rtsp://<vps-ip>:8554/north   (or south / east / west)
+#
+# FastAPI reads them internally at:
+#   rtsp://mediamtx:8554/north
+#
+# Set RTSP_PUBLISH_PASSWORD in .env to require a password from phone apps.
+
+logLevel: info
+logDestinations: [stdout]
+
+# ── Disable unused protocols to reduce attack surface ─────────────────────────
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+
+# ── RTSP ──────────────────────────────────────────────────────────────────────
+rtspAddress: :8554
+# Force TCP transport — more reliable across NAT and Docker bridge networks
+rtspTransports: [tcp]
+
+# ── Internal API (used by /api/streams/health restart endpoint) ───────────────
+api: yes
+apiAddress: :9997
+
+# ── Authentication ────────────────────────────────────────────────────────────
+# Publishers (phone apps) must supply the password below.
+# Readers (FastAPI, browsers) need no credentials.
+# Change RTSP_PUBLISH_PASSWORD in .env before deploying.
+authMethod: internal
+authInternalUsers:
+  - user: publisher
+    pass: ${RTSP_PUBLISH_PASSWORD}
+    ips: []
+    permissions:
+      - action: publish
+
+  - user: any
+    pass: any
+    ips: []
+    permissions:
+      - action: read
+
+# ── Stream paths ──────────────────────────────────────────────────────────────
+# One path per traffic-camera lane.
+# If a phone is not connected the path still exists; FastAPI handles the
+# empty/stale state via CameraManager.is_stale().
+paths:
+  north: {}
+  south: {}
+  east: {}
+  west: {}
