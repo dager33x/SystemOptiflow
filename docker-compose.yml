@@ -16,7 +16,6 @@ services:
     build:
       context: .
     container_name: optiflow-app
-    command: ["uvicorn", "web_server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
     depends_on:
       - mediamtx
     env_file:
@@ -58,7 +57,7 @@ services:
   # Certbot is run manually on first deploy:
   # docker compose run --rm certbot
   certbot:
-    image: infinityofspace/certbot-dns-duckdns:latest
+    image: ghcr.io/infinityofspace/certbot_dns_duckdns:latest
     container_name: optiflow-certbot
     profiles:
       - certbot
