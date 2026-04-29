@@ -155,14 +155,21 @@ class TrafficLightController:
         for det in detections:
             det['class_name'] = normalize_label(det.get('class_name', 'vehicle'))
         stats = self.lane_stats[lane_id]
+        # Non-traffic classes excluded from vehicle count
+        _EXCLUDED_FROM_COUNT = {
+            'emergency_vehicle', 'accident', 'pedestrian_violation',
+            'z_accident', 'z_jaywalker', 'z_non-jaywalker',
+        }
         stats['detections']     = detections
         stats['vehicle_count']  = sum(
             1 for d in detections
-            if d['class_name'] not in ('emergency_vehicle', 'accident', 'pedestrian_violation')
+            if d['class_name'] not in _EXCLUDED_FROM_COUNT
         )
         stats['weighted_count'] = TrafficStateBuilder.compute_weighted_count(detections)
         stats['emergency_flag'] = TrafficStateBuilder.is_emergency(detections)
-        stats['accident_flag']  = any(d['class_name'] == 'z_accident' for d in detections)
+        stats['accident_flag']  = any(
+            d['class_name'] in ('z_accident', 'accident') for d in detections
+        )
         if lane_id not in self._green_lanes():
             stats['wait_time'] += 1.0
         else:

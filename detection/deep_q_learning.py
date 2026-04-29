@@ -69,8 +69,12 @@ VEHICLE_WEIGHTS: Dict[str, float] = {
     'vehicle':              2.0,
     'bus':                  3.0,
     'truck':                3.0,
-    'emergency_vehicle':    0.0,
+    'jeepney':              3.0,   # jeepneys are large — same weight as bus
+    'emergency_vehicle':    0.0,   # excluded from congestion count
     'accident':             0.0,
+    'z_accident':           0.0,
+    'z_jaywalker':          0.0,
+    'z_non-jaywalker':      0.0,
     'pedestrian_violation': 0.0,
 }
 DEFAULT_WEIGHT = 2.0
@@ -91,6 +95,11 @@ _LABEL_MAP: Dict[str, str] = {
     'bus':        'bus',
     'truck':      'truck',
     'motorcycle': 'motorcycle',
+    'jeepney':    'jeepney',
+    # violation classes (best.pt)
+    'z_accident':       'z_accident',
+    'z_jaywalker':      'z_jaywalker',
+    'z_non-jaywalker':  'z_non-jaywalker',
 }
 
 def normalize_label(raw: str) -> str:
