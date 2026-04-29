@@ -1,0 +1,14 @@
+# Python 3.11/3.12 deployment target
+numpy>=1.26,<2; python_version < "3.13"
+pillow>=10.4,<11; python_version < "3.13"
+torch>=2.2,<2.7; python_version < "3.13"
+torchvision>=0.17,<0.22; python_version < "3.13"
+
+# Python 3.13/3.14 local-dev compatibility
+numpy>=2.3,<3; python_version >= "3.13"
+pillow>=11.3,<13; python_version >= "3.13"
+torch>=2.9,<2.12; python_version >= "3.13"
+torchvision>=0.24,<0.27; python_version >= "3.13"
+
+opencv-python>=4.10,<5
+ultralytics>=8.3,<9
