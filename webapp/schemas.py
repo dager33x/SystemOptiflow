@@ -48,3 +48,8 @@ class AdminUserCreateRequest(BaseModel):
 class AdminUserUpdateRequest(BaseModel):
     email: Optional[EmailStr] = None
     role: Optional[str] = None
+
+
+class WebRTCOfferRequest(BaseModel):
+    sdp: str
+    type: str = "offer"

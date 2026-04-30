@@ -92,6 +92,13 @@
               <option value="mjpeg">MJPEG (legacy)</option>
             </select>
           </label>
+          <label class="settings-field">
+            <span>Phone capture mode</span>
+            <select id="phone_capture_mode">
+              <option value="canvas_jpeg">Canvas JPEG (default, no extra setup)</option>
+              <option value="webrtc">WebRTC (low-latency, cellular — requires coturn)</option>
+            </select>
+          </label>
         </div>
       </div>
     </div>
@@ -125,6 +132,8 @@
       });
       const vp = document.getElementById("viewing_protocol");
       if (vp) vp.value = s.viewing_protocol ?? "websocket";
+      const pc = document.getElementById("phone_capture_mode");
+      if (pc) pc.value = s.phone_capture_mode ?? "canvas_jpeg";
     }
 
     loadSettings();
@@ -147,6 +156,7 @@
       updates.browser_stream_width = document.getElementById("browser_stream_width")?.value ?? "640";
       updates.browser_stream_height = document.getElementById("browser_stream_height")?.value ?? "480";
       updates.viewing_protocol = document.getElementById("viewing_protocol")?.value ?? "websocket";
+      updates.phone_capture_mode = document.getElementById("phone_capture_mode")?.value ?? "canvas_jpeg";
       updates.browser_stream_width = document.getElementById("browser_stream_width")?.value ?? "640";
       updates.browser_stream_height = document.getElementById("browser_stream_height")?.value ?? "480";
 

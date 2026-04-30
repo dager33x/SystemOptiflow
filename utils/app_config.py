@@ -43,6 +43,11 @@ SETTINGS = {
     # "mjpeg"     → legacy multipart HTTP stream /api/streams/{lane}.mjpeg
     "viewing_protocol": "websocket",
 
+    # ── Phone capture mode ────────────────────────────────────────────────────
+    # "canvas_jpeg" → phone browser captures canvas frames and sends via WebSocket (default)
+    # "webrtc"      → phone browser sends a native H.264 video track via WebRTC (low-latency, works on cellular)
+    "phone_capture_mode": "canvas_jpeg",
+
     # ── RTMP / ngrok metadata (used by Settings quick-setup panel) ────────────
     "ngrok_rtmp_base": "",
 

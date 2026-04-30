@@ -435,6 +435,23 @@ class TrafficRuntime:
         if frame is not None:
             self.browser_frames[lane] = frame
 
+    async def inject_webrtc_track(self, lane: str, track) -> None:
+        """Receive video frames from an aiortc VideoStreamTrack and feed them into the pipeline.
+
+        Runs as an asyncio Task for the lifetime of the WebRTC peer connection.
+        MediaStreamError is raised by aiortc when the track ends.
+        """
+        import av
+
+        try:
+            while True:
+                frame: av.VideoFrame = await track.recv()
+                img = frame.to_ndarray(format="bgr24")
+                self.browser_frames[lane] = img
+        except Exception:
+            # Track ended or peer disconnected — caller handles cleanup.
+            pass
+
     def mjpeg_frame(self, lane: str) -> Optional[bytes]:
         with self.lock:
             return self.states[lane]["latest_jpeg"]

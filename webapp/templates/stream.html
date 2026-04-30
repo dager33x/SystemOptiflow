@@ -97,6 +97,9 @@
     let stream = null;
     let active = false;
     let frameInFlight = false;  // prevents overlapping encodes, not the loop clock
+    let rtcPc = null;           // WebRTC peer connection (webrtc mode only)
+
+    const captureMode = streamSettings.phone_capture_mode ?? "canvas_jpeg";
 
     function normalizedSettings() {
       return {
@@ -213,16 +216,101 @@
       }
     }
 
+    // ── WebRTC mode ──────────────────────────────────────────────────────────────
+    async function startWebRTC() {
+      const lane = laneSelect.value;
+      setStatus("connecting", "Connecting (WebRTC)…");
+      toggleBtn.disabled = true;
+      laneSelect.disabled = true;
+
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+        preview.srcObject = stream;
+      } catch (_) {
+        setStatus("error", "Camera denied");
+        toggleBtn.textContent = "Start Streaming";
+        toggleBtn.disabled = false;
+        laneSelect.disabled = false;
+        return;
+      }
+
+      // Fetch ICE config (STUN + TURN credentials) from server
+      let iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
+      try {
+        const r = await fetch("/api/webrtc/ice-config");
+        if (r.ok) { const d = await r.json(); iceServers = d.iceServers; }
+      } catch (_) {}
+
+      rtcPc = new RTCPeerConnection({ iceServers });
+      stream.getTracks().forEach(t => rtcPc.addTrack(t, stream));
+
+      rtcPc.oniceconnectionstatechange = () => {
+        if (["failed", "disconnected", "closed"].includes(rtcPc.iceConnectionState)) {
+          stopWebRTC();
+          setStatus("idle", "Disconnected");
+        }
+      };
+
+      const offer = await rtcPc.createOffer();
+      await rtcPc.setLocalDescription(offer);
+
+      // Wait for ICE gathering to complete (max 5 s) so TURN relay candidates are included
+      await new Promise(resolve => {
+        if (rtcPc.iceGatheringState === "complete") { resolve(); return; }
+        const check = () => {
+          if (rtcPc.iceGatheringState === "complete") {
+            rtcPc.removeEventListener("icegatheringstatechange", check);
+            resolve();
+          }
+        };
+        rtcPc.addEventListener("icegatheringstatechange", check);
+        setTimeout(resolve, 5000);
+      });
+
+      try {
+        const res = await fetch(`/api/webrtc/offer/${lane}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sdp: rtcPc.localDescription.sdp, type: rtcPc.localDescription.type }),
+        });
+        if (!res.ok) throw new Error("Server rejected offer");
+        const answer = await res.json();
+        await rtcPc.setRemoteDescription(answer);
+        active = true;
+        setStatus("live", "Live (WebRTC)");
+        toggleBtn.textContent = "Stop Streaming";
+        toggleBtn.disabled = false;
+      } catch (_) {
+        setStatus("error", "WebRTC failed — check coturn setup");
+        stopWebRTC();
+      }
+    }
+
+    function stopWebRTC() {
+      active = false;
+      if (rtcPc) { rtcPc.close(); rtcPc = null; }
+      if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+      preview.srcObject = null;
+      toggleBtn.textContent = "Start Streaming";
+      toggleBtn.disabled = false;
+      laneSelect.disabled = false;
+    }
+
     toggleBtn.addEventListener("click", () => {
       if (active) {
-        stopStreaming();
+        captureMode === "webrtc" ? stopWebRTC() : stopStreaming();
         setStatus("idle", "Idle");
       } else {
-        void startStreaming();
+        captureMode === "webrtc" ? void startWebRTC() : void startStreaming();
       }
     });
 
-    window.addEventListener("beforeunload", stopStreaming);
+    window.addEventListener("beforeunload", () => {
+      captureMode === "webrtc" ? stopWebRTC() : stopStreaming();
+    });
   </script>
 </body>
 </html>

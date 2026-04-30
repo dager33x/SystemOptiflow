@@ -26,6 +26,7 @@ from webapp.schemas import (
     RegisterRequest,
     SettingsUpdateRequest,
     VerifyEmailRequest,
+    WebRTCOfferRequest,
 )
 
 
@@ -74,6 +75,20 @@ def _stream_settings_payload() -> dict:
         "browser_stream_width": int(SETTINGS.get("browser_stream_width", 640)),
         "browser_stream_height": int(SETTINGS.get("browser_stream_height", 480)),
     }
+
+
+def _page_context(request: Request, title: str, **extra) -> dict:
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    context = {
+        "request": request,
+        "title": title,
+        "user": user,
+        "lanes": LANES,
+    }
+    context.update(extra)
+    return context
 
 
 def create_app() -> FastAPI:
@@ -125,12 +140,9 @@ def create_app() -> FastAPI:
 
     @app.get("/dashboard", response_class=HTMLResponse)
     async def dashboard_page(request: Request):
-        user = request.session.get("user")
-        if not user:
-            return RedirectResponse(url="/login", status_code=303)
         return templates.TemplateResponse(
             "dashboard.html",
-            {"request": request, "title": "SystemOptiflow Dashboard", "user": user, "lanes": LANES},
+            _page_context(request, "SystemOptiflow Dashboard"),
         )
 
     @app.get("/health")
@@ -379,36 +391,45 @@ def create_app() -> FastAPI:
 
     @app.get("/violations", response_class=HTMLResponse)
     async def violations_page(request: Request):
-        user = request.session.get("user")
-        if not user:
-            return RedirectResponse(url="/login", status_code=303)
         return templates.TemplateResponse(
             "violations.html",
-            {"request": request, "title": "Violations · SystemOptiflow", "user": user},
+            _page_context(request, "Violations · SystemOptiflow"),
+        )
+
+    @app.get("/reports", response_class=HTMLResponse)
+    async def reports_page(request: Request):
+        return templates.TemplateResponse(
+            "reports.html",
+            _page_context(request, "Issue Reports · SystemOptiflow"),
+        )
+
+    @app.get("/incidents", response_class=HTMLResponse)
+    async def incidents_page(request: Request):
+        return templates.TemplateResponse(
+            "incidents.html",
+            _page_context(request, "Incident History · SystemOptiflow"),
+        )
+
+    @app.get("/traffic-reports", response_class=HTMLResponse)
+    async def traffic_reports_page(request: Request):
+        return templates.TemplateResponse(
+            "traffic_reports.html",
+            _page_context(request, "Traffic Reports · SystemOptiflow"),
         )
 
     @app.get("/settings", response_class=HTMLResponse)
     async def settings_page(request: Request):
-        user = request.session.get("user")
-        if not user:
-            return RedirectResponse(url="/login", status_code=303)
         return templates.TemplateResponse(
             "settings.html",
-            {"request": request, "title": "Settings · SystemOptiflow", "user": user, "lanes": LANES},
+            _page_context(request, "Settings · SystemOptiflow"),
         )
 
     @app.get("/stream", response_class=HTMLResponse)
     async def stream_page(request: Request):
-        user = request.session.get("user")
-        if not user:
-            return RedirectResponse(url="/login", status_code=303)
         return templates.TemplateResponse(
             "stream.html",
             {
-                "request": request,
-                "title": "Phone Camera Stream",
-                "user": user,
-                "lanes": LANES,
+                **_page_context(request, "Phone Camera Stream"),
                 "stream_settings": _stream_settings_payload(),
             },
         )
@@ -468,6 +489,64 @@ def create_app() -> FastAPI:
                 await asyncio.sleep(1.0)
         except WebSocketDisconnect:
             return
+
+    # ── WebRTC signalling endpoints ────────────────────────────────────────────
+
+    @app.get("/api/webrtc/ice-config")
+    async def webrtc_ice_config(request: Request):
+        """Return ICE server list (STUN + TURN credentials) for the phone browser."""
+        _require_user(request)
+        vps_ip = os.getenv("VPS_PUBLIC_IP", "")
+        turn_user = os.getenv("TURN_USERNAME", "optiflow")
+        turn_pass = os.getenv("TURN_PASSWORD", "changeme")
+        ice_servers = [{"urls": "stun:stun.l.google.com:19302"}]
+        if vps_ip:
+            ice_servers.append({
+                "urls": f"turn:{vps_ip}:3478",
+                "username": turn_user,
+                "credential": turn_pass,
+            })
+        return JSONResponse({"iceServers": ice_servers})
+
+    @app.post("/api/webrtc/offer/{lane}")
+    async def webrtc_offer(request: Request, lane: str, body: WebRTCOfferRequest):
+        """SDP exchange: accept a WebRTC offer from the phone and return an answer."""
+        _require_user(request)
+        if lane not in LANES:
+            raise HTTPException(status_code=404, detail="Unknown lane.")
+        if body.type != "offer":
+            raise HTTPException(status_code=400, detail="SDP type must be 'offer'.")
+
+        try:
+            from aiortc import RTCPeerConnection, RTCSessionDescription
+        except ImportError:
+            raise HTTPException(status_code=501, detail="aiortc is not installed on this server.")
+
+        pc = RTCPeerConnection()
+        track_task: asyncio.Task = None
+
+        @pc.on("track")
+        def on_track(track):
+            nonlocal track_task
+            if track.kind == "video":
+                track_task = asyncio.ensure_future(runtime.inject_webrtc_track(lane, track))
+
+        @pc.on("connectionstatechange")
+        async def on_connection_state_change():
+            if pc.connectionState in ("failed", "closed", "disconnected"):
+                if track_task and not track_task.done():
+                    track_task.cancel()
+                settings_service.apply({f"camera_source_{lane}": "Simulated"})
+                runtime.browser_frames[lane] = None
+                await pc.close()
+
+        await pc.setRemoteDescription(RTCSessionDescription(sdp=body.sdp, type=body.type))
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+
+        settings_service.apply({f"camera_source_{lane}": "Browser"})
+
+        return JSONResponse({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):

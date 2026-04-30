@@ -12,12 +12,37 @@ services:
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
 
+  # TURN relay: allows WebRTC streams to traverse cellular/restrictive NATs.
+  # Firewall rules required on the VPS:
+  #   UDP 3478  (STUN/TURN signalling)
+  #   TCP 3478  (TURN/TCP fallback)
+  #   UDP 49152-65535  (relay media)
+  coturn:
+    image: coturn/coturn:latest
+    container_name: optiflow-coturn
+    # host networking lets coturn bind relay sockets to the real public IP
+    network_mode: host
+    restart: unless-stopped
+    command: >
+      -n
+      --log-file=stdout
+      --external-ip=${VPS_PUBLIC_IP}
+      --listening-port=3478
+      --lt-cred-mech
+      --user=${TURN_USERNAME:-optiflow}:${TURN_PASSWORD:-changeme}
+      --realm=optiflow
+      --no-tls
+      --no-dtls
+      --min-port=49152
+      --max-port=65535
+
   optiflow-app:
     build:
       context: .
     container_name: optiflow-app
     depends_on:
       - mediamtx
+      - coturn
     env_file:
       - .env
     environment:
@@ -27,6 +52,9 @@ services:
       - CAMERA_SOURCE_WEST=${CAMERA_SOURCE_WEST:-Simulated}
       - RTSP_TRANSPORT=${RTSP_TRANSPORT:-tcp}
       - AI_THROTTLE_SECONDS=${AI_THROTTLE_SECONDS:-0.2}
+      - VPS_PUBLIC_IP=${VPS_PUBLIC_IP:-}
+      - TURN_USERNAME=${TURN_USERNAME:-optiflow}
+      - TURN_PASSWORD=${TURN_PASSWORD:-changeme}
     restart: unless-stopped
     volumes:
       - ./logs:/app/logs
