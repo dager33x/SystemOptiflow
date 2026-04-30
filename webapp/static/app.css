@@ -167,6 +167,13 @@ button.ghost {
   border-radius: 12px;
   background: #04090d;
 }
+.camera-card canvas {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  display: block;
+  border-radius: 12px;
+  background: #04090d;
+}
 
 .camera-meta,
 .camera-stats {
@@ -355,7 +362,7 @@ code {
   border-radius: 20px; padding: 20px; max-width: 860px; width: calc(100% - 40px);
 }
 .lane-modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.lane-modal img { width: 100%; border-radius: 12px; max-height: 480px; object-fit: cover; }
+.lane-modal img { width: 100%; border-radius: 12px; max-height: 480px; object-fit: contain; background: #04090d; }
 .lane-modal-footer { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
 .close-btn { background: transparent; border: 1px solid var(--panel-border); color: var(--muted); width: auto; padding: 6px 14px; border-radius: 999px; cursor: pointer; }
 
