@@ -29,6 +29,14 @@ Improvements in v2
    noise that inflates vehicle counts.
 7. PRETRAINED_CONF lowered 0.30→0.25 so distant / partially occluded
    vehicles are not silently dropped.
+
+Improvements in v2.1 (Car/Bus Classification Fix)
+--------------------------------------------------
+8. Car/Bus validation guard to fix custom model misclassification:
+   a) Reject cars/buses with confidence < threshold (CAR: 0.50, BUS: 0.55)
+   b) Validate aspect ratios — cars ≈0.8-1.5, buses ≈0.6-2.5
+   c) Pretrained model veto: Trust yolov8n "car" detection over custom "bus"
+   d) Prevents false positives where cars get flagged as buses.
 """
 
 import logging
@@ -49,6 +57,17 @@ VETO_CUSTOM_CONF       = 0.75   # custom emergency conf needed to RESIST the vet
 VETO_SIZE_RATIO        = 1.6    # if emergency box area > this × median bus/truck area → veto
 VETO_ASPECT_MIN        = 1.2    # emergency vehicles should be wider than tall (w/h)
 VETO_ASPECT_MAX        = 5.0    # …but not extremely long (likely a train/bus misread)
+
+# ── Car/Bus classification guard ──────────────────────────────────────────────
+# Problem: custom model misclassifies cars as buses. Solution: validate with
+# size and aspect ratio + trust pretrained yolov8n for car detection
+CAR_MIN_CONFIDENCE      = 0.50   # higher threshold for custom model cars (vs 0.35)
+BUS_MIN_CONFIDENCE      = 0.55   # even higher for buses (susceptible to misclass)
+BUS_SIZE_RATIO          = 2.0    # buses typically 2× wider/larger than cars
+BUS_ASPECT_MIN          = 0.6    # bus width/height ratio (wider than tall)
+BUS_ASPECT_MAX          = 2.5    # realistic bus proportions
+CAR_ASPECT_MIN          = 0.8    # cars are more square-ish
+CAR_ASPECT_MAX          = 1.5    # cars typical aspect ratios
 
 # IoU suppression (custom wins over pretrained in same region)
 IOU_SUPPRESS_THRESH    = 0.30
@@ -390,6 +409,134 @@ class YOLODetector:
 
         return surviving
 
+    # ── Car/Bus classification guard ──────────────────────────────────────────
+    def _validate_car_bus(
+        self,
+        custom_dets: List[Dict],
+        pretrained_dets: List[Dict],
+    ) -> List[Dict]:
+        """
+        Validate car/bus classifications to fix misclassification in custom model.
+
+        Problem: custom model (best.pt) often misclassifies cars as buses.
+        Solution: Apply size, aspect-ratio, and confidence filters.
+        
+        Rules:
+        1. HIGH CONFIDENCE (≥0.75): Accept as-is (trust strong model signals)
+        2. MEDIUM-HIGH CONFIDENCE (0.55-0.75): Validate by aspect ratio + size
+        3. LOW-MEDIUM CONFIDENCE (<0.55): Reject (too unreliable)
+        4. Trust pretrained model: If yolov8n says "car" with conf ≥0.40, 
+           suppress conflicting custom "bus" predictions
+        """
+        if not custom_dets:
+            return custom_dets
+
+        # Build map of pretrained car/bus detections for overlap checking
+        pretrained_vehicles = {
+            'car': [],
+            'bus': [],
+            'truck': [],
+        }
+        for pd in pretrained_dets:
+            if pd['class_name'] in pretrained_vehicles:
+                pretrained_vehicles[pd['class_name']].append(pd)
+
+        surviving = []
+        for det in custom_dets:
+            cls = det['class_name']
+            
+            # Only validate car/bus/truck from custom model
+            if cls not in ('car', 'bus', 'truck'):
+                surviving.append(det)
+                continue
+
+            conf = det['confidence']
+            x1, y1, x2, y2 = det['bbox']
+            w = max(1, x2 - x1)
+            h = max(1, y2 - y1)
+            aspect = w / h
+            area = w * h
+
+            # Rule 1: Very high confidence — accept without question
+            if conf >= 0.75:
+                surviving.append(det)
+                continue
+
+            # Rule 2: Very low confidence — reject outright
+            if conf < 0.35:
+                self.logger.debug(
+                    f"[CarBusGuard] {cls} (conf={conf:.2f}) rejected — too low confidence"
+                )
+                continue
+
+            # Rule 3: Check for pretrained model conflict (strongest guard)
+            # If pretrained yolov8n detected a car with decent confidence,
+            # do NOT accept custom "bus" in the same region
+            if cls == 'bus':
+                for pretrained_car in pretrained_vehicles['car']:
+                    if (self._iou(det['bbox'], pretrained_car['bbox']) >= 0.4 and
+                        pretrained_car['confidence'] >= 0.40):
+                        self.logger.debug(
+                            f"[CarBusGuard] Bus (conf={conf:.2f}) suppressed by "
+                            f"pretrained car (conf={pretrained_car['confidence']:.2f}) overlap"
+                        )
+                        conf = -1  # Mark for rejection
+                        break
+
+            if conf < 0:
+                continue
+
+            # Rule 4: Aspect ratio validation
+            if cls == 'bus':
+                if aspect < BUS_ASPECT_MIN or aspect > BUS_ASPECT_MAX:
+                    self.logger.debug(
+                        f"[CarBusGuard] Bus (conf={conf:.2f}) rejected — aspect "
+                        f"{aspect:.2f} outside [{BUS_ASPECT_MIN}, {BUS_ASPECT_MAX}]"
+                    )
+                    continue
+                # Bus confidence floor
+                if conf < BUS_MIN_CONFIDENCE:
+                    self.logger.debug(
+                        f"[CarBusGuard] Bus (conf={conf:.2f}) rejected — below "
+                        f"threshold {BUS_MIN_CONFIDENCE}"
+                    )
+                    continue
+
+            elif cls == 'car':
+                if aspect < CAR_ASPECT_MIN or aspect > CAR_ASPECT_MAX:
+                    self.logger.debug(
+                        f"[CarBusGuard] Car (conf={conf:.2f}) rejected — aspect "
+                        f"{aspect:.2f} outside [{CAR_ASPECT_MIN}, {CAR_ASPECT_MAX}]"
+                    )
+                    continue
+                # Car confidence floor (slightly lower than bus)
+                if conf < CAR_MIN_CONFIDENCE:
+                    self.logger.debug(
+                        f"[CarBusGuard] Car (conf={conf:.2f}) rejected — below "
+                        f"threshold {CAR_MIN_CONFIDENCE}"
+                    )
+                    continue
+
+            elif cls == 'truck':
+                # Trucks similar to buses but can be longer
+                if aspect < BUS_ASPECT_MIN or aspect > 4.0:
+                    self.logger.debug(
+                        f"[CarBusGuard] Truck (conf={conf:.2f}) rejected — aspect "
+                        f"{aspect:.2f} outside [{BUS_ASPECT_MIN}, 4.0]"
+                    )
+                    continue
+                if conf < BUS_MIN_CONFIDENCE:
+                    self.logger.debug(
+                        f"[CarBusGuard] Truck (conf={conf:.2f}) rejected — below "
+                        f"threshold {BUS_MIN_CONFIDENCE}"
+                    )
+                    continue
+
+            # Passed all checks
+            surviving.append(det)
+
+        return surviving
+
     # ── Core detection ────────────────────────────────────────────────────────
     def _get_smoother(self, lane_id: Optional[object] = None) -> DetectionSmoother:
         """Return the temporal smoother for one lane, preserving legacy default behavior."""
@@ -498,6 +645,9 @@ class YOLODetector:
 
             # 5. Cross-veto (emergency misclassification guard)
             custom_filtered = self._apply_cross_veto(custom_raw, pretrained_raw)
+
+            # 5.5. Car/Bus validation guard (fixes custom model car→bus misclass)
+            custom_filtered = self._validate_car_bus(custom_filtered, pretrained_raw)
 
             # 6. Spatial suppression — drop pretrained boxes covered by custom
             pretrained_filtered: List[Dict] = []
