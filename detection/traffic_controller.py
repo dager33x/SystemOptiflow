@@ -210,6 +210,16 @@ class TrafficLightController:
             signal_state=signal_state, lane_id=lane_id,
             draw_annotations=annotate,
         )
+        # Overlay colored crossing lines/bands showing current light states
+        try:
+            ann = result.get('annotated_frame', frame)
+            annotated_with_lights = self.red_light_detector.draw_crossing_zones_with_lights(
+                ann, light_states=light_states
+            )
+            result['annotated_frame'] = annotated_with_lights
+        except Exception:
+            # non-fatal: fall back to original annotated frame
+            pass
         if result['violation_detected']:
             if self.red_light_detector.should_log_violation(lane_id):
                 v_count = len(result['violating_vehicles'])
