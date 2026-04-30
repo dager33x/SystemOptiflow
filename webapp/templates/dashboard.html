@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title }}</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v=3.0">
 </head>
 <body class="app-body">
   <nav class="app-nav">
@@ -22,7 +22,7 @@
   </nav>
 
   <main class="app-main">
-    <section class="panel panel-wide" style="grid-column:1/-1">
+    <section class="panel panel-wide">
       <div class="panel-header"><h2>Lane streams</h2><p>Live annotated feeds — click any frame to expand.</p></div>
       <div class="camera-grid">
         {% for lane in lanes %}
@@ -45,21 +45,23 @@
       </div>
     </section>
 
-    <section class="panel">
-      <div class="panel-header"><h2>Controller</h2><p>Signal state and runtime health.</p></div>
-      <dl class="metric-list">
-        <div><dt>Database</dt><dd id="db-status">unknown</dd></div>
-        <div><dt>Phase</dt><dd id="phase-name">-</dd></div>
-        <div><dt>Remaining</dt><dd id="phase-remaining">0.0s</dd></div>
-        <div><dt>Emergency</dt><dd id="emergency-state">no</dd></div>
-      </dl>
-      <p id="runtime-error" class="error-text" hidden></p>
-    </section>
+    <div class="sidebar" style="display:flex;flex-direction:column;gap:20px;">
+      <section class="panel">
+        <div class="panel-header"><h2>Controller</h2><p>Signal state and runtime health.</p></div>
+        <dl class="metric-list">
+          <div><dt>Database</dt><dd id="db-status">unknown</dd></div>
+          <div><dt>Phase</dt><dd id="phase-name">-</dd></div>
+          <div><dt>Remaining</dt><dd id="phase-remaining">0.0s</dd></div>
+          <div><dt>Emergency</dt><dd id="emergency-state">no</dd></div>
+        </dl>
+        <p id="runtime-error" class="error-text" hidden></p>
+      </section>
 
-    <section class="panel">
-      <div class="panel-header"><h2>Alerts</h2><p>Latest persisted runtime events.</p></div>
-      <ul id="alerts" class="alert-list"></ul>
-    </section>
+      <section class="panel">
+        <div class="panel-header"><h2>Alerts</h2><p>Latest persisted runtime events.</p></div>
+        <ul id="alerts" class="alert-list"></ul>
+      </section>
+    </div>
   </main>
 
   <!-- Fullscreen modal -->
