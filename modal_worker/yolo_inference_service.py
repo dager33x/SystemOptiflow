@@ -101,4 +101,4 @@ async def detect(
         raise HTTPException(status_code=400, detail="Empty image upload.")
 
     service = YoloInferenceService()
-    return service.detect_bytes.remote(image_bytes)
+    return await service.detect_bytes.remote.aio(image_bytes)

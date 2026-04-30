@@ -65,14 +65,12 @@ class TestDetectionRuntimeRemoteYolo(unittest.TestCase):
         runtime = DetectionRuntime(remote_yolo_client=remote_client)
         runtime.detector = local_detector
 
-        detections, annotated_frame = runtime.process("north", frame, throttle_seconds=0.0)
+        detections = runtime._detect_frame("north", frame)
 
         self.assertEqual([remote_detection], detections)
         self.assertEqual(1, len(remote_client.calls))
         self.assertEqual("north", remote_client.calls[0][1])
         self.assertEqual([], local_detector.detect_calls)
-        self.assertEqual((120, 160, 3), annotated_frame.shape)
-        self.assertEqual([remote_detection], runtime.cache["north"])
 
     def test_remote_yolo_failure_falls_back_to_local_detection(self):
         frame = np.zeros((120, 160, 3), dtype=np.uint8)
@@ -95,14 +93,12 @@ class TestDetectionRuntimeRemoteYolo(unittest.TestCase):
         runtime = DetectionRuntime(remote_yolo_client=remote_client)
         runtime.detector = local_detector
 
-        detections, annotated_frame = runtime.process("north", frame, throttle_seconds=0.0)
+        detections = runtime._detect_frame("north", frame)
 
         self.assertEqual([local_detection], detections)
         self.assertEqual(1, len(remote_client.calls))
         self.assertEqual(1, len(local_detector.detect_calls))
         self.assertEqual("north", local_detector.detect_calls[0][1])
-        self.assertEqual((120, 160, 3), annotated_frame.shape)
-        self.assertEqual([local_detection], runtime.cache["north"])
 
     def test_remote_yolo_all_lane_setting_applies_to_each_lane(self):
         frame = np.zeros((120, 160, 3), dtype=np.uint8)
@@ -116,10 +112,10 @@ class TestDetectionRuntimeRemoteYolo(unittest.TestCase):
         )
         runtime = DetectionRuntime(remote_yolo_client=remote_client)
 
-        runtime.process("north", frame, throttle_seconds=0.0)
-        runtime.process("south", frame, throttle_seconds=0.0)
-        runtime.process("east", frame, throttle_seconds=0.0)
-        runtime.process("west", frame, throttle_seconds=0.0)
+        runtime._detect_frame("north", frame)
+        runtime._detect_frame("south", frame)
+        runtime._detect_frame("east", frame)
+        runtime._detect_frame("west", frame)
 
         self.assertEqual(
             ["north", "south", "east", "west"],
@@ -154,7 +150,7 @@ class TestDetectionRuntimeRemoteYolo(unittest.TestCase):
         runtime = DetectionRuntime(remote_yolo_client=remote_client)
         runtime.detector = local_detector
 
-        detections, _annotated_frame = runtime.process("south", frame, throttle_seconds=0.0)
+        detections = runtime._detect_frame("south", frame)
 
         self.assertEqual([local_detection], detections)
         self.assertEqual([], remote_client.calls)

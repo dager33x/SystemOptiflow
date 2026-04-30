@@ -36,7 +36,7 @@ class CameraRuntime:
 
     @staticmethod
     def _is_live(source: str) -> bool:
-        return source != "Simulated"
+        return source not in ("Simulated", "Browser")
 
     @staticmethod
     def _resolve_source(source: str):
@@ -100,6 +100,8 @@ class CameraRuntime:
         source = self.sources.get(lane, "Simulated")
         if source == "Simulated":
             return "simulated"
+        if source == "Browser":
+            return "browser"
         manager = self.managers.get(lane)
         if manager and manager.is_running:
             return "active"
@@ -130,11 +132,42 @@ class DetectionRuntime:
     def __init__(self, remote_yolo_client=None):
         self.logger = logging.getLogger(__name__)
         self.detector = None
+        self.detector_lock = threading.RLock()
         self.remote_yolo_client = remote_yolo_client
+        self.lock = threading.RLock()
+        self.running = False
+        self.worker_threads: Dict[str, threading.Thread] = {}
+        self.latest_frames: Dict[str, Any] = {lane: None for lane in LANES}
+        self.latest_frame_versions: Dict[str, int] = {lane: 0 for lane in LANES}
+        self.processed_frame_versions: Dict[str, int] = {lane: 0 for lane in LANES}
+        self.throttle_seconds: Dict[str, float] = {lane: 0.2 for lane in LANES}
         self.last_run: Dict[str, float] = {lane: 0.0 for lane in LANES}
         self.cache: Dict[str, List[Dict[str, Any]]] = {
             lane: [] for lane in LANES
         }
+
+    def start(self, lanes: Optional[List[str]] = None):
+        if self.running:
+            return
+        self.running = True
+        for lane in lanes or LANES:
+            if lane in self.worker_threads and self.worker_threads[lane].is_alive():
+                continue
+            thread = threading.Thread(
+                target=self._worker_loop,
+                args=(lane,),
+                daemon=True,
+                name=f"optiflow-detection-{lane}",
+            )
+            self.worker_threads[lane] = thread
+            thread.start()
+
+    def stop(self):
+        self.running = False
+        for thread in list(self.worker_threads.values()):
+            if thread.is_alive():
+                thread.join(timeout=1.0)
+        self.worker_threads.clear()
 
     def _load_detector(self):
         if self.detector is None:
@@ -211,32 +244,68 @@ class DetectionRuntime:
         if not result or not result.get("success"):
             return None
 
-        detections = result.get("detections", [])
-        return detections, self._draw_detections(frame, detections, lane)
+        return result.get("detections", [])
 
-    def process(self, lane: str, frame, throttle_seconds: float):
-        now = time.time()
-        cached_detections = self.cache[lane]
-        if now - self.last_run[lane] < throttle_seconds:
-            if cached_detections:
-                return cached_detections, self._draw_detections(frame, cached_detections, lane)
-            return cached_detections, frame
+    def _detect_locally(self, lane: str, frame) -> List[Dict[str, Any]]:
+        detector = self._load_detector()
+        with self.detector_lock:
+            with timed_stage("yolo_detection_total", lane=lane):
+                result = detector.detect(frame, lane_id=lane)
+        return result.get("detections", [])
 
+    def _detect_frame(self, lane: str, frame) -> List[Dict[str, Any]]:
         remote_result = self._detect_remotely(lane, frame)
         if remote_result is not None:
-            detections, annotated_frame = remote_result
-            self.last_run[lane] = now
-            self.cache[lane] = detections
-            return detections, annotated_frame
+            return remote_result
 
-        detector = self._load_detector()
-        with timed_stage("yolo_detection_total", lane=lane):
-            result = detector.detect(frame, lane_id=lane)
-        detections = result.get("detections", [])
-        annotated_frame = result.get("annotated_frame", frame)
-        self.last_run[lane] = now
-        self.cache[lane] = detections
-        return detections, annotated_frame
+        return self._detect_locally(lane, frame)
+
+    def submit_frame(self, lane: str, frame, throttle_seconds: Optional[float] = None):
+        if lane not in self.latest_frames:
+            return
+        with self.lock:
+            self.latest_frames[lane] = frame.copy()
+            self.latest_frame_versions[lane] += 1
+            if throttle_seconds is not None:
+                self.throttle_seconds[lane] = max(0.0, float(throttle_seconds))
+
+    def render_cached(self, lane: str, frame):
+        with self.lock:
+            detections = list(self.cache[lane])
+        if detections:
+            return detections, self._draw_detections(frame, detections, lane)
+        return detections, frame
+
+    def process(self, lane: str, frame, throttle_seconds: float):
+        self.submit_frame(lane, frame, throttle_seconds=throttle_seconds)
+        return self.render_cached(lane, frame)
+
+    def _worker_loop(self, lane: str):
+        while self.running:
+            frame = None
+            frame_version = 0
+            throttle_seconds = 0.2
+            now = time.time()
+            with self.lock:
+                latest_version = self.latest_frame_versions[lane]
+                if latest_version != self.processed_frame_versions[lane]:
+                    elapsed = now - self.last_run[lane]
+                    throttle_seconds = self.throttle_seconds[lane]
+                    if elapsed >= throttle_seconds:
+                        source_frame = self.latest_frames[lane]
+                        if source_frame is not None:
+                            frame = source_frame.copy()
+                            frame_version = latest_version
+
+            if frame is None:
+                time.sleep(0.01)
+                continue
+
+            detections = self._detect_frame(lane, frame)
+            with self.lock:
+                self.cache[lane] = detections
+                self.last_run[lane] = time.time()
+                self.processed_frame_versions[lane] = frame_version
 
 
 class TrafficRuntime:
@@ -287,6 +356,8 @@ class TrafficRuntime:
         self.running = False
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=3.0)
+        if self.detection_runtime:
+            self.detection_runtime.stop()
         if self.camera_runtime:
             self.camera_runtime.stop()
 
@@ -305,6 +376,7 @@ class TrafficRuntime:
 
         self.camera_runtime = CameraRuntime()
         self.detection_runtime = DetectionRuntime()
+        self.detection_runtime.start()
         self.traffic_controller = TrafficLightController(
             num_lanes=4,
             model_path="Optiflow_Dqn.pth",
