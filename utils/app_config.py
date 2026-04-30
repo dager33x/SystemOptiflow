@@ -10,6 +10,8 @@ SETTINGS = {
     "show_bounding_boxes": True,   # Draw boxes around cars?
     "show_confidence": True,       # Show how sure the AI is (e.g. 95%)?
     "ai_throttle_seconds": 0.5,    # Optimize inference throttle (default 0.5 = ~2 FPS logic)
+    "enable_performance_timing": False, # Log lightweight runtime stage timings?
+    "performance_log_min_ms": 0.0, # Minimum stage duration to log when timing is enabled
     "enable_video_enhancement": False, # Apply Unsharp mask (expensive on CPU)
     "browser_capture_fps": 20.0,   # Browser phone upload cadence
     "stream_output_fps": 20.0,     # Runtime and MJPEG output cadence
@@ -60,7 +62,8 @@ SETTINGS = {
 # editing Python source code.
 #
 #   CAMERA_SOURCE_NORTH  CAMERA_SOURCE_SOUTH  CAMERA_SOURCE_EAST  CAMERA_SOURCE_WEST
-#   RTSP_TRANSPORT       AI_THROTTLE_SECONDS
+#   RTSP_TRANSPORT       AI_THROTTLE_SECONDS  ENABLE_PERFORMANCE_TIMING
+#   PERFORMANCE_LOG_MIN_MS
 # ─────────────────────────────────────────────────────────────────────────────
 import os as _os
 
@@ -77,5 +80,21 @@ _throttle = _os.getenv("AI_THROTTLE_SECONDS")
 if _throttle:
     try:
         SETTINGS["ai_throttle_seconds"] = float(_throttle)
+    except ValueError:
+        pass
+
+_perf_enabled = _os.getenv("ENABLE_PERFORMANCE_TIMING")
+if _perf_enabled:
+    SETTINGS["enable_performance_timing"] = _perf_enabled.strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+_perf_min_ms = _os.getenv("PERFORMANCE_LOG_MIN_MS")
+if _perf_min_ms:
+    try:
+        SETTINGS["performance_log_min_ms"] = max(0.0, float(_perf_min_ms))
     except ValueError:
         pass

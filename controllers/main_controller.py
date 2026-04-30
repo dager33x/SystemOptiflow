@@ -9,6 +9,7 @@ from datetime import datetime
 from detection.camera_manager import CameraManager
 from detection.traffic_controller import TrafficLightController
 from detection.yolo_detector import YOLODetector
+from utils.performance_monitor import timed_stage
 from views.pages import (
     DashboardPage, TrafficReportsPage, IncidentHistoryPage,
     ViolationLogsPage, SettingsPage, IssueReportsPage, AdminUsersPage
@@ -367,7 +368,8 @@ class MainController:
                     # Get Frame
                     frame = None
                     if self._is_live_source(camera_source):
-                        frame = self.camera_managers[direction].get_frame()
+                        with timed_stage("camera_get_frame", lane=direction):
+                            frame = self.camera_managers[direction].get_frame()
                     
                     if frame is None:
                         # Create blank frame for demo
@@ -581,7 +583,8 @@ class MainController:
                             
                             if should_detect:
                                 # Run YOLO detection
-                                detection_result = self.yolo_detector.detect(frame, lane_id=lane_id)
+                                with timed_stage("yolo_detection_total", lane=direction):
+                                    detection_result = self.yolo_detector.detect(frame, lane_id=lane_id)
                                 detections = detection_result.get("detections", [])
                                 annotated_frame = detection_result.get('annotated_frame', frame)
                                 
@@ -595,7 +598,11 @@ class MainController:
                                 
                                 if show_boxes and detections:
                                     try:
-                                        annotated_frame = self.yolo_detector.draw_detections(frame, detections)
+                                        annotated_frame = self.yolo_detector.draw_detections(
+                                            frame,
+                                            detections,
+                                            lane_id=lane_id,
+                                        )
                                     except AttributeError:
                                         # Fallback if method missing (shouldn't happen)
                                         annotated_frame = frame
@@ -828,9 +835,10 @@ class MainController:
                     self.traffic_controller.update_lane_detections(lane_id, detections)
 
                     # Cache the latest frame per lane for violation screenshot capture
-                    self._lane_frames[lane_id] = (
-                        annotated_frame.copy() if annotated_frame is not None else None
-                    )
+                    with timed_stage("frame_copy", lane=direction, target="rule_cache"):
+                        self._lane_frames[lane_id] = (
+                            annotated_frame.copy() if annotated_frame is not None else None
+                        )
                     
                     # Update dashboard display safely on main thread
                     if self.current_page and hasattr(self.current_page, 'update_camera_feed'):
@@ -841,13 +849,15 @@ class MainController:
                         }
                         
                         # Create a copy of the frame to avoid race conditions
-                        frame_copy = annotated_frame.copy() if annotated_frame is not None else None
+                        with timed_stage("frame_copy", lane=direction, target="dashboard"):
+                            frame_copy = annotated_frame.copy() if annotated_frame is not None else None
                         
                         # Schedule UI update on main thread
-                        self.root.after(0, lambda f=frame_copy, d=dash_data, dir=direction: 
-                            self.current_page.update_camera_feed(f, d, dir) 
-                            if self.current_page and hasattr(self.current_page, 'update_camera_feed') else None
-                        )
+                        with timed_stage("ui_update_scheduling", lane=direction, target="dashboard"):
+                            self.root.after(0, lambda f=frame_copy, d=dash_data, dir=direction: 
+                                self.current_page.update_camera_feed(f, d, dir) 
+                                if self.current_page and hasattr(self.current_page, 'update_camera_feed') else None
+                            )
                         
                 except Exception as e:
                     self.logger.error(f"Error processing camera ({direction}): {e}", exc_info=True)

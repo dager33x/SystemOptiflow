@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 from utils.app_config import SETTINGS
+from utils.performance_monitor import timed_stage
 
 
 LANES = ["north", "south", "east", "west"]
@@ -91,7 +92,8 @@ class CameraRuntime:
     def get_frame(self, lane: str):
         manager = self.managers.get(lane)
         if manager:
-            return manager.get_frame()
+            with timed_stage("camera_get_frame", lane=lane):
+                return manager.get_frame()
         return None
 
     def status(self, lane: str) -> str:
@@ -131,11 +133,16 @@ class DetectionRuntime:
         cached_detections = self.cache[lane]
         if now - self.last_run[lane] < throttle_seconds:
             if cached_detections and self.detector is not None:
-                return cached_detections, self.detector.draw_detections(frame, cached_detections)
+                return cached_detections, self.detector.draw_detections(
+                    frame,
+                    cached_detections,
+                    lane_id=lane,
+                )
             return cached_detections, frame
 
         detector = self._load_detector()
-        result = detector.detect(frame, lane_id=lane)
+        with timed_stage("yolo_detection_total", lane=lane):
+            result = detector.detect(frame, lane_id=lane)
         detections = result.get("detections", [])
         annotated_frame = result.get("annotated_frame", frame)
         self.last_run[lane] = now
@@ -282,10 +289,11 @@ class TrafficRuntime:
         cv2.putText(frame, f"Vehicles: {state['sim_count']}", (20, 455), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (120, 255, 120), 2)
         return frame, detections
 
-    def _encode_jpeg(self, frame) -> Optional[bytes]:
+    def _encode_jpeg(self, frame, lane: Optional[str] = None) -> Optional[bytes]:
         import cv2
 
-        ok, encoded = cv2.imencode(".jpg", frame)
+        with timed_stage("jpeg_encode", lane=lane):
+            ok, encoded = cv2.imencode(".jpg", frame)
         if not ok:
             return None
         return encoded.tobytes()
@@ -325,7 +333,7 @@ class TrafficRuntime:
 
         label = f"{lane.upper()} | {source} | {vehicle_count} vehicles"
         cv2.putText(annotated, label, (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
-        jpeg_bytes = self._encode_jpeg(annotated)
+        jpeg_bytes = self._encode_jpeg(annotated, lane=lane)
 
         self._handle_events(lane, detections, annotated, current_time, frame_bytes=jpeg_bytes)
 
@@ -350,7 +358,7 @@ class TrafficRuntime:
     def _handle_events(self, lane: str, detections: List[Dict[str, Any]], frame, current_time: float, frame_bytes: Optional[bytes] = None) -> None:
         lane_id = LANE_INDEX[lane]
         state = self.states[lane]
-        evidence = frame_bytes if frame_bytes is not None else self._encode_jpeg(frame)
+        evidence = frame_bytes if frame_bytes is not None else self._encode_jpeg(frame, lane=lane)
         if any(d.get("class_name") == "z_jaywalker" for d in detections) and self._throttled(state, "jaywalker", current_time):
             self.persistence.save_violation(lane_id, "Pedestrian Violation (Jaywalker)", evidence)
             self._append_alert("warning", lane, "Pedestrian violation detected.")

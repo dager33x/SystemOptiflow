@@ -1,6 +1,7 @@
 # controllers/accident_controller.py
 from models.database import TrafficDB
 from utils.async_utils import run_in_background
+from utils.performance_monitor import timed_stage
 
 class AccidentController:
     """Handle accident detection and reporting"""
@@ -10,7 +11,8 @@ class AccidentController:
     @run_in_background
     def report_accident(self, lane: int, severity: str = "Moderate", description: str = "Detected by AI"):
         """Report an accident to the database (Async)"""
-        self.db.save_accident(lane, severity, detection_type="SYSTEM", description=description)
+        with timed_stage("persistence_write", lane=lane, operation="save_accident"):
+            self.db.save_accident(lane, severity, detection_type="SYSTEM", description=description)
 
     def get_incidents(self):
         """Get recent incident history"""

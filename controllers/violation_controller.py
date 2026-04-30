@@ -1,6 +1,7 @@
 # controllers/violation_controller.py
 from models.database import TrafficDB
 from utils.async_utils import run_in_background
+from utils.performance_monitor import timed_stage
 
 class ViolationController:
     """Handle traffic violation reports"""
@@ -30,16 +31,18 @@ class ViolationController:
 
         # Try database first
         try:
-            result = self.db.save_violation(vehicle_id, lane, violation_type, source="SYSTEM", image_url=image_url)
-            if result:
-                if image_url:
-                    self._save_image_mapping(result, image_url)
-                return
+            with timed_stage("persistence_write", lane=lane, operation="save_violation"):
+                result = self.db.save_violation(vehicle_id, lane, violation_type, source="SYSTEM", image_url=image_url)
+                if result:
+                    if image_url:
+                        self._save_image_mapping(result, image_url)
+                    return
         except Exception:
             pass # Fallback
             
         # Fallback: Save to local CSV/JSON if DB fails
-        self._save_to_local_fallback(lane, violation_type, vehicle_id, image_url)
+        with timed_stage("persistence_write", lane=lane, operation="save_violation_fallback"):
+            self._save_to_local_fallback(lane, violation_type, vehicle_id, image_url)
 
 
     def get_logs(self):

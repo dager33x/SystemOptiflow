@@ -34,6 +34,8 @@ class TestYOLODetectorLaneSmoothing(unittest.TestCase):
             _FakeBox(class_id=2, confidence=0.9, xyxy=(100, 100, 170, 160)),
         ])
         detector.custom_model = _FakeModel([])
+        detector.pretrained_model_name = "yolov8n.pt"
+        detector.custom_model_name = "best.pt"
         detector.pretrained_class_names = {2: "car"}
         detector.custom_class_names = {}
         detector.color_map = {"car": (0, 255, 0)}

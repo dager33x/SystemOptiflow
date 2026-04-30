@@ -18,6 +18,12 @@ class TestDetectionSettings(unittest.TestCase):
         service = SettingsService(path="data/test_runtime_settings.json")
         self.assertEqual(0.5, service._coerce_value("ai_throttle_seconds", "invalid"))
 
+    def test_performance_timing_defaults_to_off(self):
+        self.assertFalse(SETTINGS["enable_performance_timing"])
+        self.assertEqual(0.0, SETTINGS["performance_log_min_ms"])
+        self.assertIn("enable_performance_timing", SettingsService().current())
+        self.assertIn("performance_log_min_ms", FLOAT_RANGES)
+
 
 if __name__ == "__main__":
     unittest.main()

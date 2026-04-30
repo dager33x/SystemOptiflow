@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import threading
 from typing import Optional, Union
+from utils.performance_monitor import timed_stage
 
 class CameraManager:
     """
@@ -151,7 +152,8 @@ class CameraManager:
         CameraRuntime's staleness check can detect the dead stream and retry.
         """
         while self.is_running and self.camera and self.camera.isOpened():
-            ret, frame = self.camera.read()
+            with timed_stage("camera_read", lane=self.camera_index):
+                ret, frame = self.camera.read()
             if ret and frame is not None:
                 with self._frame_lock:
                     self._latest_frame = frame
@@ -174,7 +176,8 @@ class CameraManager:
         """
         with self._frame_lock:
             if self._latest_frame is not None:
-                return self._latest_frame.copy()
+                with timed_stage("camera_get_frame", lane=self.camera_index):
+                    return self._latest_frame.copy()
         return None
     
     def get_frame_resized(self, width: int = 640, height: int = 480) -> Optional[np.ndarray]:

@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from utils.performance_monitor import timed_stage
 
 
 class PersistenceService:
@@ -40,17 +41,18 @@ class PersistenceService:
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def upload_evidence_image(self, image_bytes: bytes, filename: str) -> str:
-        if self.is_connected():
-            try:
-                storage = self.db.supabase.storage.from_(self.bucket_name)
-                storage.upload(filename, image_bytes, {"content-type": "image/jpeg"})
-                return storage.get_public_url(filename)
-            except Exception as exc:
-                self.logger.warning("Supabase Storage upload failed, using local fallback: %s", exc)
+        with timed_stage("persistence_write", operation="upload_evidence"):
+            if self.is_connected():
+                try:
+                    storage = self.db.supabase.storage.from_(self.bucket_name)
+                    storage.upload(filename, image_bytes, {"content-type": "image/jpeg"})
+                    return storage.get_public_url(filename)
+                except Exception as exc:
+                    self.logger.warning("Supabase Storage upload failed, using local fallback: %s", exc)
 
-        target = self.evidence_dir / filename.replace("/", "_")
-        target.write_bytes(image_bytes)
-        return str(target).replace("\\", "/")
+            target = self.evidence_dir / filename.replace("/", "_")
+            target.write_bytes(image_bytes)
+            return str(target).replace("\\", "/")
 
     def list_violations(self, limit: int = 50) -> List[Dict[str, Any]]:
         if self.is_connected():
@@ -168,27 +170,28 @@ class PersistenceService:
         return self._append_local("reports.json", record)
 
     def save_violation(self, lane: int, violation_type: str, image_bytes: Optional[bytes]) -> Dict[str, Any]:
-        timestamp = datetime.now(timezone.utc).isoformat()
-        image_url = None
-        if image_bytes:
-            filename = f"violations/{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_lane{lane}.jpg"
-            image_url = self.upload_evidence_image(image_bytes, filename)
-        record = {
-            "violation_id": str(uuid.uuid4()),
-            "vehicle_id": None,
-            "violation_type": violation_type,
-            "lane": lane,
-            "source": "SYSTEM",
-            "timestamp": timestamp,
-            "image_url": image_url,
-        }
-        if self.is_connected():
-            try:
-                response = self.db.supabase.table("violations").insert(record).execute()
-                return (response.data or [record])[0]
-            except Exception as exc:
-                self.logger.warning("Failed to persist violation to Supabase: %s", exc)
-        return self._append_local("violations.json", record)
+        with timed_stage("persistence_write", lane=lane, operation="save_violation"):
+            timestamp = datetime.now(timezone.utc).isoformat()
+            image_url = None
+            if image_bytes:
+                filename = f"violations/{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_lane{lane}.jpg"
+                image_url = self.upload_evidence_image(image_bytes, filename)
+            record = {
+                "violation_id": str(uuid.uuid4()),
+                "vehicle_id": None,
+                "violation_type": violation_type,
+                "lane": lane,
+                "source": "SYSTEM",
+                "timestamp": timestamp,
+                "image_url": image_url,
+            }
+            if self.is_connected():
+                try:
+                    response = self.db.supabase.table("violations").insert(record).execute()
+                    return (response.data or [record])[0]
+                except Exception as exc:
+                    self.logger.warning("Failed to persist violation to Supabase: %s", exc)
+            return self._append_local("violations.json", record)
 
     def save_accident(
         self,
@@ -197,48 +200,50 @@ class PersistenceService:
         description: str = "",
         image_bytes: Optional[bytes] = None,
     ) -> Dict[str, Any]:
-        timestamp = datetime.now(timezone.utc).isoformat()
-        image_url = None
-        if image_bytes:
-            filename = f"accidents/{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_lane{lane}.jpg"
-            image_url = self.upload_evidence_image(image_bytes, filename)
-        record = {
-            "accident_id": str(uuid.uuid4()),
-            "lane": lane,
-            "severity": severity.capitalize(),
-            "detection_type": "SYSTEM",
-            "description": description,
-            "reported_by": "system",
-            "timestamp": timestamp,
-            "resolved": False,
-            "image_url": image_url,
-        }
-        if self.is_connected():
-            payload = {k: v for k, v in record.items() if k != "image_url"}
-            try:
-                response = self.db.supabase.table("accidents").insert(payload).execute()
-                saved = (response.data or [payload])[0]
-                saved["image_url"] = image_url
-                return saved
-            except Exception as exc:
-                self.logger.warning("Failed to persist accident to Supabase: %s", exc)
-        return self._append_local("accidents.json", record)
+        with timed_stage("persistence_write", lane=lane, operation="save_accident"):
+            timestamp = datetime.now(timezone.utc).isoformat()
+            image_url = None
+            if image_bytes:
+                filename = f"accidents/{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_lane{lane}.jpg"
+                image_url = self.upload_evidence_image(image_bytes, filename)
+            record = {
+                "accident_id": str(uuid.uuid4()),
+                "lane": lane,
+                "severity": severity.capitalize(),
+                "detection_type": "SYSTEM",
+                "description": description,
+                "reported_by": "system",
+                "timestamp": timestamp,
+                "resolved": False,
+                "image_url": image_url,
+            }
+            if self.is_connected():
+                payload = {k: v for k, v in record.items() if k != "image_url"}
+                try:
+                    response = self.db.supabase.table("accidents").insert(payload).execute()
+                    saved = (response.data or [payload])[0]
+                    saved["image_url"] = image_url
+                    return saved
+                except Exception as exc:
+                    self.logger.warning("Failed to persist accident to Supabase: %s", exc)
+            return self._append_local("accidents.json", record)
 
     def log_emergency_event(self, lane: int, vehicle_type: str, action_taken: str) -> Dict[str, Any]:
-        record = {
-            "event_id": str(uuid.uuid4()),
-            "vehicle_type": vehicle_type,
-            "lane": lane,
-            "action_taken": action_taken,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        if self.is_connected():
-            try:
-                response = self.db.supabase.table("emergency_events").insert(record).execute()
-                return (response.data or [record])[0]
-            except Exception as exc:
-                self.logger.warning("Failed to persist emergency event to Supabase: %s", exc)
-        return self._append_local("emergency_events.json", record)
+        with timed_stage("persistence_write", lane=lane, operation="log_emergency_event"):
+            record = {
+                "event_id": str(uuid.uuid4()),
+                "vehicle_type": vehicle_type,
+                "lane": lane,
+                "action_taken": action_taken,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            if self.is_connected():
+                try:
+                    response = self.db.supabase.table("emergency_events").insert(record).execute()
+                    return (response.data or [record])[0]
+                except Exception as exc:
+                    self.logger.warning("Failed to persist emergency event to Supabase: %s", exc)
+            return self._append_local("emergency_events.json", record)
 
     def store_verification_code(
         self,

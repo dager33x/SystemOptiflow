@@ -20,6 +20,8 @@ from views.pages import (
 )
 from websocket import WebSocketApp
 
+from utils.performance_monitor import timed_stage
+
 from .api_client import APIClientError, RemoteAPIClient
 from .settings import RemoteSettingsProvider
 
@@ -306,7 +308,14 @@ class RemoteMainController:
                         self.latest_frames[lane] = frame
                         lane_state = self.latest_status.get("lanes", {}).get(lane, {})
                         if self.current_page and hasattr(self.current_page, "update_camera_feed"):
-                            self.root.after(0, lambda f=frame.copy(), d=lane_state.copy(), l=lane: self.current_page.update_camera_feed(f, d, l))
+                            with timed_stage("frame_copy", lane=lane, target="remote_dashboard"):
+                                frame_copy = frame.copy()
+                                lane_state_copy = lane_state.copy()
+                            with timed_stage("ui_update_scheduling", lane=lane, target="remote_dashboard"):
+                                self.root.after(
+                                    0,
+                                    lambda f=frame_copy, d=lane_state_copy, l=lane: self.current_page.update_camera_feed(f, d, l),
+                                )
             except Exception:
                 time.sleep(3)
             finally:

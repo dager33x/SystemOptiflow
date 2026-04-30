@@ -36,6 +36,7 @@ import cv2
 import numpy as np
 from collections import deque
 from typing import List, Dict, Optional, Tuple
+from utils.performance_monitor import timed_stage
 
 # ── Confidence thresholds ─────────────────────────────────────────────────────
 PRETRAINED_CONF        = 0.25   # yolov8n.pt — lowered to catch distant/small vehicles
@@ -435,9 +436,10 @@ class YOLODetector:
 
             # 3. Pretrained model (general vehicles)
             pretrained_raw: List[Dict] = []
-            results_pre = self.pretrained_model(
-                infer_frame, verbose=False, imgsz=INFER_SIZE
-            )
+            with timed_stage("yolo_inference", lane=lane_id, model=self.pretrained_model_name):
+                results_pre = self.pretrained_model(
+                    infer_frame, verbose=False, imgsz=INFER_SIZE
+                )
             if results_pre and len(results_pre) > 0:
                 for box in results_pre[0].boxes:
                     conf = float(box.conf[0])
@@ -463,9 +465,10 @@ class YOLODetector:
 
             # 4. Custom model (specialist classes)
             custom_raw: List[Dict] = []
-            results_custom = self.custom_model(
-                infer_frame, verbose=False, imgsz=INFER_SIZE
-            )
+            with timed_stage("yolo_inference", lane=lane_id, model=self.custom_model_name):
+                results_custom = self.custom_model(
+                    infer_frame, verbose=False, imgsz=INFER_SIZE
+                )
             if results_custom and len(results_custom) > 0:
                 for box in results_custom[0].boxes:
                     cls_id = int(box.cls[0])
@@ -515,7 +518,7 @@ class YOLODetector:
 
             return {
                 "detections": final_detections,
-                "annotated_frame": self.draw_detections(frame, final_detections),
+                "annotated_frame": self.draw_detections(frame, final_detections, lane_id=lane_id),
                 "success": True,
             }
 
@@ -524,21 +527,27 @@ class YOLODetector:
             return {"detections": [], "annotated_frame": frame, "success": False}
 
     # ── Drawing ───────────────────────────────────────────────────────────────
-    def draw_detections(self, frame: np.ndarray, detections: List[Dict]) -> np.ndarray:
-        out = frame.copy()
-        for det in detections:
-            x1, y1, x2, y2 = det['bbox']
-            cls  = det['class_name']
-            conf = det.get('confidence', 1.0)
-            color = self.color_map.get(cls, (0, 255, 0))
-            thickness = 3 if cls in ('emergency_vehicle', 'z_accident') else 2
-            cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness)
-            label = f"{cls} {conf:.2f}"
-            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
-            cv2.rectangle(out, (x1, y1 - 20), (x1 + tw, y1), color, -1)
-            cv2.putText(out, label, (x1, y1 - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-        return out
+    def draw_detections(
+        self,
+        frame: np.ndarray,
+        detections: List[Dict],
+        lane_id: Optional[object] = None,
+    ) -> np.ndarray:
+        with timed_stage("draw_annotations", lane=lane_id, detections=len(detections)):
+            out = frame.copy()
+            for det in detections:
+                x1, y1, x2, y2 = det['bbox']
+                cls  = det['class_name']
+                conf = det.get('confidence', 1.0)
+                color = self.color_map.get(cls, (0, 255, 0))
+                thickness = 3 if cls in ('emergency_vehicle', 'z_accident') else 2
+                cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness)
+                label = f"{cls} {conf:.2f}"
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+                cv2.rectangle(out, (x1, y1 - 20), (x1 + tw, y1), color, -1)
+                cv2.putText(out, label, (x1, y1 - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+            return out
 
     # ── Public API ────────────────────────────────────────────────────────────
     VEHICLE_CLASSES = {
