@@ -62,6 +62,18 @@ class TestSystemOptiflowWeb(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertIn("SystemOptiflow", response.text)
 
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI dependencies are not installed")
+    def test_07_operator_pages_require_auth(self):
+        os.environ["OPTIFLOW_SKIP_RUNTIME_STARTUP"] = "1"
+        from fastapi.testclient import TestClient
+        from webapp.main import create_app
+
+        with TestClient(create_app()) as client:
+            for path in ("/dashboard", "/violations", "/reports", "/incidents", "/traffic-reports", "/settings", "/stream"):
+                response = client.get(path, follow_redirects=False)
+                self.assertEqual(response.status_code, 303, path)
+                self.assertEqual(response.headers.get("location"), "/login", path)
+
 
 if __name__ == "__main__":
     unittest.main()

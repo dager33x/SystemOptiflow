@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/static/app.css?v=3.0">
+</head>
+<body class="app-body">
+  <nav class="app-nav">
+    <span class="brand">SystemOptiflow</span>
+    <div class="app-nav-links">
+      <a href="/dashboard"><span>Dashboard</span></a>
+      <a href="/violations"><span>Violations</span></a>
+      <a href="/reports"><span>Reports</span></a>
+      <a href="/incidents" class="active"><span>Incidents</span></a>
+      <a href="/traffic-reports"><span>Traffic Reports</span></a>
+      <a href="/stream" class="stream-link">📱 <span>Stream</span></a>
+      <a href="/settings"><span>Settings</span></a>
+    </div>
+    <div class="app-nav-right">
+      <span class="badge">{{ user.username }}</span>
+      <button id="logout-button" class="ghost" style="width:auto;padding:8px 14px">Log out</button>
+    </div>
+  </nav>
+
+  <main class="page-shell">
+    <section class="panel">
+      <div class="page-header">
+        <div class="page-title">
+          <h2>Incident history</h2>
+          <p>View automated accident detections, export them, and clear them when permitted.</p>
+        </div>
+        <div class="page-actions">
+          <button id="refresh-btn" class="button-muted">Refresh</button>
+          <button id="export-btn" class="button-success">Export CSV</button>
+          {% if user.role == "admin" %}
+          <button id="clear-btn" class="button-danger">Clear all</button>
+          {% endif %}
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="panel-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Lane</th>
+              <th>Severity</th>
+              <th>Description</th>
+              <th>Resolved</th>
+            </tr>
+          </thead>
+          <tbody id="incidents-body">
+            <tr><td colspan="5" class="toolbar-note">Loading incidents...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const laneLabels = {
+      0: "North Lane",
+      1: "South Lane",
+      2: "East Lane",
+      3: "West Lane",
+      "0": "North Lane",
+      "1": "South Lane",
+      "2": "East Lane",
+      "3": "West Lane",
+    };
+    let incidents = [];
+    const escapeHtml = value => String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+
+    function laneLabel(value) {
+      return laneLabels[value] || `Lane ${value ?? "?"}`;
+    }
+
+    function formatDate(value) {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? "Unknown" : date.toLocaleString();
+    }
+
+    function downloadCsv(filename, rows) {
+      const csv = rows.map(row =>
+        row.map(value => `"${String(value ?? "").replace(/"/g, '""')}"`).join(",")
+      ).join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function renderIncidents() {
+      const body = document.getElementById("incidents-body");
+      if (!incidents.length) {
+        body.innerHTML = '<tr><td colspan="5" class="toolbar-note">No incidents recorded.</td></tr>';
+        return;
+      }
+      body.innerHTML = incidents.map(item => `
+        <tr>
+          <td>${escapeHtml(formatDate(item.timestamp || item.created_at))}</td>
+          <td>${escapeHtml(laneLabel(item.lane))}</td>
+          <td><span class="chip chip-type">${escapeHtml(item.severity || "Moderate")}</span></td>
+          <td>${escapeHtml(item.description || "No description provided.")}</td>
+          <td>${escapeHtml(item.resolved ? "Yes" : "No")}</td>
+        </tr>
+      `).join("");
+    }
+
+    async function loadIncidents() {
+      const response = await fetch("/api/accidents?limit=100");
+      if (!response.ok) return;
+      const payload = await response.json();
+      incidents = payload.items || [];
+      renderIncidents();
+    }
+
+    async function clearIncidents() {
+      if (!confirm("Delete all incidents? This cannot be undone.")) return;
+      const response = await fetch("/api/accidents", { method: "DELETE" });
+      if (response.ok) await loadIncidents();
+    }
+
+    function exportIncidents() {
+      const rows = [
+        ["Timestamp", "Lane", "Severity", "Description", "Resolved"],
+        ...incidents.map(item => [
+          formatDate(item.timestamp || item.created_at),
+          laneLabel(item.lane),
+          item.severity || "Moderate",
+          item.description || "",
+          item.resolved ? "Yes" : "No",
+        ]),
+      ];
+      downloadCsv("incidents.csv", rows);
+    }
+
+    document.getElementById("refresh-btn").addEventListener("click", loadIncidents);
+    document.getElementById("export-btn").addEventListener("click", exportIncidents);
+    document.getElementById("clear-btn")?.addEventListener("click", clearIncidents);
+    document.getElementById("logout-button").addEventListener("click", async () => {
+      await fetch("/api/auth/logout", { method: "POST" });
+      window.location.href = "/login";
+    });
+
+    loadIncidents();
+  </script>
+</body>
+</html>

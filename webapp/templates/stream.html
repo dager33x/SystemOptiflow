@@ -6,8 +6,8 @@
   <title>{{ title }}</title>
   <link rel="stylesheet" href="/static/app.css?v=3.0">
   <style>
-    .stream-body { padding: 16px; }
-    .stream-shell { min-height: calc(100vh - 32px); display: grid; place-items: center; }
+    .stream-body { padding: 0; }
+    .stream-shell { min-height: calc(100vh - 88px); display: grid; place-items: center; padding: 16px; }
     .stream-card {
       width: min(480px, 100%);
       background: var(--panel);
@@ -49,7 +49,23 @@
     canvas { display: none; }
   </style>
 </head>
-<body class="stream-body">
+<body class="app-body stream-body">
+  <nav class="app-nav">
+    <span class="brand">SystemOptiflow</span>
+    <div class="app-nav-links">
+      <a href="/dashboard"><span>Dashboard</span></a>
+      <a href="/violations"><span>Violations</span></a>
+      <a href="/reports"><span>Reports</span></a>
+      <a href="/incidents"><span>Incidents</span></a>
+      <a href="/traffic-reports"><span>Traffic Reports</span></a>
+      <a href="/stream" class="active stream-link">📱 <span>Stream</span></a>
+      <a href="/settings"><span>Settings</span></a>
+    </div>
+    <div class="app-nav-right">
+      <span class="badge">{{ user.username }}</span>
+      <button id="logout-button" class="ghost" style="width:auto;padding:8px 14px">Log out</button>
+    </div>
+  </nav>
   <main class="stream-shell">
     <section class="stream-card">
       <p class="eyebrow">SystemOptiflow</p>
@@ -306,6 +322,11 @@
       } else {
         captureMode === "webrtc" ? void startWebRTC() : void startStreaming();
       }
+    });
+
+    document.getElementById("logout-button").addEventListener("click", async () => {
+      await fetch("/api/auth/logout", { method: "POST" });
+      window.location.href = "/login";
     });
 
     window.addEventListener("beforeunload", () => {

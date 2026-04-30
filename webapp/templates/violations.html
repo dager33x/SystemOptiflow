@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Violations · SystemOptiflow</title>
+  <title>{{ title }}</title>
   <link rel="stylesheet" href="/static/app.css?v=3.0">
 </head>
 <body class="app-body">
@@ -12,6 +12,9 @@
     <div class="app-nav-links">
       <a href="/dashboard"><span>Dashboard</span></a>
       <a href="/violations" class="active"><span>Violations</span></a>
+      <a href="/reports"><span>Reports</span></a>
+      <a href="/incidents"><span>Incidents</span></a>
+      <a href="/traffic-reports"><span>Traffic Reports</span></a>
       <a href="/stream" class="stream-link">📱 <span>Stream</span></a>
       <a href="/settings"><span>Settings</span></a>
     </div>
@@ -21,55 +24,199 @@
     </div>
   </nav>
 
-  <main style="padding:20px 24px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
-      <div>
-        <h2 style="margin:0">Violations</h2>
-        <p style="color:var(--muted);margin:4px 0 0">Persisted violation evidence.</p>
+  <main class="page-shell">
+    <section class="panel">
+      <div class="page-header">
+        <div class="page-title">
+          <h2>Violation logs</h2>
+          <p>Review persisted infraction evidence, inspect metadata, and export the current result set.</p>
+        </div>
+        <div class="page-actions">
+          <button id="refresh-btn" class="button-muted">Refresh</button>
+          <button id="export-btn" class="button-success">Export CSV</button>
+          {% if user.role == "admin" %}
+          <button id="clear-btn" class="button-danger">Clear all</button>
+          {% endif %}
+        </div>
       </div>
-      {% if user.role == "admin" %}
-      <button id="clear-btn" style="width:auto;padding:8px 20px;background:rgba(255,123,114,.15);color:var(--danger);border-color:rgba(255,123,114,.4)">Clear all</button>
-      {% endif %}
-    </div>
-    <div id="evidence-grid" class="evidence-grid"><p style="color:var(--muted)">Loading…</p></div>
+      <div id="violations-grid" class="operator-grid">
+        <div class="empty-state">Loading violations...</div>
+      </div>
+    </section>
   </main>
 
+  <div class="app-modal-overlay" id="violation-modal">
+    <div class="app-modal">
+      <div class="app-modal-header">
+        <div>
+          <h2 id="modal-title">Violation details</h2>
+          <p class="app-modal-subtitle" id="modal-subtitle">Inspect captured evidence and operator metadata.</p>
+        </div>
+        <button class="close-btn" type="button" onclick="closeModal()">Close</button>
+      </div>
+      <div class="modal-columns">
+        <div>
+          <img id="modal-image" class="preview-thumb" alt="Violation evidence">
+        </div>
+        <div class="detail-list" id="modal-details"></div>
+      </div>
+    </div>
+  </div>
+
   <script>
-    async function load() {
-      const res = await fetch("/api/violations?limit=100");
-      if (!res.ok) return;
-      const { items } = await res.json();
-      const grid = document.getElementById("evidence-grid");
-      if (!items || !items.length) {
-        grid.innerHTML = '<p style="color:var(--muted)">No violations recorded.</p>';
-        return;
-      }
-      grid.innerHTML = items.map(v => `
-        <div class="evidence-card">
-          <img src="/api/violations/${v.violation_id}/image" loading="lazy" onerror="this.style.display='none'">
-          <div class="evidence-card-body">
-            <strong>${v.violation_type || "Unknown"}</strong>
-            <div style="display:flex;gap:6px;flex-wrap:wrap">
-              <span class="chip chip-lane">Lane ${v.lane_id ?? "?"}</span>
-              <span class="chip chip-type">${v.severity || "violation"}</span>
-            </div>
-            <span>${new Date(v.timestamp).toLocaleString()}</span>
-          </div>
-        </div>`).join("");
+    const laneLabels = {
+      0: "North Lane",
+      1: "South Lane",
+      2: "East Lane",
+      3: "West Lane",
+      "0": "North Lane",
+      "1": "South Lane",
+      "2": "East Lane",
+      "3": "West Lane",
+    };
+    let violationItems = [];
+    const escapeHtml = value => String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+
+    function laneLabel(value) {
+      return laneLabels[value] || `Lane ${value ?? "?"}`;
     }
 
-    load();
+    function formatDate(value) {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? "Unknown" : date.toLocaleString();
+    }
 
-    document.getElementById("logout-button")?.addEventListener("click", async () => {
+    function downloadCsv(filename, rows) {
+      const csv = rows.map(row =>
+        row.map(value => `"${String(value ?? "").replace(/"/g, '""')}"`).join(",")
+      ).join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function renderViolations() {
+      const grid = document.getElementById("violations-grid");
+      if (!violationItems.length) {
+        grid.innerHTML = '<div class="empty-state">No violations recorded.</div>';
+        return;
+      }
+      grid.innerHTML = violationItems.map(item => `
+        <article class="operator-card">
+          <img
+            class="preview-thumb buttonlike"
+            src="/api/violations/${item.violation_id}/image"
+            alt="${escapeHtml(item.violation_type || "Violation evidence")}"
+            loading="lazy"
+            onerror="this.style.display='none'"
+            onclick="openModal('${item.violation_id}')"
+          >
+          <div class="operator-card-header">
+            <div class="operator-card-title">
+              <strong>${escapeHtml(item.violation_type || "Unknown violation")}</strong>
+              <p>${escapeHtml(formatDate(item.timestamp))}</p>
+            </div>
+            <div class="operator-meta">
+              <span class="chip chip-lane">${escapeHtml(laneLabel(item.lane))}</span>
+              <span class="chip chip-type">${escapeHtml(item.source || "SYSTEM")}</span>
+            </div>
+          </div>
+          <div class="operator-detail">
+            <span>Vehicle ID: ${escapeHtml(item.vehicle_id || "Not captured")}</span>
+            <span>Evidence: ${escapeHtml(item.image_url ? "Available" : "Metadata only")}</span>
+          </div>
+          <div class="table-actions">
+            <button class="button-muted" type="button" onclick="openModal('${item.violation_id}')">View details</button>
+          </div>
+        </article>
+      `).join("");
+    }
+
+    function openModal(violationId) {
+      const item = violationItems.find(entry => entry.violation_id === violationId);
+      if (!item) return;
+      document.getElementById("modal-title").textContent = item.violation_type || "Violation details";
+      document.getElementById("modal-subtitle").textContent = `${laneLabel(item.lane)} · ${formatDate(item.timestamp)}`;
+      const image = document.getElementById("modal-image");
+      image.src = `/api/violations/${item.violation_id}/image`;
+      image.style.display = item.image_url ? "block" : "none";
+      document.getElementById("modal-details").innerHTML = [
+        ["Lane", laneLabel(item.lane)],
+        ["Timestamp", formatDate(item.timestamp)],
+        ["Source", item.source || "SYSTEM"],
+        ["Vehicle ID", item.vehicle_id || "Not captured"],
+        ["Evidence", item.image_url ? "Image available" : "No image available"],
+      ].map(([label, value]) => `
+        <div class="detail-row">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+      `).join("");
+      document.getElementById("violation-modal").classList.add("open");
+    }
+
+    function closeModal() {
+      document.getElementById("violation-modal").classList.remove("open");
+      document.getElementById("modal-image").src = "";
+    }
+
+    async function loadViolations() {
+      const response = await fetch("/api/violations?limit=100");
+      if (!response.ok) return;
+      const payload = await response.json();
+      violationItems = payload.items || [];
+      renderViolations();
+    }
+
+    async function clearViolations() {
+      if (!confirm("Delete all violations? This cannot be undone.")) return;
+      const response = await fetch("/api/violations", { method: "DELETE" });
+      if (response.ok) {
+        closeModal();
+        await loadViolations();
+      }
+    }
+
+    function exportViolations() {
+      const rows = [
+        ["Violation ID", "Type", "Lane", "Timestamp", "Source", "Vehicle ID", "Image URL"],
+        ...violationItems.map(item => [
+          item.violation_id,
+          item.violation_type || "",
+          laneLabel(item.lane),
+          formatDate(item.timestamp),
+          item.source || "SYSTEM",
+          item.vehicle_id || "",
+          item.image_url || "",
+        ]),
+      ];
+      downloadCsv("violations.csv", rows);
+    }
+
+    document.getElementById("refresh-btn").addEventListener("click", loadViolations);
+    document.getElementById("export-btn").addEventListener("click", exportViolations);
+    document.getElementById("clear-btn")?.addEventListener("click", clearViolations);
+    document.getElementById("logout-button").addEventListener("click", async () => {
       await fetch("/api/auth/logout", { method: "POST" });
       window.location.href = "/login";
     });
-
-    document.getElementById("clear-btn")?.addEventListener("click", async () => {
-      if (!confirm("Delete all violations? This cannot be undone.")) return;
-      await fetch("/api/violations", { method: "DELETE" });
-      load();
+    document.getElementById("violation-modal").addEventListener("click", event => {
+      if (event.target === event.currentTarget) closeModal();
     });
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape") closeModal();
+    });
+
+    loadViolations();
   </script>
 </body>
 </html>
