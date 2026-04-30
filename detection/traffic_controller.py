@@ -108,6 +108,7 @@ class TrafficLightController:
         self.decisions_made        = 0
         self._frame_number         = 0
         self.last_rule_audit: Dict = {}
+        self._emergency_extensions = 0
 
         self._csv_file   = None
         self._csv_writer = None
@@ -295,6 +296,7 @@ class TrafficLightController:
             elapsed_green=self.elapsed_green,
             buffer_locked=False,
             is_green_phase=False,
+            wait_times=[self.lane_stats[i].get('wait_time', 0.0) for i in range(self.num_lanes)],
         )
         self.last_rule_audit = audit
 
@@ -326,6 +328,8 @@ class TrafficLightController:
             self._secondary_green_end  = 0.0
             self._secondary_yellow_end = 0.0
             self._log_csv(is_override=True)
+            # reset extension counter when entering emergency
+            self._emergency_extensions = 0
 
         else:
             # ── Strict NS <-> EW alternation ──────────────────────────
@@ -434,7 +438,7 @@ class TrafficLightController:
                 self._secondary_yellow_end = current_time + YELLOW_TIME
                 self.logger.info(
                     f'[Secondary] {self.LANE_NAMES[self._secondary_lane]} '
-                    f'-> YELLOW (3s clearance)'
+                    f'-> YELLOW ({YELLOW_TIME}s clearance)'
                 )
             elif self._secondary_state == 'YELLOW' and current_time >= self._secondary_yellow_end:
                 self._secondary_state = 'OFF'
@@ -449,12 +453,14 @@ class TrafficLightController:
                 self.lane_stats[i].get('detections', [])
                 for i in range(self.num_lanes)
             ]
+            wait_times = [self.lane_stats[i].get('wait_time', 0.0) for i in range(self.num_lanes)]
             rule_action, audit = self.rule_controller.step(
                 lane_detections=lane_detections,
                 active_phase=self.active_phase,
                 elapsed_green=elapsed,
                 buffer_locked=self.buffer_locked,
                 is_green_phase=True,
+                wait_times=wait_times,
             )
             self.last_rule_audit = audit
             self.rule_controller.update_phase_wait(self.active_phase)
@@ -481,8 +487,14 @@ class TrafficLightController:
                     if not self.buffer_locked:
                         self.phase_duration = elapsed
                 elif audit.get('rule_fired') == 'emergency_keep_green':
-                    self.phase_duration  = elapsed + float(MAX_GREEN_EMERGENCY)
-                    self._emergency_mode = True
+                    # Allow one extension of emergency green (user request: +10s)
+                    if self._emergency_extensions < 1:
+                        self.phase_duration  = elapsed + float(MAX_GREEN_EMERGENCY)
+                        self._emergency_extensions += 1
+                        self._emergency_mode = True
+                    else:
+                        # Extension already used — clear emergency mode and continue flow
+                        self._emergency_mode = False
             else:
                 self.is_emergency_active = False
                 if self._emergency_mode:

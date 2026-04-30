@@ -114,8 +114,10 @@ MIN_BUFFER_TIME      = 10   # hard minimum green — no switch before this
 EW_MIN_GREEN         = 15   # East-West always gets at least 15 s (turning traffic)
 NS_MIN_GREEN         = 20   # North-South baseline
 MAX_GREEN_NORMAL     = 60
-MAX_GREEN_EMERGENCY  = 60
-STARVATION_THRESHOLD = 60
+# Emergency green default shortened to match new requirement (10s)
+MAX_GREEN_EMERGENCY  = 10
+# Increased starvation threshold: max red wait per-lane triggers rotation
+STARVATION_THRESHOLD = 199
 NORMAL_MIN_GREEN     = NS_MIN_GREEN   # backward-compat alias
 
 
@@ -323,7 +325,8 @@ class TrafficLightDQN:
         self.normal_min_green    = NS_MIN_GREEN
         self.max_green_normal    = MAX_GREEN_NORMAL
         self.max_green_emergency = MAX_GREEN_EMERGENCY
-        self.yellow_time         = 3
+        # Controller uses 5s yellow as system-wide constant, but keep a copy
+        self.yellow_time         = 5
         self.all_red_time        = 2
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

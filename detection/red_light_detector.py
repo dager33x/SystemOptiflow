@@ -43,6 +43,16 @@ class RedLightViolationDetector:
             3: (0.25, 0.35, 0.45, 0.65),  # WEST  - middle crossing zone
         }
 
+        # Optional vertical crossing line per lane (normalized x coordinate)
+        # Format: lane_id -> (x_norm, width_norm)
+        # When present, detector will use the vertical line band instead of rectangle zones.
+        self.crossing_lines = {
+            0: (0.5, 0.02),
+            1: (0.5, 0.02),
+            2: (0.5, 0.02),
+            3: (0.5, 0.02),
+        }
+
         # Per-lane violation tracking
         # track_id -> {entering_time, class, bbox}
         self._vehicle_tracks: Dict[int, Dict] = {}
@@ -66,6 +76,46 @@ class RedLightViolationDetector:
         """Set callback for taking screenshots"""
         self._screenshot_callback = callback
 
+    def should_log_violation(self, lane_id: int) -> bool:
+        """Determine whether to log/report a new violation for lane (cooldown guard)."""
+        last = self._violation_history.get(lane_id, 0.0)
+        now = datetime.now().timestamp()
+        if now - last >= self._violation_cooldown_secs:
+            self._violation_history[lane_id] = now
+            return True
+        return False
+
+    def detect(self, frame: np.ndarray, detections: List[Dict],
+               signal_state: str, lane_id: int, draw_annotations: bool = True) -> Dict:
+        """Compatibility wrapper used by the controller.
+
+        Returns dict with keys: violation_detected (bool), violating_vehicles (list),
+        annotated_frame, success
+        """
+        try:
+            violations = self.detect_violations(
+                frame=frame,
+                detections=detections,
+                lane_id=lane_id,
+                light_state=signal_state,
+            )
+            annotated = frame
+            if draw_annotations:
+                try:
+                    annotated = self.draw_violation_zones(frame, violations)
+                except Exception:
+                    annotated = frame
+
+            return {
+                'violation_detected': len(violations) > 0,
+                'violating_vehicles': violations,
+                'annotated_frame': annotated,
+                'success': True,
+            }
+        except Exception as e:
+            self.logger.error(f'[RedLightDetector] detect wrapper error: {e}')
+            return {'violation_detected': False, 'violating_vehicles': [], 'annotated_frame': frame, 'success': False}
+
     def set_crossing_zone(self, lane_id: int, zone: Tuple[float, float, float, float]):
         """
         Set the crossing zone (ROI) for a lane.
@@ -78,6 +128,19 @@ class RedLightViolationDetector:
             self.crossing_zones[lane_id] = zone
             self.logger.info(f"[RedLightDetector] Lane {self.lane_names[lane_id]} "
                            f"crossing zone set to {zone}")
+
+    def set_crossing_line(self, lane_id: int, x_norm: float, width_norm: float = 0.02):
+        """Set a vertical crossing line for a lane.
+
+        Args:
+            lane_id: lane index
+            x_norm: normalized x coordinate (0..1) of the vertical line
+            width_norm: normalized width (fraction of image width) for the detection band
+        """
+        if 0 <= lane_id < self.num_lanes:
+            self.crossing_lines[lane_id] = (float(x_norm), float(width_norm))
+            self.logger.info(f"[RedLightDetector] Lane {self.lane_names[lane_id]} "
+                            f"crossing line set to x={x_norm:.3f} width={width_norm:.3f}")
 
     def _pixel_to_normalized(self, bbox: Tuple, frame_h: int, frame_w: int) -> Tuple:
         """Convert pixel coordinates to normalized [0,1]"""
@@ -120,6 +183,30 @@ class RedLightViolationDetector:
         """
         iou = self._iou(bbox, zone)
         return iou >= threshold
+
+    def _is_in_vertical_band(self, bbox_norm: Tuple, x_norm: float, width_norm: float,
+                             threshold: float = 0.05) -> bool:
+        """Check overlap of normalized bbox with a vertical band centered at x_norm.
+
+        bbox_norm: (x1,y1,x2,y2) normalized
+        x_norm: center x of band (0..1)
+        width_norm: width of band (0..1)
+        threshold: minimum overlap area fraction of bbox to count as in band
+        """
+        bx1, by1, bx2, by2 = bbox_norm
+        band_x1 = max(0.0, x_norm - width_norm / 2.0)
+        band_x2 = min(1.0, x_norm + width_norm / 2.0)
+        # compute intersection area normalized (use bbox area as base)
+        inter_x1 = max(bx1, band_x1)
+        inter_x2 = min(bx2, band_x2)
+        if inter_x2 <= inter_x1:
+            return False
+        # vertical full height overlap assumed for band, so inter_area = (inter_x2-inter_x1)*(by2-by1)
+        bbox_area = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+        if bbox_area <= 0:
+            return False
+        inter_area = (inter_x2 - inter_x1) * (by2 - by1)
+        return (inter_area / bbox_area) >= threshold
 
     def detect_violations(
         self,
@@ -179,8 +266,18 @@ class RedLightViolationDetector:
             # Convert to normalized coordinates
             bbox_norm = self._pixel_to_normalized(bbox, frame_h, frame_w)
 
-            # Check if vehicle is in the crossing zone
-            if self._is_in_zone(bbox_norm, zone, threshold=0.2):
+            # Prefer vertical crossing line if configured for this lane
+            in_cross = False
+            if lane_id in self.crossing_lines:
+                x_norm, width_norm = self.crossing_lines[lane_id]
+                if self._is_in_vertical_band(bbox_norm, x_norm, width_norm, threshold=0.05):
+                    in_cross = True
+            else:
+                # Fallback to rectangular zone
+                if self._is_in_zone(bbox_norm, zone, threshold=0.2):
+                    in_cross = True
+
+            if in_cross:
                 confidence = det.get('confidence', 0.0)
 
                 # Create violation record
@@ -219,6 +316,12 @@ class RedLightViolationDetector:
                         vehicle_class=class_name,
                         timestamp=current_time
                     )
+                else:
+                    # Fallback: save violation snapshot to logs/violations
+                    try:
+                        self._save_violation_image(frame, lane_id, class_name, current_time)
+                    except Exception as e:
+                        self.logger.error(f'[RedLightDetector] save snapshot failed: {e}')
 
         return violations
 
@@ -243,19 +346,92 @@ class RedLightViolationDetector:
             3: (0, 255, 0),      # WEST  - Green
         }
 
-        for lane_id, zone in self.crossing_zones.items():
-            x1, y1, x2, y2 = self._normalized_to_pixel(zone, frame_h, frame_w)
+        # Draw per-lane crossing visuals. Prefer vertical bands if configured.
+        for lane_id in range(self.num_lanes):
+            # Determine color by default mapping
             color = colors.get(lane_id, (0, 0, 255))
-
-            # Draw zone rectangle
-            cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-
-            # Label
-            label = f"Lane {self.lane_names[lane_id]}"
-            cv2.putText(out, label, (x1, y1 - 5),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            # Draw vertical band if configured
+            if lane_id in self.crossing_lines:
+                x_norm, width_norm = self.crossing_lines[lane_id]
+                bx1 = int(max(0, (x_norm - width_norm / 2.0)) * frame_w)
+                bx2 = int(min(1, (x_norm + width_norm / 2.0)) * frame_w)
+                # default neutral color; caller may overlay with current light state
+                cv2.rectangle(out, (bx1, 0), (bx2, frame_h), color, 2)
+                label = f"Lane {self.lane_names[lane_id]}"
+                cv2.putText(out, label, (bx1 + 4, 20 + lane_id * 18),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            else:
+                zone = self.crossing_zones.get(lane_id)
+                if zone:
+                    x1, y1, x2, y2 = self._normalized_to_pixel(zone, frame_h, frame_w)
+                    cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+                    label = f"Lane {self.lane_names[lane_id]}"
+                    cv2.putText(out, label, (x1, y1 - 5),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
         return out
+
+    def draw_crossing_zones_with_lights(self, frame: np.ndarray, light_states: Optional[Dict[int, str]] = None) -> np.ndarray:
+        """Draw crossing zones and color vertical lines by `light_states` mapping.
+
+        `light_states` is a dict mapping lane_id -> 'GREEN'|'YELLOW'|'RED'|'ALL_RED'.
+        If omitted, falls back to `draw_crossing_zones`.
+        """
+        out = frame.copy()
+        frame_h, frame_w = frame.shape[:2]
+
+        for lane_id in range(self.num_lanes):
+            # color based on light state
+            state = None
+            if light_states and lane_id in light_states:
+                state = light_states[lane_id]
+            if state == 'GREEN':
+                color = (0, 255, 0)
+            elif state == 'YELLOW':
+                color = (0, 255, 255)
+            else:
+                color = (0, 0, 255)
+
+            if lane_id in self.crossing_lines:
+                x_norm, width_norm = self.crossing_lines[lane_id]
+                bx1 = int(max(0, (x_norm - width_norm / 2.0)) * frame_w)
+                bx2 = int(min(1, (x_norm + width_norm / 2.0)) * frame_w)
+                cv2.rectangle(out, (bx1, 0), (bx2, frame_h), color, -1)
+                # semi-transparent overlay
+                alpha = 0.15
+                overlay = out.copy()
+                cv2.rectangle(overlay, (bx1, 0), (bx2, frame_h), color, -1)
+                cv2.addWeighted(overlay, alpha, out, 1 - alpha, 0, out)
+                # outline
+                cv2.rectangle(out, (bx1, 0), (bx2, frame_h), color, 2)
+                label = f"{self.lane_names[lane_id]}: {state or 'N/A'}"
+                cv2.putText(out, label, (bx1 + 4, 20 + lane_id * 18),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            else:
+                zone = self.crossing_zones.get(lane_id)
+                if zone:
+                    x1, y1, x2, y2 = self._normalized_to_pixel(zone, frame_h, frame_w)
+                    cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+                    label = f"{self.lane_names[lane_id]}: {state or 'N/A'}"
+                    cv2.putText(out, label, (x1, y1 - 5),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+        return out
+
+    def _save_violation_image(self, frame: np.ndarray, lane_id: int, vehicle_class: str, timestamp: 'datetime'):
+        """Save a violation snapshot to `logs/violations/` with metadata in filename."""
+        try:
+            import os
+            ts = timestamp.strftime('%Y%m%dT%H%M%S%f')
+            out_dir = os.path.join('logs', 'violations')
+            os.makedirs(out_dir, exist_ok=True)
+            fname = f"violation_lane{lane_id}_{vehicle_class}_{ts}.jpg"
+            path = os.path.join(out_dir, fname)
+            # write at reasonable JPEG quality
+            cv2.imwrite(path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            self.logger.info(f"[RedLightDetector] Saved violation snapshot: {path}")
+        except Exception as e:
+            self.logger.error(f"[RedLightDetector] Failed to save violation image: {e}")
 
     def draw_violation_zones(self, frame: np.ndarray, violations: List[Dict]) -> np.ndarray:
         """

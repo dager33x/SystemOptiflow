@@ -49,11 +49,11 @@ from utils.performance_monitor import timed_stage
 # ── Confidence thresholds ─────────────────────────────────────────────────────
 PRETRAINED_CONF        = 0.25   # yolov8n.pt — lowered to catch distant/small vehicles
 CUSTOM_CONF            = 0.35   # best.pt general threshold
-CUSTOM_EMERGENCY_CONF  = 0.50   # higher bar specifically for emergency_vehicle
+CUSTOM_EMERGENCY_CONF  = 0.60   # higher bar specifically for emergency_vehicle (stricter)
 
 # Cross-veto guard
 VETO_PRETRAINED_CONF   = 0.45   # pretrained bus/truck conf needed to trigger veto
-VETO_CUSTOM_CONF       = 0.75   # custom emergency conf needed to RESIST the veto
+VETO_CUSTOM_CONF       = 0.80   # custom emergency conf needed to RESIST the veto (stricter)
 VETO_SIZE_RATIO        = 1.6    # if emergency box area > this × median bus/truck area → veto
 VETO_ASPECT_MIN        = 1.2    # emergency vehicles should be wider than tall (w/h)
 VETO_ASPECT_MAX        = 5.0    # …but not extremely long (likely a train/bus misread)
