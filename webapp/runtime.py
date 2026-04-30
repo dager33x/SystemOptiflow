@@ -158,6 +158,7 @@ class TrafficRuntime:
         self.runtime_error: Optional[str] = None
         self.alerts: Deque[Dict[str, Any]] = deque(maxlen=50)
         self.browser_frames: Dict[str, Any] = {lane: None for lane in LANES}
+        self.browser_mode: Dict[str, Optional[str]] = {lane: None for lane in LANES}
         self._viewer_queues: Dict[str, Set[asyncio.Queue]] = {lane: set() for lane in LANES}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.states: Dict[str, Dict[str, Any]] = {
@@ -386,6 +387,7 @@ class TrafficRuntime:
                     "time_remaining": state["time_remaining"],
                     "note": state.get("note", ""),
                     "detections": [det.get("class_name") for det in state["detections"]],
+                    "capture_mode": self.browser_mode.get(lane),
                 }
                 for lane, state in self.states.items()
             }
@@ -398,6 +400,9 @@ class TrafficRuntime:
             "alerts": list(self.alerts),
             "controller": controller_status,
         }
+
+    def set_browser_mode(self, lane: str, mode: Optional[str]) -> None:
+        self.browser_mode[lane] = mode
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop

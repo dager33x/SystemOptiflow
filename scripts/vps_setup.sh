@@ -11,7 +11,8 @@
 #
 # What it does:
 #   1. Installs Docker + Docker Compose plugin
-#   2. Configures UFW firewall
+#   2. Configures UFW firewall (SSH, HTTP, HTTPS, RTSP, TURN, TURN relay range)
+#   2.5. Installs and configures coturn (TURN relay for WebRTC over cellular)
 #   3. Creates a temporary self-signed cert so nginx can start
 #   4. Starts all containers (docker compose up)
 #   5. Obtains a real Let's Encrypt cert via DuckDNS DNS challenge
@@ -51,12 +52,38 @@ else
 fi
 
 echo "==> [2/7] Configuring UFW firewall"
-ufw allow 22/tcp   comment "SSH"
-ufw allow 80/tcp   comment "HTTP (ACME + redirect)"
-ufw allow 443/tcp  comment "HTTPS dashboard"
-ufw allow 8554/tcp comment "RTSP ingest (phone cameras)"
-ufw allow 8554/udp comment "RTSP ingest UDP"
+ufw allow 22/tcp        comment "SSH"
+ufw allow 80/tcp        comment "HTTP (ACME + redirect)"
+ufw allow 443/tcp       comment "HTTPS dashboard"
+ufw allow 8554/tcp      comment "RTSP ingest (phone cameras)"
+ufw allow 8554/udp      comment "RTSP ingest UDP"
+ufw allow 3478/tcp      comment "TURN signaling"
+ufw allow 3478/udp      comment "TURN signaling UDP"
+ufw allow 10000:60000/udp comment "TURN relay media (WebRTC)"
 ufw --force enable
+
+echo "==> [2.5/7] Installing coturn (TURN relay — required for WebRTC over cellular)"
+if ! command -v turnserver &>/dev/null; then
+  apt-get install -y coturn
+else
+  echo "     coturn already installed — skipping"
+fi
+TURN_USER="${TURN_USERNAME:-optiflow}"
+TURN_PASS="${TURN_PASSWORD:-changeme}"
+cat > /etc/turnserver.conf <<EOF
+realm=optiflow
+fingerprint
+lt-cred-mech
+user=${TURN_USER}:${TURN_PASS}
+min-port=10000
+max-port=60000
+no-stdout-log
+EOF
+# Enable the daemon (Ubuntu package ships with TURNSERVER_ENABLED=1 guard)
+sed -i 's/^TURNSERVER_ENABLED=.*/TURNSERVER_ENABLED=1/' /etc/default/coturn 2>/dev/null || true
+systemctl enable coturn
+systemctl restart coturn
+echo "     coturn running — TURN user: ${TURN_USER}"
 
 echo "==> [3/7] Creating bootstrap self-signed cert (so nginx can start)"
 if [[ ! -f "$CERT_DIR/fullchain.pem" ]]; then

@@ -87,7 +87,9 @@
         <div class="stream-row">
           <button id="toggle-btn" type="button">Start Streaming</button>
           <span id="status" class="stream-status idle">Idle</span>
+          <span id="mode-label" class="stream-status idle"></span>
         </div>
+        <p id="turn-warning" style="display:none;margin-top:12px;font-size:.82rem;color:var(--warning)"></p>
       </div>
 
       <a class="back-link" href="/dashboard">&#8592; Back to Dashboard</a>
@@ -116,6 +118,25 @@
     let rtcPc = null;           // WebRTC peer connection (webrtc mode only)
 
     const captureMode = streamSettings.phone_capture_mode ?? "canvas_jpeg";
+
+    // Show active capture mode before streaming starts
+    const modeLabelEl = document.getElementById("mode-label");
+    modeLabelEl.textContent = captureMode === "webrtc" ? "Mode: WebRTC" : "Mode: Canvas JPEG";
+
+    // For WebRTC mode, check whether the server has a TURN relay configured
+    if (captureMode === "webrtc") {
+      fetch("/api/webrtc/ice-config").then(r => r.ok ? r.json() : null).then(data => {
+        const turnWarning = document.getElementById("turn-warning");
+        const hasTurn = data?.iceServers?.some(s => String(s.urls).startsWith("turn:"));
+        if (hasTurn) {
+          modeLabelEl.className = "stream-status live";
+          modeLabelEl.textContent = "Mode: WebRTC · TURN ready";
+        } else {
+          turnWarning.style.display = "block";
+          turnWarning.textContent = "No TURN server configured — WebRTC may fail on cellular. Set VPS_PUBLIC_IP in .env and install coturn on the VPS.";
+        }
+      }).catch(() => {});
+    }
 
     function normalizedSettings() {
       return {

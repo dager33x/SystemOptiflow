@@ -133,7 +133,9 @@
       laneData[lane] = data;
       const dot = document.getElementById(`dot-${lane}`);
       if (dot) dot.className = `camera-status-dot ${data.camera_status}`;
-      setText(`status-${lane}`, `${data.camera_status} · ${data.source}`);
+      const modeLabel = data.capture_mode ? ` (${data.capture_mode})` : "";
+      const sourceLabel = data.source === "Browser" ? `Browser${modeLabel}` : data.source;
+      setText(`status-${lane}`, `${data.camera_status} · ${sourceLabel}`);
       setText(`count-${lane}`, `${data.vehicle_count} vehicles`);
       setText(`timer-${lane}`, `${Number(data.time_remaining || 0).toFixed(1)}s`);
       const pill = document.getElementById(`pill-${lane}`);

@@ -445,7 +445,8 @@ def create_app() -> FastAPI:
             await websocket.close(code=1008)
             return
         await websocket.accept()
-        settings_service.apply({f"camera_source_{lane}": "Browser"})
+        settings_service.apply({f"camera_source_{lane}": "Browser"}, persist=False)
+        runtime.set_browser_mode(lane, "canvas")
         try:
             while True:
                 data = await websocket.receive_bytes()
@@ -455,7 +456,8 @@ def create_app() -> FastAPI:
         except Exception:
             pass
         finally:
-            settings_service.apply({f"camera_source_{lane}": "Simulated"})
+            settings_service.apply({f"camera_source_{lane}": "Simulated"}, persist=False)
+            runtime.set_browser_mode(lane, None)
             runtime.browser_frames[lane] = None
 
     @app.websocket("/ws/view/{lane}")
@@ -531,13 +533,15 @@ def create_app() -> FastAPI:
             nonlocal track_task
             if track.kind == "video":
                 track_task = asyncio.ensure_future(runtime.inject_webrtc_track(lane, track))
+                runtime.set_browser_mode(lane, "webrtc")
 
         @pc.on("connectionstatechange")
         async def on_connection_state_change():
             if pc.connectionState in ("failed", "closed", "disconnected"):
                 if track_task and not track_task.done():
                     track_task.cancel()
-                settings_service.apply({f"camera_source_{lane}": "Simulated"})
+                settings_service.apply({f"camera_source_{lane}": "Simulated"}, persist=False)
+                runtime.set_browser_mode(lane, None)
                 runtime.browser_frames[lane] = None
                 await pc.close()
 
@@ -545,7 +549,7 @@ def create_app() -> FastAPI:
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
 
-        settings_service.apply({f"camera_source_{lane}": "Browser"})
+        settings_service.apply({f"camera_source_{lane}": "Browser"}, persist=False)
 
         return JSONResponse({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
 
