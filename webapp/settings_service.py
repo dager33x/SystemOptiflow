@@ -26,6 +26,7 @@ ALLOWED_SETTINGS = {
     "camera_source_west",
     "rtsp_transport",
     "viewing_protocol",
+    "phone_capture_mode",
 }
 
 FLOAT_RANGES = {
