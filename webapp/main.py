@@ -74,6 +74,7 @@ def _stream_settings_payload() -> dict:
         "browser_stream_jpeg_quality": float(SETTINGS.get("browser_stream_jpeg_quality", 0.6)),
         "browser_stream_width": int(SETTINGS.get("browser_stream_width", 640)),
         "browser_stream_height": int(SETTINGS.get("browser_stream_height", 480)),
+        "phone_capture_mode": str(SETTINGS.get("phone_capture_mode", "canvas_jpeg")),
     }
 
 
