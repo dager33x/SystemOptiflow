@@ -135,7 +135,7 @@ class DetectionRuntime:
             return cached_detections, frame
 
         detector = self._load_detector()
-        result = detector.detect(frame)
+        result = detector.detect(frame, lane_id=lane)
         detections = result.get("detections", [])
         annotated_frame = result.get("annotated_frame", frame)
         self.last_run[lane] = now

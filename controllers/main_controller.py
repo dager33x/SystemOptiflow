@@ -581,7 +581,7 @@ class MainController:
                             
                             if should_detect:
                                 # Run YOLO detection
-                                detection_result = self.yolo_detector.detect(frame)
+                                detection_result = self.yolo_detector.detect(frame, lane_id=lane_id)
                                 detections = detection_result.get("detections", [])
                                 annotated_frame = detection_result.get('annotated_frame', frame)
                                 

@@ -218,6 +218,7 @@ class YOLODetector:
         )
         self._prev_gray: Optional[np.ndarray] = None
         self._smoother = DetectionSmoother(window=SMOOTH_WINDOW)
+        self._lane_smoothers: Dict[object, DetectionSmoother] = {}
         self.load_models()
 
     # ── Model loading ─────────────────────────────────────────────────────────
@@ -389,8 +390,21 @@ class YOLODetector:
         return surviving
 
     # ── Core detection ────────────────────────────────────────────────────────
-    def detect(self, frame: np.ndarray) -> Dict:
-        """Run both models, merge and smooth detections."""
+    def _get_smoother(self, lane_id: Optional[object] = None) -> DetectionSmoother:
+        """Return the temporal smoother for one lane, preserving legacy default behavior."""
+        if lane_id is None:
+            if not hasattr(self, "_smoother"):
+                self._smoother = DetectionSmoother(window=SMOOTH_WINDOW)
+            return self._smoother
+
+        if not hasattr(self, "_lane_smoothers"):
+            self._lane_smoothers = {}
+        if lane_id not in self._lane_smoothers:
+            self._lane_smoothers[lane_id] = DetectionSmoother(window=SMOOTH_WINDOW)
+        return self._lane_smoothers[lane_id]
+
+    def detect(self, frame: np.ndarray, lane_id: Optional[object] = None) -> Dict:
+        """Run both models, merge and smooth detections for one lane."""
         if self.pretrained_model is None or self.custom_model is None:
             self.logger.warning("[YOLODetector] Models not loaded.")
             return {"detections": [], "annotated_frame": frame, "success": False}
@@ -495,8 +509,9 @@ class YOLODetector:
             raw_merged = custom_filtered + pretrained_filtered
 
             # 7. Temporal smoother
-            self._smoother.push_frame(raw_merged)
-            final_detections = self._smoother.confirmed_detections()
+            smoother = self._get_smoother(lane_id)
+            smoother.push_frame(raw_merged)
+            final_detections = smoother.confirmed_detections()
 
             return {
                 "detections": final_detections,
