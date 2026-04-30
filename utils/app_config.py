@@ -9,7 +9,7 @@ SETTINGS = {
     "enable_detection": True,      # Run the AI model?
     "show_bounding_boxes": True,   # Draw boxes around cars?
     "show_confidence": True,       # Show how sure the AI is (e.g. 95%)?
-    "ai_throttle_seconds": 0.5,    # Optimize inference throttle (default 0.5 = ~2 FPS logic)
+    "ai_throttle_seconds": 0.2,    # Optimize inference throttle (default 0.2 = ~5 FPS logic)
     "enable_performance_timing": False, # Log lightweight runtime stage timings?
     "performance_log_min_ms": 0.0, # Minimum stage duration to log when timing is enabled
     "enable_video_enhancement": False, # Apply Unsharp mask (expensive on CPU)

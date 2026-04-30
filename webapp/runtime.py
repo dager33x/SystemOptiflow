@@ -303,7 +303,7 @@ class TrafficRuntime:
 
         state = self.states[lane]
         source = SETTINGS.get(f"camera_source_{lane}", "Simulated")
-        throttle_seconds = float(SETTINGS.get("ai_throttle_seconds", 0.5))
+        throttle_seconds = float(SETTINGS.get("ai_throttle_seconds", 0.2))
 
         if source == "Browser":
             frame = self.browser_frames.get(lane)

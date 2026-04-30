@@ -604,7 +604,7 @@ class MainController:
                             # Determine if we should run fresh detection
                             # Throttle YOLO inference - gives the UI display loop
                             # more time per cycle so video rendering stays smooth
-                            throttle_val = SETTINGS.get("ai_throttle_seconds", 0.5)
+                            throttle_val = SETTINGS.get("ai_throttle_seconds", 0.2)
                             should_detect = (current_ai_time - last_ai_time) > throttle_val
                             
                             if should_detect:

@@ -32,7 +32,7 @@ ALLOWED_SETTINGS = {
 }
 
 FLOAT_RANGES = {
-    "ai_throttle_seconds": (0.05, 5.0, 0.5),
+    "ai_throttle_seconds": (0.05, 5.0, 0.2),
     "performance_log_min_ms": (0.0, 10000.0, 0.0),
     "browser_capture_fps": (5.0, 30.0, 20.0),
     "stream_output_fps": (5.0, 30.0, 20.0),
