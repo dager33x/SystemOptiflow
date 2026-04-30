@@ -53,6 +53,33 @@
           <input type="number" id="ai_throttle_seconds" min="0.05" max="5" step="0.05" style="max-width:180px">
         </label>
       </div>
+
+      <div class="settings-section">
+        <h3>Browser Streaming</h3>
+        <p class="hint">Tune phone upload cadence separately from AI inference. Higher FPS uses more CPU and bandwidth.</p>
+        <div class="settings-grid" style="margin-top:16px">
+          <label class="settings-field">
+            <span>Browser capture FPS</span>
+            <input type="number" id="browser_capture_fps" min="5" max="30" step="1">
+          </label>
+          <label class="settings-field">
+            <span>Stream output FPS</span>
+            <input type="number" id="stream_output_fps" min="5" max="30" step="1">
+          </label>
+          <label class="settings-field">
+            <span>JPEG quality</span>
+            <input type="number" id="browser_stream_jpeg_quality" min="0.3" max="0.9" step="0.05">
+          </label>
+          <label class="settings-field">
+            <span>Stream width</span>
+            <input type="number" id="browser_stream_width" min="160" max="1920" step="1">
+          </label>
+          <label class="settings-field">
+            <span>Stream height</span>
+            <input type="number" id="browser_stream_height" min="120" max="1080" step="1">
+          </label>
+        </div>
+      </div>
     </div>
   </main>
 
@@ -78,6 +105,10 @@
       });
       const thr = document.getElementById("ai_throttle_seconds");
       if (thr) thr.value = s.ai_throttle_seconds ?? "0.2";
+      ["browser_capture_fps","stream_output_fps","browser_stream_jpeg_quality","browser_stream_width","browser_stream_height"].forEach(k => {
+        const el = document.getElementById(k);
+        if (el && s[k] != null) el.value = s[k];
+      });
     }
 
     loadSettings();
@@ -94,6 +125,11 @@
         updates[k] = document.getElementById(k)?.checked ? "true" : "false";
       });
       updates.ai_throttle_seconds = document.getElementById("ai_throttle_seconds")?.value ?? "0.2";
+      updates.browser_capture_fps = document.getElementById("browser_capture_fps")?.value ?? "20";
+      updates.stream_output_fps = document.getElementById("stream_output_fps")?.value ?? "20";
+      updates.browser_stream_jpeg_quality = document.getElementById("browser_stream_jpeg_quality")?.value ?? "0.6";
+      updates.browser_stream_width = document.getElementById("browser_stream_width")?.value ?? "640";
+      updates.browser_stream_height = document.getElementById("browser_stream_height")?.value ?? "480";
 
       const res = await fetch("/api/settings", {
         method: "PUT",

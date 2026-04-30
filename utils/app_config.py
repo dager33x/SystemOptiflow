@@ -11,6 +11,11 @@ SETTINGS = {
     "show_confidence": True,       # Show how sure the AI is (e.g. 95%)?
     "ai_throttle_seconds": 0.2,    # Optimize inference throttle (default 0.2 = ~5 FPS logic)
     "enable_video_enhancement": False, # Apply Unsharp mask (expensive on CPU)
+    "browser_capture_fps": 20.0,   # Browser phone upload cadence
+    "stream_output_fps": 20.0,     # Runtime and MJPEG output cadence
+    "browser_stream_jpeg_quality": 0.6,  # JPEG quality for browser-uploaded frames
+    "browser_stream_width": 640,   # Browser upload width
+    "browser_stream_height": 480,  # Browser upload height
     
     # Camera / Display Settings
     "show_simulation_text": True,  # Show "SIMULATION" text overlay?

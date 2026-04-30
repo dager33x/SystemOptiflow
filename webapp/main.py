@@ -66,6 +66,16 @@ def _safe_local_evidence_path(image_url: str) -> Path | None:
     return None
 
 
+def _stream_settings_payload() -> dict:
+    return {
+        "browser_capture_fps": float(SETTINGS.get("browser_capture_fps", 20.0)),
+        "stream_output_fps": float(SETTINGS.get("stream_output_fps", 20.0)),
+        "browser_stream_jpeg_quality": float(SETTINGS.get("browser_stream_jpeg_quality", 0.6)),
+        "browser_stream_width": int(SETTINGS.get("browser_stream_width", 640)),
+        "browser_stream_height": int(SETTINGS.get("browser_stream_height", 480)),
+    }
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="SystemOptiflow Web", version="2.0.0")
     app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "dev-secret-change-me"))
@@ -346,7 +356,8 @@ def create_app() -> FastAPI:
                 if frame and ts > last_ts:
                     last_ts = ts
                     yield boundary + b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-                await asyncio.sleep(0.033)  # ~30 FPS cap
+                output_fps = max(5.0, min(30.0, float(SETTINGS.get("stream_output_fps", 20.0))))
+                await asyncio.sleep(1.0 / output_fps)
 
         return StreamingResponse(generator(), media_type="multipart/x-mixed-replace; boundary=frame")
 
@@ -392,7 +403,13 @@ def create_app() -> FastAPI:
             return RedirectResponse(url="/login", status_code=303)
         return templates.TemplateResponse(
             "stream.html",
-            {"request": request, "title": "Phone Camera Stream", "user": user, "lanes": LANES},
+            {
+                "request": request,
+                "title": "Phone Camera Stream",
+                "user": user,
+                "lanes": LANES,
+                "stream_settings": _stream_settings_payload(),
+            },
         )
 
     @app.websocket("/ws/stream/{lane}")

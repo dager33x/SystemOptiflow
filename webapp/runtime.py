@@ -109,13 +109,13 @@ class CameraRuntime:
 
 
 class DetectionRuntime:
-    """Runs YOLO inference at a throttled cadence and caches annotated frames."""
+    """Runs YOLO inference at a throttled cadence and caches detections."""
 
     def __init__(self):
         self.detector = None
         self.last_run: Dict[str, float] = {lane: 0.0 for lane in LANES}
-        self.cache: Dict[str, Tuple[List[Dict[str, Any]], Any]] = {
-            lane: ([], None) for lane in LANES
+        self.cache: Dict[str, List[Dict[str, Any]]] = {
+            lane: [] for lane in LANES
         }
 
     def _load_detector(self):
@@ -127,16 +127,18 @@ class DetectionRuntime:
 
     def process(self, lane: str, frame, throttle_seconds: float):
         now = time.time()
-        cached_detections, cached_frame = self.cache[lane]
-        if now - self.last_run[lane] < throttle_seconds and cached_frame is not None:
-            return cached_detections, cached_frame
+        cached_detections = self.cache[lane]
+        if now - self.last_run[lane] < throttle_seconds:
+            if cached_detections and self.detector is not None:
+                return cached_detections, self.detector.draw_detections(frame, cached_detections)
+            return cached_detections, frame
 
         detector = self._load_detector()
         result = detector.detect(frame)
         detections = result.get("detections", [])
         annotated_frame = result.get("annotated_frame", frame)
         self.last_run[lane] = now
-        self.cache[lane] = (detections, annotated_frame)
+        self.cache[lane] = detections
         return detections, annotated_frame
 
 
@@ -235,7 +237,8 @@ class TrafficRuntime:
                     last_phase_update = current_time
 
                 self._sync_signal_states()
-                time.sleep(0.1)
+                output_fps = max(5.0, min(30.0, float(SETTINGS.get("stream_output_fps", 20.0))))
+                time.sleep(1.0 / output_fps)
             except Exception as exc:
                 self.runtime_error = str(exc)
                 self.logger.exception("Traffic runtime loop error")
