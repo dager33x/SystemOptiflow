@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from .yolo_detector import YOLODetector
+from .red_light_detector import RedLightViolationDetector
 from .deep_q_learning import (
     TrafficLightDQN, TrafficStateBuilder,
     NUM_LANES, PHASE_NS, PHASE_EW, PHASE_LANES,
@@ -31,9 +32,17 @@ from .deep_q_learning import (
 from .dqn_rule_controller import DQNRuleController, ACTION_KEEP, ACTION_SWITCH
 from .sb3_dqn_adapter import SB3DQNAdapter
 
-YELLOW_TIME       = 3
-ALL_RED_TIME      = 2
-SECONDARY_SECS    = 15   # secondary turning lane GREEN window
+# ── Traffic Light Timing (in seconds) ──────────────────────────────────────
+YELLOW_TIME           = 5    # Yellow phase: 5s (was 3s, per requirements)
+ALL_RED_TIME          = 2    # All red clearance: 2s
+SECONDARY_SECS        = 15   # secondary turning lane GREEN window
+YELLOW_REDUCTION      = 5    # Green time reduced by yellow duration for fair cycle
+
+# ── Constants for adaptive green time ──────────────────────────────────────
+BASE_GREEN_TIME_NS    = 15   # North-South base: adjusted down to compensate for yellow
+BASE_GREEN_TIME_EW    = 15   # East-West base: adjusted down to compensate for yellow
+VEHICLE_TIME_FACTOR   = 2    # Each weighted vehicle adds ~2 seconds to green
+MAX_GREEN_CYCLE       = 55   # Max green (55s + 5s yellow = 60s cycle)
 
 SB3_MODEL_PATH = 'smart_traffic_dqn'
 CSV_LOG_PATH   = 'logs/traffic_log.csv'
@@ -47,6 +56,7 @@ class TrafficLightController:
         self.num_lanes = num_lanes
 
         self.yolo = YOLODetector() if load_detector else None
+        self.red_light_detector = RedLightViolationDetector(num_lanes=num_lanes)
         self.sb3_model = SB3DQNAdapter.load(SB3_MODEL_PATH)
         self.dqn = TrafficLightDQN(state_size=10, action_size=2, hidden_size=128)
 
@@ -187,6 +197,26 @@ class TrafficLightController:
 
     def set_screenshot_callback(self, cb):
         self.rule_controller.screenshot_callback = cb
+
+    def detect_red_light_violations(
+        self, frame, lane_id: int, detections, annotate: bool = True
+    ):
+        """Detect red light violations using stop line detection."""
+        light_states = self.get_traffic_light_states()
+        signal_state = light_states.get(lane_id, 'RED')
+        result = self.red_light_detector.detect(
+            frame=frame, detections=detections,
+            signal_state=signal_state, lane_id=lane_id,
+            draw_annotations=annotate,
+        )
+        if result['violation_detected']:
+            if self.red_light_detector.should_log_violation(lane_id):
+                v_count = len(result['violating_vehicles'])
+                self.logger.warning(
+                    f"[RedLight] Lane {self.LANE_NAMES[lane_id]} - "
+                    f"{v_count} vehicle(s) crossed during {signal_state}"
+                )
+        return result
 
     # ------------------------------------------------------------------
     # Secondary lane helpers
