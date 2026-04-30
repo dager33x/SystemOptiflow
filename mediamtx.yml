@@ -40,7 +40,6 @@ authInternalUsers:
       - action: publish
 
   - user: any
-    pass: any
     ips: []
     permissions:
       - action: read
