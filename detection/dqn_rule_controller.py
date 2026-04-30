@@ -46,6 +46,9 @@ EM_CONFIRM_FRAMES  = 3      # frames before emergency is "confirmed"
 EM_COOLDOWN_SECS   = 5.0    # seconds to ignore new triggers after release
 EM_TIMEOUT_SECS    = 10.0   # seconds after last detection → exit emergency
 
+# Per-lane maximum red-wait before forcing a rotation (seconds)
+WAIT_THRESHOLD = 199
+
 # ── YOLO class names ──────────────────────────────────────────────────────────
 CLASS_EMERGENCY = 'emergency_vehicle'
 CLASS_ACCIDENT  = 'z_accident'
@@ -201,6 +204,21 @@ class DQNRuleController:
                 return action
 
         # ── Priority 3: Anti-starvation ───────────────────────────────────
+        # Priority 3A: Per-lane max-red enforcement
+        if wait_times:
+            for lane_idx, wt in enumerate(wait_times):
+                if wt >= WAIT_THRESHOLD:
+                    target_phase = self._lane_to_phase(lane_idx)
+                    if target_phase != active_phase:
+                        audit['rule_fired'] = 'max_red'
+                        audit['details'] = (
+                            f'Lane {lane_idx} waited {wt:.0f}s >= {WAIT_THRESHOLD}s — forcing switch'
+                        )
+                        self.logger.warning(
+                            f'[MaxRed] Lane {lane_idx} waited {wt:.0f}s — forcing switch to phase {target_phase}'
+                        )
+                        return ACTION_SWITCH
+
         other_phase = PHASE_EW if active_phase == PHASE_NS else PHASE_NS
         if self.phase_wait.get(other_phase, 0.0) >= STARVATION_THRESHOLD:
             audit['rule_fired'] = 'starvation'
