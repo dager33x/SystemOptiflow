@@ -1,10 +1,11 @@
+import asyncio
 import logging
 import random
 import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 from utils.app_config import SETTINGS
 
@@ -157,6 +158,8 @@ class TrafficRuntime:
         self.runtime_error: Optional[str] = None
         self.alerts: Deque[Dict[str, Any]] = deque(maxlen=50)
         self.browser_frames: Dict[str, Any] = {lane: None for lane in LANES}
+        self._viewer_queues: Dict[str, Set[asyncio.Queue]] = {lane: set() for lane in LANES}
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.states: Dict[str, Dict[str, Any]] = {
             lane: {
                 "lane": lane,
@@ -332,6 +335,8 @@ class TrafficRuntime:
             state["detections"] = detections
             state["latest_jpeg"] = jpeg_bytes
             state["latest_jpeg_at"] = current_time
+
+        self._notify_viewers(lane, jpeg_bytes)
         return vehicle_count
 
     def _throttled(self, state: Dict[str, Any], key: str, current_time: float, interval: float = 15.0) -> bool:
@@ -393,6 +398,32 @@ class TrafficRuntime:
             "alerts": list(self.alerts),
             "controller": controller_status,
         }
+
+    def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+
+    def register_viewer(self, lane: str, queue: asyncio.Queue) -> None:
+        self._viewer_queues[lane].add(queue)
+
+    def unregister_viewer(self, lane: str, queue: asyncio.Queue) -> None:
+        self._viewer_queues[lane].discard(queue)
+
+    def _notify_viewers(self, lane: str, jpeg_bytes: Optional[bytes]) -> None:
+        """Push a new JPEG to all WebSocket viewers of this lane (thread-safe)."""
+        if not jpeg_bytes or not self._loop:
+            return
+        for q in list(self._viewer_queues[lane]):
+            def _enqueue(q: asyncio.Queue = q, data: bytes = jpeg_bytes) -> None:
+                if q.full():
+                    try:
+                        q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                try:
+                    q.put_nowait(data)
+                except asyncio.QueueFull:
+                    pass
+            self._loop.call_soon_threadsafe(_enqueue)
 
     def inject_browser_frame(self, lane: str, jpeg_bytes: bytes) -> None:
         """Accept a JPEG frame pushed from a browser WebSocket client."""

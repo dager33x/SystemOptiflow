@@ -32,7 +32,7 @@
             <span id="status-{{ lane }}" style="font-size:.8rem;color:var(--muted)">waiting</span>
           </div>
           <div style="position:relative">
-            <img src="/api/streams/{{ lane }}.mjpeg" alt="{{ lane }} stream" loading="lazy" id="img-{{ lane }}" onclick="openModal('{{ lane }}')">
+            <canvas id="img-{{ lane }}" onclick="openModal('{{ lane }}')" style="width:100%;display:block;cursor:pointer;background:#111;border-radius:4px"></canvas>
             <span class="signal-pill RED" id="pill-{{ lane }}">RED</span>
           </div>
           <div class="detect-chips" id="chips-{{ lane }}"></div>
@@ -148,6 +148,38 @@
       await fetch("/api/auth/logout", { method: "POST" });
       window.location.href = "/login";
     });
+
+    // Per-lane WebSocket push viewers (replaces MJPEG polling)
+    const viewCanvases = {};
+    const viewCtxs = {};
+
+    function connectViewSocket(lane) {
+      const canvas = document.getElementById(`img-${lane}`);
+      if (!canvas) return;
+      viewCanvases[lane] = canvas;
+      viewCtxs[lane] = canvas.getContext("2d");
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(`${proto}//${location.host}/ws/view/${lane}`);
+      ws.binaryType = "blob";
+      ws.onmessage = async ({ data }) => {
+        try {
+          const bitmap = await createImageBitmap(data);
+          const c = viewCanvases[lane];
+          if (c.width !== bitmap.width || c.height !== bitmap.height) {
+            c.width = bitmap.width;
+            c.height = bitmap.height;
+          }
+          viewCtxs[lane].drawImage(bitmap, 0, 0);
+          bitmap.close();
+        } catch (_) {}
+      };
+      ws.onclose = () => {
+        // Reconnect after 2 s if the connection drops
+        setTimeout(() => connectViewSocket(lane), 2000);
+      };
+    }
+
+    ["north", "south", "east", "west"].forEach(connectViewSocket);
   </script>
 </body>
 </html>

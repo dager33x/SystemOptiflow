@@ -96,7 +96,7 @@
     let ws = null;
     let stream = null;
     let active = false;
-    let frameInFlight = false;
+    let frameInFlight = false;  // prevents overlapping encodes, not the loop clock
 
     function normalizedSettings() {
       return {
@@ -188,12 +188,10 @@
     async function runStreamingLoop(settings) {
       const intervalMs = 1000 / settings.captureFps;
       while (active && ws && ws.readyState === WebSocket.OPEN) {
-        const startedAt = performance.now();
-        if (!frameInFlight) {
-          await captureAndSend(settings.quality);
-        }
-        const delay = Math.max(0, intervalMs - (performance.now() - startedAt));
-        await new Promise(resolve => setTimeout(resolve, delay));
+        // Fire-and-forget: don't await encode/send — keep the timer ticking at
+        // exactly captureFps regardless of how long toBlob() takes.
+        void captureAndSend(settings.quality);
+        await new Promise(resolve => setTimeout(resolve, intervalMs));
       }
     }
 

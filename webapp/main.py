@@ -98,6 +98,7 @@ def create_app() -> FastAPI:
         if os.getenv("OPTIFLOW_SKIP_RUNTIME_STARTUP") == "1":
             logger.info("Skipping runtime startup due to OPTIFLOW_SKIP_RUNTIME_STARTUP=1")
             return
+        runtime.set_event_loop(asyncio.get_event_loop())
         runtime.start()
 
     @app.on_event("shutdown")
@@ -434,6 +435,29 @@ def create_app() -> FastAPI:
         finally:
             settings_service.apply({f"camera_source_{lane}": "Simulated"})
             runtime.browser_frames[lane] = None
+
+    @app.websocket("/ws/view/{lane}")
+    async def view_ws(websocket: WebSocket, lane: str):
+        if lane not in LANES:
+            await websocket.close(code=1008)
+            return
+        user = websocket.session.get("user")
+        if not user:
+            await websocket.close(code=1008)
+            return
+        await websocket.accept()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=3)
+        runtime.register_viewer(lane, queue)
+        try:
+            while True:
+                frame = await queue.get()
+                await websocket.send_bytes(frame)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+        finally:
+            runtime.unregister_viewer(lane, queue)
 
     @app.websocket("/ws/dashboard")
     async def dashboard_ws(websocket: WebSocket):

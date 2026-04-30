@@ -38,6 +38,11 @@ SETTINGS = {
     "camera_source_east":  "Simulated",
     "camera_source_west":  "Simulated",
     
+    # ── Dashboard viewer protocol ─────────────────────────────────────────────
+    # "websocket" → server pushes frames via /ws/view/{lane} (low latency)
+    # "mjpeg"     → legacy multipart HTTP stream /api/streams/{lane}.mjpeg
+    "viewing_protocol": "websocket",
+
     # ── RTMP / ngrok metadata (used by Settings quick-setup panel) ────────────
     "ngrok_rtmp_base": "",
 

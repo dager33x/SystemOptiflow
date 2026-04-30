@@ -80,6 +80,20 @@
           </label>
         </div>
       </div>
+
+      <div class="settings-section">
+        <h3>Dashboard Viewing Protocol</h3>
+        <p class="hint">WebSocket Push delivers frames instantly as they are ready. MJPEG is the legacy fallback (requires a page reload to change).</p>
+        <div class="settings-grid" style="margin-top:16px">
+          <label class="settings-field">
+            <span>Viewing protocol</span>
+            <select id="viewing_protocol">
+              <option value="websocket">WebSocket Push (low-latency, recommended)</option>
+              <option value="mjpeg">MJPEG (legacy)</option>
+            </select>
+          </label>
+        </div>
+      </div>
     </div>
   </main>
 
@@ -109,6 +123,8 @@
         const el = document.getElementById(k);
         if (el && s[k] != null) el.value = s[k];
       });
+      const vp = document.getElementById("viewing_protocol");
+      if (vp) vp.value = s.viewing_protocol ?? "websocket";
     }
 
     loadSettings();
@@ -128,6 +144,9 @@
       updates.browser_capture_fps = document.getElementById("browser_capture_fps")?.value ?? "20";
       updates.stream_output_fps = document.getElementById("stream_output_fps")?.value ?? "20";
       updates.browser_stream_jpeg_quality = document.getElementById("browser_stream_jpeg_quality")?.value ?? "0.6";
+      updates.browser_stream_width = document.getElementById("browser_stream_width")?.value ?? "640";
+      updates.browser_stream_height = document.getElementById("browser_stream_height")?.value ?? "480";
+      updates.viewing_protocol = document.getElementById("viewing_protocol")?.value ?? "websocket";
       updates.browser_stream_width = document.getElementById("browser_stream_width")?.value ?? "640";
       updates.browser_stream_height = document.getElementById("browser_stream_height")?.value ?? "480";
 
