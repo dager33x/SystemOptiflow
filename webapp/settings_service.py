@@ -33,12 +33,12 @@ FLOAT_RANGES = {
     "ai_throttle_seconds": (0.05, 5.0, 0.2),
     "browser_capture_fps": (5.0, 30.0, 20.0),
     "stream_output_fps": (5.0, 30.0, 20.0),
-    "browser_stream_jpeg_quality": (0.3, 0.9, 0.6),
+    "browser_stream_jpeg_quality": (0.3, 0.9, 0.85),
 }
 
 INT_RANGES = {
-    "browser_stream_width": (160, 1920, 640),
-    "browser_stream_height": (120, 1080, 480),
+    "browser_stream_width": (160, 1920, 1280),
+    "browser_stream_height": (120, 1080, 720),
 }
 
 

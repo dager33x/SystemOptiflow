@@ -162,20 +162,25 @@
       setStatus("connecting", "Connecting...");
       toggleBtn.disabled = true;
       laneSelect.disabled = true;
-      canvas.width = settings.width;
-      canvas.height = settings.height;
 
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: "environment",
-            width: { ideal: settings.width },
-            height: { ideal: settings.height },
+            width:  { ideal: 1280 },
+            height: { ideal: 720 },
             frameRate: { ideal: settings.captureFps, max: settings.captureFps },
           },
           audio: false,
         });
         preview.srcObject = stream;
+        // Set canvas to the camera's actual resolution so no stretching occurs
+        await new Promise(resolve => {
+          if (preview.readyState >= 1) { resolve(); return; }
+          preview.onloadedmetadata = resolve;
+        });
+        canvas.width  = preview.videoWidth  || 1280;
+        canvas.height = preview.videoHeight || 720;
       } catch (_err) {
         setStatus("error", "Camera denied");
         toggleBtn.textContent = "Start Streaming";
