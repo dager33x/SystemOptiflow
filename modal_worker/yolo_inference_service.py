@@ -7,6 +7,7 @@ from fastapi import File, Header, HTTPException, UploadFile
 
 MODEL_PATH = "/root/models/best.pt"
 API_TOKEN_ENV = "OPTIFLOW_MODAL_TOKEN"
+GPU_TYPE = "A10"
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -24,7 +25,12 @@ image = (
 app = modal.App("optiflow-yolo-inference", image=image)
 
 
-@app.cls(gpu="L4", timeout=60, scaledown_window=300)
+@app.cls(
+    gpu=GPU_TYPE,
+    timeout=60,
+    scaledown_window=300,
+    secrets=[modal.Secret.from_name("optiflow-modal-token")],
+)
 class YoloInferenceService:
     @modal.enter()
     def load_model(self) -> None:
@@ -32,8 +38,7 @@ class YoloInferenceService:
 
         self.model = YOLO(MODEL_PATH)
 
-    @modal.method()
-    def detect_bytes(self, image_bytes: bytes) -> dict[str, Any]:
+    def _detect_bytes(self, image_bytes: bytes) -> dict[str, Any]:
         import cv2
         import numpy as np
 
@@ -83,22 +88,20 @@ class YoloInferenceService:
             },
         }
 
+    @modal.fastapi_endpoint(method="POST", docs=True)
+    async def detect(
+        self,
+        file: UploadFile = File(...),
+        x_optiflow_token: str | None = Header(default=None),
+    ):
+        expected_token = os.environ.get(API_TOKEN_ENV)
 
-@app.function(timeout=60, secrets=[modal.Secret.from_name("optiflow-modal-token")])
-@modal.fastapi_endpoint(method="POST", docs=True)
-async def detect(
-    file: UploadFile = File(...),
-    x_optiflow_token: str | None = Header(default=None),
-):
-    expected_token = os.environ.get(API_TOKEN_ENV)
+        if expected_token and x_optiflow_token != expected_token:
+            raise HTTPException(status_code=401, detail="Invalid Optiflow token.")
 
-    if expected_token and x_optiflow_token != expected_token:
-        raise HTTPException(status_code=401, detail="Invalid Optiflow token.")
+        image_bytes = await file.read()
 
-    image_bytes = await file.read()
+        if not image_bytes:
+            raise HTTPException(status_code=400, detail="Empty image upload.")
 
-    if not image_bytes:
-        raise HTTPException(status_code=400, detail="Empty image upload.")
-
-    service = YoloInferenceService()
-    return await service.detect_bytes.remote.aio(image_bytes)
+        return self._detect_bytes(image_bytes)
