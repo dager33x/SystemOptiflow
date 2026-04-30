@@ -114,8 +114,23 @@ class CameraRuntime:
 class DetectionRuntime:
     """Runs YOLO inference at a throttled cadence and caches detections."""
 
-    def __init__(self):
+    DETECTION_COLORS = {
+        "car": (0, 255, 0),
+        "motorcycle": (0, 255, 255),
+        "bus": (255, 255, 0),
+        "truck": (0, 165, 255),
+        "bicycle": (255, 0, 255),
+        "emergency_vehicle": (0, 0, 255),
+        "jeepney": (128, 0, 128),
+        "z_accident": (0, 0, 200),
+        "z_jaywalker": (0, 140, 255),
+        "z_non-jaywalker": (180, 180, 180),
+    }
+
+    def __init__(self, remote_yolo_client=None):
+        self.logger = logging.getLogger(__name__)
         self.detector = None
+        self.remote_yolo_client = remote_yolo_client
         self.last_run: Dict[str, float] = {lane: 0.0 for lane in LANES}
         self.cache: Dict[str, List[Dict[str, Any]]] = {
             lane: [] for lane in LANES
@@ -128,17 +143,91 @@ class DetectionRuntime:
             self.detector = YOLODetector("best.pt")
         return self.detector
 
+    def _load_remote_yolo_client(self):
+        if self.remote_yolo_client is None:
+            from detection.remote_yolo_client import RemoteYoloClient
+
+            self.remote_yolo_client = RemoteYoloClient.from_environment()
+        return self.remote_yolo_client
+
+    def _draw_detections(self, frame, detections: List[Dict[str, Any]], lane: str):
+        import cv2
+
+        with timed_stage("draw_annotations", lane=lane, detections=len(detections), source="runtime"):
+            annotated = frame.copy()
+            for detection in detections:
+                bbox = detection.get("bbox")
+                if not bbox or len(bbox) != 4:
+                    continue
+
+                try:
+                    x1, y1, x2, y2 = [int(value) for value in bbox]
+                except (TypeError, ValueError):
+                    continue
+
+                class_name = detection.get("class_name", "object")
+                confidence = float(detection.get("confidence", 1.0) or 1.0)
+                color = self.DETECTION_COLORS.get(class_name, (0, 255, 0))
+                thickness = 3 if class_name in ("emergency_vehicle", "z_accident") else 2
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), color, thickness)
+
+                label = f"{class_name} {confidence:.2f}"
+                (text_width, text_height), _ = cv2.getTextSize(
+                    label,
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    2,
+                )
+                label_top = max(0, y1 - text_height - 8)
+                cv2.rectangle(
+                    annotated,
+                    (x1, label_top),
+                    (x1 + text_width + 4, y1),
+                    color,
+                    -1,
+                )
+                cv2.putText(
+                    annotated,
+                    label,
+                    (x1 + 2, max(12, y1 - 5)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 0, 0),
+                    2,
+                )
+            return annotated
+
+    def _detect_remotely(self, lane: str, frame):
+        remote_client = self._load_remote_yolo_client()
+        if not remote_client.is_enabled_for_lane(lane):
+            return None
+
+        try:
+            result = remote_client.detect(frame, lane_id=lane)
+        except Exception as exc:
+            self.logger.warning("[RemoteYOLO] Unexpected failure for lane=%s: %s", lane, exc)
+            return None
+
+        if not result or not result.get("success"):
+            return None
+
+        detections = result.get("detections", [])
+        return detections, self._draw_detections(frame, detections, lane)
+
     def process(self, lane: str, frame, throttle_seconds: float):
         now = time.time()
         cached_detections = self.cache[lane]
         if now - self.last_run[lane] < throttle_seconds:
-            if cached_detections and self.detector is not None:
-                return cached_detections, self.detector.draw_detections(
-                    frame,
-                    cached_detections,
-                    lane_id=lane,
-                )
+            if cached_detections:
+                return cached_detections, self._draw_detections(frame, cached_detections, lane)
             return cached_detections, frame
+
+        remote_result = self._detect_remotely(lane, frame)
+        if remote_result is not None:
+            detections, annotated_frame = remote_result
+            self.last_run[lane] = now
+            self.cache[lane] = detections
+            return detections, annotated_frame
 
         detector = self._load_detector()
         with timed_stage("yolo_detection_total", lane=lane):
