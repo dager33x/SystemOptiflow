@@ -568,7 +568,7 @@ class MainController:
                         if enable_detection:
                             # ---------------------------
                             # PERFORMANCE OPTIMIZATION
-                            # Throttle AI to ~10 FPS (every 0.1s)
+                            # Throttle AI inference so video rendering stays responsive.
                             # ---------------------------
                             current_ai_time = time.time()
                             last_ai_time = state.get('last_ai_time', 0)
@@ -576,7 +576,7 @@ class MainController:
                             # Determine if we should run fresh detection
                             # Throttle YOLO inference - gives the UI display loop
                             # more time per cycle so video rendering stays smooth
-                            throttle_val = SETTINGS.get("ai_throttle_seconds", 0.125)
+                            throttle_val = SETTINGS.get("ai_throttle_seconds", 0.5)
                             should_detect = (current_ai_time - last_ai_time) > throttle_val
                             
                             if should_detect:

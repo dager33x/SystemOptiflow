@@ -9,7 +9,7 @@ SETTINGS = {
     "enable_detection": True,      # Run the AI model?
     "show_bounding_boxes": True,   # Draw boxes around cars?
     "show_confidence": True,       # Show how sure the AI is (e.g. 95%)?
-    "ai_throttle_seconds": 0.2,    # Optimize inference throttle (default 0.2 = ~5 FPS logic)
+    "ai_throttle_seconds": 0.5,    # Optimize inference throttle (default 0.5 = ~2 FPS logic)
     "enable_video_enhancement": False, # Apply Unsharp mask (expensive on CPU)
     "browser_capture_fps": 20.0,   # Browser phone upload cadence
     "stream_output_fps": 20.0,     # Runtime and MJPEG output cadence
