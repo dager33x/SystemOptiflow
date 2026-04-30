@@ -1,0 +1,10 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+supabase
+python-dotenv==1.0.0
+httpx
+postgrest-py
+realtime-py
+gotrue
+requests==2.31.0
+customtkinter==5.2.2

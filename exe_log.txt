@@ -1,0 +1,1 @@
+INFO:models.database:Supabase client initialized successfully
