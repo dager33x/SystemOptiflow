@@ -9,6 +9,7 @@ from datetime import datetime
 from detection.camera_manager import CameraManager
 from detection.traffic_controller import TrafficLightController
 from detection.yolo_detector import YOLODetector
+from utils.dashboard_frame_buffer import DashboardFrameBuffer
 from utils.performance_monitor import timed_stage
 from views.pages import (
     DashboardPage, TrafficReportsPage, IncidentHistoryPage,
@@ -91,6 +92,9 @@ class MainController:
 
         # Per-lane frame cache so the rule controller can capture the right frame
         self._lane_frames: dict = {i: None for i in range(4)}
+        self.dashboard_frame_buffer = DashboardFrameBuffer(self.directions)
+        self._dashboard_refresh_after_id = None
+        self._dashboard_refresh_ms = 150
         
         # Traffic States for each direction
         self.states = {}
@@ -148,6 +152,28 @@ class MainController:
             if self.current_user and self.current_user.get('role') == 'admin':
                 if self.auth_controller:
                     self.pages['admin_users'] = AdminUsersPage(self.view.content_area, self.auth_controller)
+            self._start_dashboard_refresh_loop()
+
+    def _start_dashboard_refresh_loop(self):
+        if self._dashboard_refresh_after_id is None and self.is_running:
+            self._dashboard_refresh_after_id = self.root.after(
+                self._dashboard_refresh_ms,
+                self._refresh_dashboard_from_buffer,
+            )
+
+    def _refresh_dashboard_from_buffer(self):
+        self._dashboard_refresh_after_id = None
+        if not self.is_running:
+            return
+
+        page = self.current_page
+        if page and hasattr(page, 'update_camera_feed'):
+            for direction, (frame, dash_data) in self.dashboard_frame_buffer.pop_latest().items():
+                page.update_camera_feed(frame, dash_data, direction)
+        else:
+            self.dashboard_frame_buffer.pop_latest()
+
+        self._start_dashboard_refresh_loop()
     
     def get_active_cameras(self):
         """Get list of active cameras for the sidebar"""
@@ -847,17 +873,12 @@ class MainController:
                             'signal_state': state['signal_state'],
                             'time_remaining': max(0, state['time_remaining'])
                         }
-                        
-                        # Create a copy of the frame to avoid race conditions
+
                         with timed_stage("frame_copy", lane=direction, target="dashboard"):
                             frame_copy = annotated_frame.copy() if annotated_frame is not None else None
-                        
-                        # Schedule UI update on main thread
-                        with timed_stage("ui_update_scheduling", lane=direction, target="dashboard"):
-                            self.root.after(0, lambda f=frame_copy, d=dash_data, dir=direction: 
-                                self.current_page.update_camera_feed(f, d, dir) 
-                                if self.current_page and hasattr(self.current_page, 'update_camera_feed') else None
-                            )
+
+                        with timed_stage("ui_update_scheduling", lane=direction, target="dashboard_buffer"):
+                            self.dashboard_frame_buffer.store(direction, frame_copy, dash_data)
                         
                 except Exception as e:
                     self.logger.error(f"Error processing camera ({direction}): {e}", exc_info=True)
@@ -1042,6 +1063,12 @@ class MainController:
     def stop_camera(self):
         """Stop camera feed"""
         self.is_running = False
+        if self._dashboard_refresh_after_id is not None:
+            try:
+                self.root.after_cancel(self._dashboard_refresh_after_id)
+            except Exception:
+                pass
+            self._dashboard_refresh_after_id = None
         for cam in self.camera_managers.values():
             cam.release()
         

@@ -20,6 +20,7 @@ from views.pages import (
 )
 from websocket import WebSocketApp
 
+from utils.dashboard_frame_buffer import DashboardFrameBuffer
 from utils.performance_monitor import timed_stage
 
 from .api_client import APIClientError, RemoteAPIClient
@@ -157,6 +158,9 @@ class RemoteMainController:
             "runtime_error": None,
         }
         self.latest_frames: Dict[str, Optional[np.ndarray]] = {lane: None for lane in LANES}
+        self.dashboard_frame_buffer = DashboardFrameBuffer(LANES)
+        self._dashboard_refresh_after_id = None
+        self._dashboard_refresh_ms = 150
         self.last_viewed_report_count = 0
         self.session_violations = 0
         self.directions = LANES[:]
@@ -175,6 +179,28 @@ class RemoteMainController:
             )
             if self.current_user and self.current_user.get("role") == "admin":
                 self.pages["admin_users"] = AdminUsersPage(self.view.content_area, self.auth_controller)
+            self._start_dashboard_refresh_loop()
+
+    def _start_dashboard_refresh_loop(self):
+        if self._dashboard_refresh_after_id is None and self.is_running:
+            self._dashboard_refresh_after_id = self.root.after(
+                self._dashboard_refresh_ms,
+                self._refresh_dashboard_from_buffer,
+            )
+
+    def _refresh_dashboard_from_buffer(self):
+        self._dashboard_refresh_after_id = None
+        if not self.is_running:
+            return
+
+        page = self.current_page
+        if page and hasattr(page, "update_camera_feed"):
+            for lane, (frame, lane_state) in self.dashboard_frame_buffer.pop_latest().items():
+                page.update_camera_feed(frame, lane_state, lane)
+        else:
+            self.dashboard_frame_buffer.pop_latest()
+
+        self._start_dashboard_refresh_loop()
 
     def update_sidebar_navigation(self):
         if self.view and hasattr(self.view, "sidebar"):
@@ -312,10 +338,7 @@ class RemoteMainController:
                                 frame_copy = frame.copy()
                                 lane_state_copy = lane_state.copy()
                             with timed_stage("ui_update_scheduling", lane=lane, target="remote_dashboard"):
-                                self.root.after(
-                                    0,
-                                    lambda f=frame_copy, d=lane_state_copy, l=lane: self.current_page.update_camera_feed(f, d, l),
-                                )
+                                self.dashboard_frame_buffer.store(lane, frame_copy, lane_state_copy)
             except Exception:
                 time.sleep(3)
             finally:
@@ -350,6 +373,12 @@ class RemoteMainController:
 
     def stop(self):
         self.is_running = False
+        if self._dashboard_refresh_after_id is not None:
+            try:
+                self.root.after_cancel(self._dashboard_refresh_after_id)
+            except Exception:
+                pass
+            self._dashboard_refresh_after_id = None
         try:
             if self.ws_app:
                 self.ws_app.close()
