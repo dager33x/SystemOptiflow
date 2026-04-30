@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings · SystemOptiflow</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="app-body">
+  <nav class="app-nav">
+    <span class="brand">SystemOptiflow</span>
+    <div class="app-nav-links">
+      <a href="/dashboard"><span>Dashboard</span></a>
+      <a href="/violations"><span>Violations</span></a>
+      <a href="/stream" class="stream-link">📱 <span>Stream</span></a>
+      <a href="/settings" class="active"><span>Settings</span></a>
+    </div>
+    <div class="app-nav-right">
+      <span class="badge">{{ user.username }}</span>
+      <button id="logout-button" class="ghost" style="width:auto;padding:8px 14px">Log out</button>
+    </div>
+  </nav>
+
+  <main style="padding:20px 24px;padding-bottom:80px">
+    <div class="panel settings-page">
+      <div class="settings-section">
+        <h3>Camera Sources</h3>
+        <p class="hint">Examples: <code>Simulated</code> · <code>Camera 0</code> · <code>rtsp://mediamtx:8554/north</code> · <code>http://phone-ip:8080/video</code></p>
+        <div class="settings-grid" style="margin-top:16px">
+          {% for lane in lanes %}
+          <label class="settings-field">
+            <span>{{ lane|upper }}</span>
+            <input type="text" id="src-{{ lane }}" placeholder="Simulated">
+          </label>
+          {% endfor %}
+          <label class="settings-field">
+            <span>RTSP transport</span>
+            <select id="src-rtsp-transport">
+              <option value="tcp">TCP (recommended)</option>
+              <option value="udp">UDP</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>AI Detection</h3>
+        <div class="toggle-field"><span>Enable detection</span><input type="checkbox" id="enable_detection"></div>
+        <div class="toggle-field"><span>Show bounding boxes</span><input type="checkbox" id="show_bounding_boxes"></div>
+        <div class="toggle-field"><span>Show confidence scores</span><input type="checkbox" id="show_confidence"></div>
+        <label class="settings-field" style="margin-top:16px">
+          <span>AI throttle (seconds between processed frames)</span>
+          <input type="number" id="ai_throttle_seconds" min="0.05" max="5" step="0.05" style="max-width:180px">
+        </label>
+      </div>
+    </div>
+  </main>
+
+  <div class="save-bar">
+    <button id="settings-save">Save &amp; apply</button>
+    <span id="settings-msg" style="font-size:.9rem"></span>
+  </div>
+
+  <script>
+    async function loadSettings() {
+      const res = await fetch("/api/settings");
+      if (!res.ok) return;
+      const { settings: s } = await res.json();
+      ["north","south","east","west"].forEach(l => {
+        const el = document.getElementById(`src-${l}`);
+        if (el) el.value = s[`camera_source_${l}`] ?? "Simulated";
+      });
+      const t = document.getElementById("src-rtsp-transport");
+      if (t) t.value = s.rtsp_transport ?? "tcp";
+      ["enable_detection","show_bounding_boxes","show_confidence"].forEach(k => {
+        const el = document.getElementById(k);
+        if (el) el.checked = s[k] === "true" || s[k] === true;
+      });
+      const thr = document.getElementById("ai_throttle_seconds");
+      if (thr) thr.value = s.ai_throttle_seconds ?? "0.2";
+    }
+
+    loadSettings();
+
+    document.getElementById("settings-save").addEventListener("click", async () => {
+      const msg = document.getElementById("settings-msg");
+      const updates = {};
+      ["north","south","east","west"].forEach(l => {
+        const v = (document.getElementById(`src-${l}`)?.value ?? "").trim();
+        updates[`camera_source_${l}`] = v || "Simulated";
+      });
+      updates.rtsp_transport = document.getElementById("src-rtsp-transport")?.value ?? "tcp";
+      ["enable_detection","show_bounding_boxes","show_confidence"].forEach(k => {
+        updates[k] = document.getElementById(k)?.checked ? "true" : "false";
+      });
+      updates.ai_throttle_seconds = document.getElementById("ai_throttle_seconds")?.value ?? "0.2";
+
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings: updates }),
+      });
+      if (res.ok) {
+        msg.style.color = "var(--accent-2)";
+        msg.textContent = "Saved! Streams will reconnect within 30s.";
+      } else {
+        msg.style.color = "var(--danger)";
+        msg.textContent = "Save failed.";
+      }
+      setTimeout(() => { msg.textContent = ""; }, 4000);
+    });
+
+    document.getElementById("logout-button")?.addEventListener("click", async () => {
+      await fetch("/api/auth/logout", { method: "POST" });
+      window.location.href = "/login";
+    });
+  </script>
+</body>
+</html>

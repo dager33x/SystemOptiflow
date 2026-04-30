@@ -365,6 +365,26 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Violation image file is unavailable.")
         return FileResponse(local_path)
 
+    @app.get("/violations", response_class=HTMLResponse)
+    async def violations_page(request: Request):
+        user = request.session.get("user")
+        if not user:
+            return RedirectResponse(url="/login", status_code=303)
+        return templates.TemplateResponse(
+            "violations.html",
+            {"request": request, "title": "Violations · SystemOptiflow", "user": user},
+        )
+
+    @app.get("/settings", response_class=HTMLResponse)
+    async def settings_page(request: Request):
+        user = request.session.get("user")
+        if not user:
+            return RedirectResponse(url="/login", status_code=303)
+        return templates.TemplateResponse(
+            "settings.html",
+            {"request": request, "title": "Settings · SystemOptiflow", "user": user, "lanes": LANES},
+        )
+
     @app.get("/stream", response_class=HTMLResponse)
     async def stream_page(request: Request):
         user = request.session.get("user")

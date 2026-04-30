@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Violations · SystemOptiflow</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="app-body">
+  <nav class="app-nav">
+    <span class="brand">SystemOptiflow</span>
+    <div class="app-nav-links">
+      <a href="/dashboard"><span>Dashboard</span></a>
+      <a href="/violations" class="active"><span>Violations</span></a>
+      <a href="/stream" class="stream-link">📱 <span>Stream</span></a>
+      <a href="/settings"><span>Settings</span></a>
+    </div>
+    <div class="app-nav-right">
+      <span class="badge">{{ user.username }}</span>
+      <button id="logout-button" class="ghost" style="width:auto;padding:8px 14px">Log out</button>
+    </div>
+  </nav>
+
+  <main style="padding:20px 24px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+      <div>
+        <h2 style="margin:0">Violations</h2>
+        <p style="color:var(--muted);margin:4px 0 0">Persisted violation evidence.</p>
+      </div>
+      {% if user.role == "admin" %}
+      <button id="clear-btn" style="width:auto;padding:8px 20px;background:rgba(255,123,114,.15);color:var(--danger);border-color:rgba(255,123,114,.4)">Clear all</button>
+      {% endif %}
+    </div>
+    <div id="evidence-grid" class="evidence-grid"><p style="color:var(--muted)">Loading…</p></div>
+  </main>
+
+  <script>
+    async function load() {
+      const res = await fetch("/api/violations?limit=100");
+      if (!res.ok) return;
+      const { items } = await res.json();
+      const grid = document.getElementById("evidence-grid");
+      if (!items || !items.length) {
+        grid.innerHTML = '<p style="color:var(--muted)">No violations recorded.</p>';
+        return;
+      }
+      grid.innerHTML = items.map(v => `
+        <div class="evidence-card">
+          <img src="/api/violations/${v.violation_id}/image" loading="lazy" onerror="this.style.display='none'">
+          <div class="evidence-card-body">
+            <strong>${v.violation_type || "Unknown"}</strong>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <span class="chip chip-lane">Lane ${v.lane_id ?? "?"}</span>
+              <span class="chip chip-type">${v.severity || "violation"}</span>
+            </div>
+            <span>${new Date(v.timestamp).toLocaleString()}</span>
+          </div>
+        </div>`).join("");
+    }
+
+    load();
+
+    document.getElementById("logout-button")?.addEventListener("click", async () => {
+      await fetch("/api/auth/logout", { method: "POST" });
+      window.location.href = "/login";
+    });
+
+    document.getElementById("clear-btn")?.addEventListener("click", async () => {
+      if (!confirm("Delete all violations? This cannot be undone.")) return;
+      await fetch("/api/violations", { method: "DELETE" });
+      load();
+    });
+  </script>
+</body>
+</html>

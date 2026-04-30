@@ -79,6 +79,13 @@
   </main>
 
   <script>
+    // Pre-select lane from URL param
+    const urlLane = new URLSearchParams(location.search).get("lane");
+    if (urlLane) {
+      const opt = document.querySelector(`#lane-select option[value="${urlLane}"]`);
+      if (opt) opt.selected = true;
+    }
+
     const preview   = document.getElementById("preview");
     const canvas    = document.getElementById("canvas");
     const ctx       = canvas.getContext("2d");

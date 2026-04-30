@@ -6,35 +6,38 @@
   <title>{{ title }}</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
-<body class="dashboard-body">
-  <header class="topbar">
-    <div>
-      <p class="eyebrow">SystemOptiflow</p>
-      <h1>Live traffic dashboard</h1>
+<body class="app-body">
+  <nav class="app-nav">
+    <span class="brand">SystemOptiflow</span>
+    <div class="app-nav-links">
+      <a href="/dashboard" class="active"><span>Dashboard</span></a>
+      <a href="/violations"><span>Violations</span></a>
+      <a href="/stream" class="stream-link">📱 <span>Stream</span></a>
+      <a href="/settings"><span>Settings</span></a>
     </div>
-    <div class="topbar-actions">
-      <span class="badge">{{ user.username }} - {{ user.role }}</span>
-      <button id="logout-button" class="ghost">Log out</button>
+    <div class="app-nav-right">
+      <span class="badge">{{ user.username }}</span>
+      <button id="logout-button" class="ghost" style="width:auto;padding:8px 14px">Log out</button>
     </div>
-  </header>
+  </nav>
 
-  <main class="dashboard-grid">
-    <section class="panel panel-wide">
-      <div class="panel-header">
-        <h2>Lane streams</h2>
-        <p>MJPEG preview backed by the shared runtime buffer.</p>
-      </div>
+  <main class="app-main">
+    <section class="panel panel-wide" style="grid-column:1/-1">
+      <div class="panel-header"><h2>Lane streams</h2><p>Live annotated feeds — click any frame to expand.</p></div>
       <div class="camera-grid">
         {% for lane in lanes %}
-        <article class="camera-card">
+        <article class="camera-card" id="card-{{ lane }}">
           <div class="camera-meta">
-            <strong>{{ lane|upper }}</strong>
-            <span id="status-{{ lane }}">waiting</span>
+            <span><span class="camera-status-dot simulated" id="dot-{{ lane }}"></span><strong>{{ lane|upper }}</strong></span>
+            <span id="status-{{ lane }}" style="font-size:.8rem;color:var(--muted)">waiting</span>
           </div>
-          <img src="/api/streams/{{ lane }}.mjpeg" alt="{{ lane }} stream" loading="lazy">
+          <div style="position:relative">
+            <img src="/api/streams/{{ lane }}.mjpeg" alt="{{ lane }} stream" loading="lazy" id="img-{{ lane }}" onclick="openModal('{{ lane }}')">
+            <span class="signal-pill RED" id="pill-{{ lane }}">RED</span>
+          </div>
+          <div class="detect-chips" id="chips-{{ lane }}"></div>
           <div class="camera-stats">
             <span id="count-{{ lane }}">0 vehicles</span>
-            <span id="signal-{{ lane }}">RED</span>
             <span id="timer-{{ lane }}">0.0s</span>
           </div>
         </article>
@@ -43,10 +46,7 @@
     </section>
 
     <section class="panel">
-      <div class="panel-header">
-        <h2>Controller</h2>
-        <p>Signal state and runtime health.</p>
-      </div>
+      <div class="panel-header"><h2>Controller</h2><p>Signal state and runtime health.</p></div>
       <dl class="metric-list">
         <div><dt>Database</dt><dd id="db-status">unknown</dd></div>
         <div><dt>Phase</dt><dd id="phase-name">-</dd></div>
@@ -57,134 +57,94 @@
     </section>
 
     <section class="panel">
-      <div class="panel-header">
-        <h2>Alerts</h2>
-        <p>Latest persisted runtime events.</p>
-      </div>
+      <div class="panel-header"><h2>Alerts</h2><p>Latest persisted runtime events.</p></div>
       <ul id="alerts" class="alert-list"></ul>
-    </section>
-
-    <section class="panel panel-wide">
-      <div class="panel-header" id="settings-toggle">
-        <h2>&#9881; Camera Sources <span id="settings-chevron">&#9660;</span></h2>
-        <p>Configure live RTSP / USB / IP Webcam streams for each lane.</p>
-      </div>
-      <div id="settings-body" hidden>
-        <div class="settings-grid">
-          {% for lane in lanes %}
-          <label class="settings-field">
-            <span>{{ lane|upper }}</span>
-            <input type="text" id="src-{{ lane }}" placeholder="Simulated">
-          </label>
-          {% endfor %}
-          <label class="settings-field">
-            <span>RTSP transport</span>
-            <select id="src-rtsp-transport">
-              <option value="tcp">TCP (recommended inside Docker)</option>
-              <option value="udp">UDP</option>
-            </select>
-          </label>
-        </div>
-        <p class="hint">Examples: &nbsp;<code>Simulated</code> &nbsp;&bull;&nbsp; <code>Camera 0</code> &nbsp;&bull;&nbsp; <code>http://192.168.x.x:8080/video</code> &nbsp;&bull;&nbsp; <code>rtsp://mediamtx:8554/north</code></p>
-        <div class="settings-actions">
-          <button id="settings-save">Save &amp; apply</button>
-          <span id="settings-msg"></span>
-        </div>
-      </div>
     </section>
   </main>
 
-  <script>
-    const setText = (id, value) => {
-      const el = document.getElementById(id);
-      if (el) el.textContent = value;
-    };
+  <!-- Fullscreen modal -->
+  <div class="lane-modal-overlay" id="lane-modal">
+    <div class="lane-modal">
+      <div class="lane-modal-header">
+        <h2 id="modal-lane-title">NORTH</h2>
+        <button class="close-btn" onclick="closeModal()">✕ Close</button>
+      </div>
+      <img src="" alt="" id="modal-img">
+      <div class="lane-modal-footer">
+        <div class="detect-chips" id="modal-chips"></div>
+        <a id="modal-stream-link" href="/stream?lane=north" style="margin-left:auto">
+          <button style="width:auto;padding:8px 18px;font-size:.85rem">📱 Stream from phone → this lane</button>
+        </a>
+      </div>
+    </div>
+  </div>
 
-    const alertsEl = document.getElementById("alerts");
-    const runtimeErrorEl = document.getElementById("runtime-error");
+  <script>
+    const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    const laneData = {};
 
     const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/dashboard`);
     socket.onmessage = ({ data }) => {
-      const payload = JSON.parse(data);
-      setText("db-status", payload.db_connected ? "connected" : "offline");
-      setText("phase-name", payload.controller.current_phase || "-");
-      setText("phase-remaining", `${payload.controller.phase_remaining?.toFixed?.(1) ?? "0.0"}s`);
-      setText("emergency-state", payload.controller.is_emergency ? "yes" : "no");
+      const p = JSON.parse(data);
+      setText("db-status", p.db_connected ? "connected" : "offline");
+      setText("phase-name", p.controller?.current_phase || "-");
+      setText("phase-remaining", `${(p.controller?.phase_remaining ?? 0).toFixed(1)}s`);
+      setText("emergency-state", p.controller?.is_emergency ? "yes" : "no");
+      const re = document.getElementById("runtime-error");
+      if (p.runtime_error) { re.textContent = p.runtime_error; re.hidden = false; } else { re.hidden = true; }
 
-      if (payload.runtime_error) {
-        runtimeErrorEl.textContent = payload.runtime_error;
-        runtimeErrorEl.hidden = false;
-      } else {
-        runtimeErrorEl.hidden = true;
-      }
-
-      Object.entries(payload.lanes || {}).forEach(([lane, laneData]) => {
-        setText(`status-${lane}`, `${laneData.camera_status} - ${laneData.source}`);
-        setText(`count-${lane}`, `${laneData.vehicle_count} vehicles`);
-        setText(`signal-${lane}`, laneData.signal_state);
-        setText(`timer-${lane}`, `${Number(laneData.time_remaining || 0).toFixed(1)}s`);
+      Object.entries(p.lanes || {}).forEach(([lane, d]) => {
+        laneData[lane] = d;
+        const dot = document.getElementById(`dot-${lane}`);
+        if (dot) { dot.className = `camera-status-dot ${d.camera_status}`; }
+        setText(`status-${lane}`, `${d.camera_status} · ${d.source}`);
+        setText(`count-${lane}`, `${d.vehicle_count} vehicles`);
+        setText(`timer-${lane}`, `${Number(d.time_remaining || 0).toFixed(1)}s`);
+        const pill = document.getElementById(`pill-${lane}`);
+        if (pill) { pill.textContent = d.signal_state; pill.className = `signal-pill ${d.signal_state}`; }
+        renderChips(`chips-${lane}`, d.detections || []);
+        if (document.getElementById("lane-modal").classList.contains("open")) {
+          const title = document.getElementById("modal-lane-title").textContent;
+          if (title === lane.toUpperCase()) renderChips("modal-chips", d.detections || []);
+        }
       });
 
+      const alertsEl = document.getElementById("alerts");
       alertsEl.innerHTML = "";
-      (payload.alerts || []).slice(0, 8).forEach((alert) => {
-        const item = document.createElement("li");
-        item.textContent = `${alert.timestamp} - ${alert.lane.toUpperCase()} - ${alert.message}`;
-        item.className = `alert-item ${alert.level}`;
-        alertsEl.appendChild(item);
+      (p.alerts || []).slice(0, 8).forEach(a => {
+        const li = document.createElement("li");
+        li.textContent = `${a.timestamp.slice(11,19)} · ${a.lane.toUpperCase()} · ${a.message}`;
+        li.className = `alert-item ${a.level}`;
+        alertsEl.appendChild(li);
       });
     };
+
+    function renderChips(elId, detections) {
+      const el = document.getElementById(elId); if (!el) return;
+      const counts = {};
+      detections.forEach(c => { counts[c] = (counts[c] || 0) + 1; });
+      el.innerHTML = Object.entries(counts).map(([c, n]) =>
+        `<span class="detect-chip">${c} ×${n}</span>`).join("");
+    }
+
+    function openModal(lane) {
+      const modal = document.getElementById("lane-modal");
+      document.getElementById("modal-lane-title").textContent = lane.toUpperCase();
+      document.getElementById("modal-img").src = `/api/streams/${lane}.mjpeg`;
+      document.getElementById("modal-stream-link").href = `/stream?lane=${lane}`;
+      renderChips("modal-chips", laneData[lane]?.detections || []);
+      modal.classList.add("open");
+    }
+    function closeModal() {
+      document.getElementById("lane-modal").classList.remove("open");
+      document.getElementById("modal-img").src = "";
+    }
+    document.getElementById("lane-modal").addEventListener("click", e => { if (e.target === e.currentTarget) closeModal(); });
+    document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
 
     document.getElementById("logout-button").addEventListener("click", async () => {
       await fetch("/api/auth/logout", { method: "POST" });
       window.location.href = "/login";
-    });
-
-    // ── Settings panel ──────────────────────────────────────────────────────
-    const settingsBody = document.getElementById("settings-body");
-    const settingsChevron = document.getElementById("settings-chevron");
-
-    document.getElementById("settings-toggle").addEventListener("click", () => {
-      const open = !settingsBody.hidden;
-      settingsBody.hidden = open;
-      settingsChevron.textContent = open ? "\u25BC" : "\u25B2";
-      if (!open) loadSettings();
-    });
-
-    async function loadSettings() {
-      const res = await fetch("/api/settings");
-      if (!res.ok) return;
-      const { settings } = await res.json();
-      ["north", "south", "east", "west"].forEach(lane => {
-        const el = document.getElementById(`src-${lane}`);
-        if (el) el.value = settings[`camera_source_${lane}`] ?? "Simulated";
-      });
-      const transport = document.getElementById("src-rtsp-transport");
-      if (transport) transport.value = settings.rtsp_transport ?? "tcp";
-    }
-
-    document.getElementById("settings-save").addEventListener("click", async () => {
-      const msg = document.getElementById("settings-msg");
-      const updates = {};
-      ["north", "south", "east", "west"].forEach(lane => {
-        const val = (document.getElementById(`src-${lane}`)?.value ?? "").trim();
-        updates[`camera_source_${lane}`] = val || "Simulated";
-      });
-      const transport = document.getElementById("src-rtsp-transport")?.value;
-      if (transport) updates.rtsp_transport = transport;
-
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settings: updates }),
-      });
-      if (res.ok) {
-        msg.style.color = "var(--accent-2)";
-        msg.textContent = "Saved. Streams will reconnect within 30 s.";
-      } else {
-        msg.style.color = "var(--danger)";
-        msg.textContent = "Save failed.";
-      }
-      setTimeout(() => { msg.textContent = ""; }, 4000);
     });
   </script>
 </body>

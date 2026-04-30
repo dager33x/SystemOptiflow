@@ -298,17 +298,98 @@ code {
   color: var(--accent);
 }
 
+/* ── App shell ───────────────────────────────────────────────────────────── */
+.app-body { padding: 0; display: grid; grid-template-rows: 56px 1fr; min-height: 100vh; }
+
+.app-nav {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 24px; gap: 16px;
+  background: rgba(12, 26, 40, 0.92); backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--panel-border); position: sticky; top: 0; z-index: 100;
+}
+.app-nav .brand { font-weight: 700; color: var(--accent); letter-spacing: .06em; font-size: .85rem; text-transform: uppercase; }
+.app-nav-links { display: flex; gap: 4px; }
+.app-nav-links a { color: var(--muted); text-decoration: none; padding: 8px 14px; border-radius: 10px; font-size: .9rem; transition: background .15s, color .15s; }
+.app-nav-links a:hover, .app-nav-links a.active { background: rgba(88,214,255,.12); color: var(--text); }
+.app-nav-links a.stream-link { background: rgba(156,242,141,.12); color: var(--accent-2); }
+.app-nav-right { display: flex; align-items: center; gap: 10px; }
+
+.app-main { padding: 20px 24px; display: grid; gap: 20px; grid-template-columns: 2fr 1fr; }
+
+/* ── Camera cards revamp ─────────────────────────────────────────────────── */
+.camera-card { position: relative; }
+.camera-card img { cursor: zoom-in; }
+
+.signal-pill {
+  position: absolute; top: 8px; right: 8px;
+  padding: 4px 10px; border-radius: 999px; font-size: .75rem; font-weight: 700;
+  letter-spacing: .06em; pointer-events: none;
+  backdrop-filter: blur(6px);
+}
+.signal-pill.GREEN  { background: rgba(50,200,80,.25); color: #4ef07a; border: 1px solid rgba(50,200,80,.5); }
+.signal-pill.YELLOW { background: rgba(255,200,87,.25); color: var(--warning); border: 1px solid rgba(255,200,87,.5); }
+.signal-pill.RED    { background: rgba(255,100,100,.25); color: var(--danger); border: 1px solid rgba(255,100,100,.5); }
+
+.camera-status-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px;
+}
+.camera-status-dot.active    { background: #4ef07a; box-shadow: 0 0 6px #4ef07a88; }
+.camera-status-dot.simulated { background: var(--warning); }
+.camera-status-dot.error     { background: var(--danger); }
+
+.detect-chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 6px 0 2px; min-height: 24px; }
+.detect-chip {
+  padding: 2px 8px; border-radius: 999px; font-size: .72rem; font-weight: 600;
+  background: rgba(88,214,255,.1); color: var(--accent); border: 1px solid rgba(88,214,255,.22);
+}
+
+/* ── Fullscreen modal ────────────────────────────────────────────────────── */
+.lane-modal-overlay {
+  display: none; position: fixed; inset: 0; z-index: 200;
+  background: rgba(4,9,13,.88); backdrop-filter: blur(8px);
+  align-items: center; justify-content: center;
+}
+.lane-modal-overlay.open { display: flex; }
+.lane-modal {
+  background: var(--panel); border: 1px solid var(--panel-border);
+  border-radius: 20px; padding: 20px; max-width: 860px; width: calc(100% - 40px);
+}
+.lane-modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.lane-modal img { width: 100%; border-radius: 12px; max-height: 480px; object-fit: cover; }
+.lane-modal-footer { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+.close-btn { background: transparent; border: 1px solid var(--panel-border); color: var(--muted); width: auto; padding: 6px 14px; border-radius: 999px; cursor: pointer; }
+
+/* ── Evidence / Violations page ─────────────────────────────────────────── */
+.evidence-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+.evidence-card { background: rgba(7,18,27,.75); border: 1px solid rgba(159,183,201,.18); border-radius: 16px; overflow: hidden; }
+.evidence-card img { width: 100%; aspect-ratio: 16/9; object-fit: cover; background: #04090d; }
+.evidence-card-body { padding: 12px; display: grid; gap: 6px; font-size: .85rem; color: var(--muted); }
+.evidence-card-body strong { color: var(--text); }
+.chip { padding: 2px 8px; border-radius: 999px; font-size: .75rem; font-weight: 600; border: 1px solid; display: inline-block; }
+.chip-lane { background: rgba(88,214,255,.08); color: var(--accent); border-color: rgba(88,214,255,.22); }
+.chip-type { background: rgba(255,200,87,.08); color: var(--warning); border-color: rgba(255,200,87,.22); }
+
+/* ── Settings page ───────────────────────────────────────────────────────── */
+.settings-page { max-width: 720px; }
+.settings-section { margin-bottom: 28px; }
+.settings-section h3 { font-size: 1rem; color: var(--accent); margin: 0 0 12px; }
+.toggle-field { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid rgba(159,183,201,.12); }
+.toggle-field span { font-size: .9rem; }
+.toggle-field input[type=checkbox] { width: 18px; height: 18px; cursor: pointer; accent-color: var(--accent); }
+.save-bar { position: sticky; bottom: 0; background: rgba(12,26,40,.95); backdrop-filter: blur(10px); border-top: 1px solid var(--panel-border); padding: 16px 24px; display: flex; align-items: center; gap: 16px; }
+.save-bar button { width: auto; padding: 10px 32px; }
+
+/* ── Responsive ─────────────────────────────────────────────────────────── */
 @media (max-width: 980px) {
-  .dashboard-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .camera-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .topbar {
-    flex-direction: column;
-    align-items: flex-start;
-  }
+  .dashboard-grid { grid-template-columns: 1fr; }
+  .app-main { grid-template-columns: 1fr; }
+  .camera-grid { grid-template-columns: 1fr; }
+  .topbar { flex-direction: column; align-items: flex-start; }
+  .app-nav-links a span { display: none; }
+}
+@media (max-width: 600px) {
+  .app-main { padding: 12px; }
+  .camera-grid { grid-template-columns: 1fr; }
+  .evidence-grid { grid-template-columns: 1fr; }
+  .app-nav { padding: 0 12px; }
 }
