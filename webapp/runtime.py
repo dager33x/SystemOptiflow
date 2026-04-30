@@ -142,9 +142,25 @@ class DetectionRuntime:
         self.processed_frame_versions: Dict[str, int] = {lane: 0 for lane in LANES}
         self.throttle_seconds: Dict[str, float] = {lane: 0.2 for lane in LANES}
         self.last_run: Dict[str, float] = {lane: 0.0 for lane in LANES}
+        self.remote_request_in_flight = False
+        self.remote_last_started_at = 0.0
+        self.remote_next_lane_index = 0
+        self.remote_min_interval_seconds = self._read_float_env(
+            "YOLO_REMOTE_MIN_INTERVAL_SECONDS",
+            0.45,
+        )
         self.cache: Dict[str, List[Dict[str, Any]]] = {
             lane: [] for lane in LANES
         }
+
+    @staticmethod
+    def _read_float_env(name: str, default: float) -> float:
+        import os
+
+        try:
+            return max(0.0, float(os.getenv(name, str(default))))
+        except ValueError:
+            return default
 
     def start(self, lanes: Optional[List[str]] = None):
         if self.running:
@@ -246,6 +262,45 @@ class DetectionRuntime:
 
         return result.get("detections", [])
 
+    def _enabled_remote_lanes(self, remote_client) -> List[str]:
+        return [lane for lane in LANES if remote_client.is_enabled_for_lane(lane)]
+
+    def _cached_detections(self, lane: str) -> List[Dict[str, Any]]:
+        with self.lock:
+            return list(self.cache[lane])
+
+    def _try_acquire_remote_request_slot(self, lane: str, enabled_lanes: List[str]) -> bool:
+        if lane not in enabled_lanes:
+            return False
+
+        with self.lock:
+            while LANES[self.remote_next_lane_index % len(LANES)] not in enabled_lanes:
+                self.remote_next_lane_index = (self.remote_next_lane_index + 1) % len(LANES)
+
+            scheduled_lane = LANES[self.remote_next_lane_index % len(LANES)]
+            if lane != scheduled_lane:
+                return False
+
+            now = time.time()
+            if self.remote_request_in_flight:
+                return False
+            if now - self.remote_last_started_at < self.remote_min_interval_seconds:
+                return False
+
+            self.remote_request_in_flight = True
+            self.remote_last_started_at = now
+            return True
+
+    def _release_remote_request_slot(self, enabled_lanes: List[str]) -> None:
+        with self.lock:
+            self.remote_request_in_flight = False
+            if not enabled_lanes:
+                return
+            for _ in LANES:
+                self.remote_next_lane_index = (self.remote_next_lane_index + 1) % len(LANES)
+                if LANES[self.remote_next_lane_index % len(LANES)] in enabled_lanes:
+                    return
+
     def _detect_locally(self, lane: str, frame) -> List[Dict[str, Any]]:
         detector = self._load_detector()
         with self.detector_lock:
@@ -254,9 +309,19 @@ class DetectionRuntime:
         return result.get("detections", [])
 
     def _detect_frame(self, lane: str, frame) -> List[Dict[str, Any]]:
-        remote_result = self._detect_remotely(lane, frame)
-        if remote_result is not None:
-            return remote_result
+        remote_client = self._load_remote_yolo_client()
+        if remote_client.is_enabled_for_lane(lane):
+            enabled_lanes = self._enabled_remote_lanes(remote_client)
+            if not self._try_acquire_remote_request_slot(lane, enabled_lanes):
+                return self._cached_detections(lane)
+
+            try:
+                remote_result = self._detect_remotely(lane, frame)
+            finally:
+                self._release_remote_request_slot(enabled_lanes)
+
+            if remote_result is not None:
+                return remote_result
 
         return self._detect_locally(lane, frame)
 

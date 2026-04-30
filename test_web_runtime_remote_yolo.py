@@ -111,6 +111,7 @@ class TestDetectionRuntimeRemoteYolo(unittest.TestCase):
             enabled_lanes={"all"},
         )
         runtime = DetectionRuntime(remote_yolo_client=remote_client)
+        runtime.remote_min_interval_seconds = 0.0
 
         runtime._detect_frame("north", frame)
         runtime._detect_frame("south", frame)

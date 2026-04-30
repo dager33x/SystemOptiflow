@@ -2,6 +2,7 @@ import json
 import unittest
 from unittest.mock import patch
 
+import cv2
 import numpy as np
 
 from detection.remote_yolo_client import RemoteYoloClient, RemoteYoloSettings
@@ -105,6 +106,53 @@ class TestRemoteYoloClient(unittest.TestCase):
         request = urlopen_mock.call_args.args[0]
         self.assertEqual("POST", request.get_method())
         self.assertEqual("secret", request.headers["X-optiflow-token"])
+
+    def test_large_frame_is_downscaled_for_upload_and_detections_rescale_back(self):
+        client = RemoteYoloClient(
+            settings=RemoteYoloSettings(
+                enabled=True,
+                endpoint_url="https://example.modal.run",
+                token="secret",
+                timeout_seconds=2.0,
+                enabled_lanes=frozenset({"all"}),
+            ),
+            max_upload_width=640,
+            max_upload_height=480,
+        )
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        modal_payload = {
+            "ok": True,
+            "detections": [
+                {
+                    "class_id": 1,
+                    "class_name": "car",
+                    "confidence": 0.91,
+                    "bbox": [160, 120, 320, 240],
+                    "center": [240, 180],
+                }
+            ],
+            "inference_ms": 12.5,
+            "image_shape": {"height": 360, "width": 640},
+        }
+
+        with patch(
+            "detection.remote_yolo_client.urllib.request.urlopen",
+            return_value=_FakeHttpResponse(modal_payload),
+        ) as urlopen_mock:
+            result = client.detect(frame, lane_id="north")
+
+        self.assertEqual(
+            (320, 240, 640, 480),
+            result["detections"][0]["bbox"],
+        )
+        self.assertEqual((480, 360), result["detections"][0]["center"])
+
+        request_body = urlopen_mock.call_args.args[0].data
+        image_payload = request_body.split(b"\r\n\r\n", 1)[1].rsplit(b"\r\n--", 1)[0]
+        uploaded = cv2.imdecode(np.frombuffer(image_payload, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+        self.assertEqual((360, 640, 3), uploaded.shape)
 
     def test_disabled_client_returns_none_without_http_call(self):
         client = RemoteYoloClient(

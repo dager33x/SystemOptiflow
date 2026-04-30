@@ -145,6 +145,29 @@ class TestDetectionRuntimeAsyncDetection(unittest.TestCase):
         self.assertEqual(1, len(local_detector.detect_calls))
         self.assertEqual("bus", self.runtime.cache["north"][0]["class_name"])
 
+    def test_remote_yolo_backpressure_reuses_cache_instead_of_hitting_all_lanes(self):
+        remote_client = _SlowRemoteYoloClient(delay_seconds=0.0)
+        self.runtime = DetectionRuntime(remote_yolo_client=remote_client)
+        self.runtime.remote_min_interval_seconds = 10.0
+        self.runtime.cache["south"] = [
+            {
+                "class_id": 2,
+                "class_name": "bus",
+                "confidence": 0.8,
+                "bbox": (10, 10, 50, 50),
+                "center": (30, 30),
+                "source": "remote_modal",
+            }
+        ]
+        frame = np.zeros((80, 120, 3), dtype=np.uint8)
+
+        north_detections = self.runtime._detect_frame("north", frame)
+        south_detections = self.runtime._detect_frame("south", frame)
+
+        self.assertEqual("car", north_detections[0]["class_name"])
+        self.assertEqual("bus", south_detections[0]["class_name"])
+        self.assertEqual([(0, "north")], remote_client.calls)
+
 
 class TestCameraRuntimeBrowserSource(unittest.TestCase):
     def test_browser_source_is_not_opened_by_camera_manager(self):

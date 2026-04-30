@@ -12,7 +12,9 @@ import numpy as np
 
 
 DEFAULT_TIMEOUT_SECONDS = 2.0
-DEFAULT_JPEG_QUALITY = 85
+DEFAULT_JPEG_QUALITY = 70
+DEFAULT_MAX_UPLOAD_WIDTH = 640
+DEFAULT_MAX_UPLOAD_HEIGHT = 480
 DEFAULT_ENABLED_LANES = frozenset({"all"})
 
 
@@ -32,10 +34,14 @@ class RemoteYoloClient:
         self,
         settings: RemoteYoloSettings,
         jpeg_quality: int = DEFAULT_JPEG_QUALITY,
+        max_upload_width: int = DEFAULT_MAX_UPLOAD_WIDTH,
+        max_upload_height: int = DEFAULT_MAX_UPLOAD_HEIGHT,
         logger: Optional[logging.Logger] = None,
     ):
         self.settings = settings
         self.jpeg_quality = max(1, min(100, int(jpeg_quality)))
+        self.max_upload_width = max(1, int(max_upload_width))
+        self.max_upload_height = max(1, int(max_upload_height))
         self.logger = logger or logging.getLogger(__name__)
 
     @classmethod
@@ -60,7 +66,18 @@ class RemoteYoloClient:
             timeout_seconds=max(0.1, timeout_seconds),
             enabled_lanes=cls._parse_enabled_lanes(os.getenv("YOLO_REMOTE_LANES", "all")),
         )
-        return cls(settings=settings)
+        return cls(
+            settings=settings,
+            jpeg_quality=cls._parse_int_env("YOLO_REMOTE_JPEG_QUALITY", DEFAULT_JPEG_QUALITY),
+            max_upload_width=cls._parse_int_env(
+                "YOLO_REMOTE_MAX_UPLOAD_WIDTH",
+                DEFAULT_MAX_UPLOAD_WIDTH,
+            ),
+            max_upload_height=cls._parse_int_env(
+                "YOLO_REMOTE_MAX_UPLOAD_HEIGHT",
+                DEFAULT_MAX_UPLOAD_HEIGHT,
+            ),
+        )
 
     def is_enabled(self) -> bool:
         return self.settings.enabled and bool(self.settings.endpoint_url)
@@ -77,7 +94,8 @@ class RemoteYoloClient:
         if not self.is_enabled_for_lane(lane_id):
             return None
 
-        encoded_frame = self._encode_frame(frame)
+        request_frame, x_scale, y_scale = self._prepare_frame_for_request(frame)
+        encoded_frame = self._encode_frame(request_frame)
         if encoded_frame is None:
             return None
 
@@ -108,7 +126,11 @@ class RemoteYoloClient:
             self.logger.warning("[RemoteYOLO] Modal returned failure for lane=%s: %s", lane_id, payload)
             return None
 
-        detections = self._normalize_detections(payload.get("detections", []))
+        detections = self._normalize_detections(
+            payload.get("detections", []),
+            x_scale=x_scale,
+            y_scale=y_scale,
+        )
 
         return {
             "success": True,
@@ -116,6 +138,33 @@ class RemoteYoloClient:
             "remote_inference_ms": float(payload.get("inference_ms", 0.0) or 0.0),
             "image_shape": payload.get("image_shape"),
         }
+
+    def _prepare_frame_for_request(self, frame: np.ndarray) -> tuple[np.ndarray, float, float]:
+        if frame is None or not hasattr(frame, "shape"):
+            return frame, 1.0, 1.0
+
+        original_height, original_width = frame.shape[:2]
+        resize_ratio = min(
+            self.max_upload_width / float(original_width),
+            self.max_upload_height / float(original_height),
+            1.0,
+        )
+
+        if resize_ratio >= 1.0:
+            return frame, 1.0, 1.0
+
+        resized_width = max(1, int(round(original_width * resize_ratio)))
+        resized_height = max(1, int(round(original_height * resize_ratio)))
+        resized_frame = cv2.resize(
+            frame,
+            (resized_width, resized_height),
+            interpolation=cv2.INTER_AREA,
+        )
+        return (
+            resized_frame,
+            original_width / float(resized_width),
+            original_height / float(resized_height),
+        )
 
     def _encode_frame(self, frame: np.ndarray) -> Optional[bytes]:
         if frame is None or not hasattr(frame, "shape"):
@@ -166,6 +215,13 @@ class RemoteYoloClient:
         return frozenset(lanes)
 
     @staticmethod
+    def _parse_int_env(name: str, default: int) -> int:
+        try:
+            return max(1, int(os.getenv(name, str(default))))
+        except ValueError:
+            return default
+
+    @staticmethod
     def _build_multipart_body(image_bytes: bytes, boundary: str) -> bytes:
         lines = [
             f"--{boundary}",
@@ -178,7 +234,11 @@ class RemoteYoloClient:
         return prefix + image_bytes + suffix
 
     @staticmethod
-    def _normalize_detections(raw_detections: Any) -> list[dict[str, Any]]:
+    def _normalize_detections(
+        raw_detections: Any,
+        x_scale: float = 1.0,
+        y_scale: float = 1.0,
+    ) -> list[dict[str, Any]]:
         if not isinstance(raw_detections, list):
             return []
 
@@ -193,7 +253,10 @@ class RemoteYoloClient:
                 continue
 
             try:
-                x1, y1, x2, y2 = [int(round(float(value))) for value in bbox]
+                x1 = int(round(float(bbox[0]) * x_scale))
+                y1 = int(round(float(bbox[1]) * y_scale))
+                x2 = int(round(float(bbox[2]) * x_scale))
+                y2 = int(round(float(bbox[3]) * y_scale))
                 confidence = float(raw_detection.get("confidence", 0.0))
                 class_id = int(raw_detection.get("class_id", -1))
                 class_name = str(raw_detection["class_name"])
@@ -203,7 +266,8 @@ class RemoteYoloClient:
             center = raw_detection.get("center")
             if isinstance(center, list) and len(center) == 2:
                 try:
-                    center_x, center_y = [int(round(float(value))) for value in center]
+                    center_x = int(round(float(center[0]) * x_scale))
+                    center_y = int(round(float(center[1]) * y_scale))
                 except (TypeError, ValueError):
                     center_x = (x1 + x2) // 2
                     center_y = (y1 + y2) // 2

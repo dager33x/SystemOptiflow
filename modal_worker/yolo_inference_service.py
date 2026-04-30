@@ -8,6 +8,12 @@ from fastapi import File, Header, HTTPException, UploadFile
 MODEL_PATH = "/root/models/best.pt"
 API_TOKEN_ENV = "OPTIFLOW_MODAL_TOKEN"
 GPU_TYPE = "A10"
+YOLO_CONFIG_DIR = "/tmp/Ultralytics"
+INFERENCE_IMAGE_SIZE = int(os.environ.get("YOLO_INFERENCE_IMAGE_SIZE", "416"))
+INFERENCE_DEVICE = os.environ.get("YOLO_INFERENCE_DEVICE", "0")
+CONFIDENCE_THRESHOLD = float(os.environ.get("YOLO_CONFIDENCE_THRESHOLD", "0.25"))
+
+os.environ.setdefault("YOLO_CONFIG_DIR", YOLO_CONFIG_DIR)
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -19,6 +25,7 @@ image = (
         "numpy",
         "pillow",
     )
+    .run_commands(f"mkdir -p {YOLO_CONFIG_DIR}")
     .add_local_file("best.pt", MODEL_PATH)
 )
 
@@ -29,6 +36,7 @@ app = modal.App("optiflow-yolo-inference", image=image)
     gpu=GPU_TYPE,
     timeout=60,
     scaledown_window=300,
+    env={"YOLO_CONFIG_DIR": YOLO_CONFIG_DIR},
     secrets=[modal.Secret.from_name("optiflow-modal-token")],
 )
 class YoloInferenceService:
@@ -55,7 +63,13 @@ class YoloInferenceService:
                 "inference_ms": 0.0,
             }
 
-        results = self.model(frame, verbose=False)[0]
+        results = self.model(
+            frame,
+            verbose=False,
+            imgsz=INFERENCE_IMAGE_SIZE,
+            device=INFERENCE_DEVICE,
+            conf=CONFIDENCE_THRESHOLD,
+        )[0]
 
         detections = []
         names = results.names
