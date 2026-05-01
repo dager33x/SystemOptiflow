@@ -1,0 +1,23 @@
+{
+  "ai_throttle_seconds": 0.2,
+  "browser_capture_fps": 20.0,
+  "browser_stream_height": 720,
+  "browser_stream_jpeg_quality": 0.85,
+  "browser_stream_width": 1280,
+  "camera_source_east": "Simulated",
+  "camera_source_north": "rtsp://mediamtx:8554/north",
+  "camera_source_south": "Simulated",
+  "camera_source_west": "Simulated",
+  "dark_mode_cam": false,
+  "enable_detection": true,
+  "enable_notifications": true,
+  "enable_sim_events": true,
+  "enable_video_enhancement": false,
+  "phone_capture_mode": "webrtc",
+  "rtsp_transport": "tcp",
+  "show_bounding_boxes": true,
+  "show_confidence": true,
+  "show_simulation_text": true,
+  "stream_output_fps": 20.0,
+  "viewing_protocol": "websocket"
+}

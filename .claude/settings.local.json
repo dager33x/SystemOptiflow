@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile webapp/main.py webapp/schemas.py webapp/runtime.py desktop_remote/api_client.py desktop_remote/hybrid_controllers.py desktop_remote/server_camera.py desktop_remote/__init__.py desktop_app.py controllers/main_controller.py)",
+      "Bash(python -c \"import json; d=json.load\\(open\\('data/accidents.json'\\)\\); print\\(len\\(d\\), 'records'\\); print\\('fields:', list\\(d[0].keys\\(\\)\\)\\)\")",
+      "Bash(python -m py_compile scripts/seed_to_supabase.py)"
+    ]
+  }
+}

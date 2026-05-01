@@ -1,0 +1,232 @@
+[
+  {
+    "accident_id": "4cde73fa-8774-4a04-841e-7134f2631ea4",
+    "lane": 2,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_103747_418379_lane2.jpg?"
+  },
+  {
+    "accident_id": "628c3ccd-178a-43cf-a3b4-73589a5bca5e",
+    "lane": 3,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_103736_026702_lane3.jpg?"
+  },
+  {
+    "accident_id": "c422d3ab-61dd-42f6-8f9e-0981099165df",
+    "lane": 2,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_103723_129206_lane2.jpg?"
+  },
+  {
+    "accident_id": "5d8b2992-0fdd-4a70-a0cb-ba0b4d230fd6",
+    "lane": 3,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_103712_055510_lane3.jpg?"
+  },
+  {
+    "accident_id": "ddb4274e-49e2-4324-9145-96bb0aca4492",
+    "lane": 1,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_103701_197690_lane1.jpg?"
+  },
+  {
+    "accident_id": "0019afba-4a1c-44c3-925a-4ded4fb7e663",
+    "lane": 3,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_103647_116766_lane3.jpg?"
+  },
+  {
+    "accident_id": "40a24904-7dac-4ea1-a46f-5a7d5ac4fd26",
+    "lane": 1,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_103634_159112_lane1.jpg?"
+  },
+  {
+    "accident_id": "3330f094-9cd7-4241-895c-a881d2bf2a68",
+    "lane": 3,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_103622_609752_lane3.jpg?"
+  },
+  {
+    "accident_id": "041b9f15-100a-4314-a3d8-7e226f75eab4",
+    "lane": 2,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_103611_483808_lane2.jpg?"
+  },
+  {
+    "accident_id": "337cda5d-23c0-4e8c-a8a3-bff7cc534126",
+    "lane": 1,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_103555_886240_lane1.jpg?"
+  },
+  {
+    "accident_id": "b2b38565-7542-4b77-a170-e0c57f891af8",
+    "lane": 1,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_103534_072269_lane1.jpg?"
+  },
+  {
+    "accident_id": "27e71129-317a-43a2-83e8-cbfa65eef17c",
+    "lane": 1,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_103521_298668_lane1.jpg?"
+  },
+  {
+    "accident_id": "3b87a7c9-8607-40a9-9df6-3b002e110c40",
+    "lane": 1,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_103510_268241_lane1.jpg?"
+  },
+  {
+    "accident_id": "ad8304cb-ec8b-4acc-9709-734cae37ac3f",
+    "lane": 2,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_103458_634878_lane2.jpg?"
+  },
+  {
+    "accident_id": "76495267-7237-4911-8eba-8e385a0436d7",
+    "lane": 2,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_090723_466727_lane2.jpg?"
+  },
+  {
+    "accident_id": "5de1c369-cf5d-4f1d-ad68-3a760d904006",
+    "lane": 2,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_090712_064436_lane2.jpg?"
+  },
+  {
+    "accident_id": "7a209e28-bb56-450e-8220-88892d172283",
+    "lane": 2,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_090659_917731_lane2.jpg?"
+  },
+  {
+    "accident_id": "ef7a76c4-4c17-42e7-819e-b18c47e28d7b",
+    "lane": 3,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_075254_032055_lane3.jpg?"
+  },
+  {
+    "accident_id": "8b4ad830-d3be-4665-8568-f63a7bd31cb4",
+    "lane": 2,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_074934_470080_lane2.jpg?"
+  },
+  {
+    "accident_id": "49a0bb98-7c0f-459c-8567-a3e6e374f2ad",
+    "lane": 3,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_074922_704376_lane3.jpg?"
+  },
+  {
+    "accident_id": "d422e7ab-d69c-4b73-b7d2-42ffe0d5a8c5",
+    "lane": 1,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_074912_424192_lane1.jpg?"
+  },
+  {
+    "accident_id": "b511a9ff-df0a-484e-a5c3-a230d7351287",
+    "lane": 3,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_074900_968907_lane3.jpg?"
+  },
+  {
+    "accident_id": "9a7267ca-b235-41c8-a84c-6c07f877ca7a",
+    "lane": 2,
+    "severity": "High",
+    "detection_type": "SYSTEM",
+    "description": "Simulated Multi-Vehicle Crash",
+    "reported_by": null,
+    "resolved": false,
+    "image_url": "https://qphfxvpbpztlxtjeeyix.supabase.co/storage/v1/object/public/evidence/accidents/20260501_074544_200262_lane2.jpg?"
+  }
+]
