@@ -5,10 +5,24 @@ import numpy as np
 import threading
 from typing import Optional
 
+# ── RTSP stream mapping for cameras 5–8 (MediaMTX via Tailscale) ────────────
+# All cameras push via RTMP to MediaMTX on desktop (100.84.85.45)
+# Then pulled back via RTSP from the same MediaMTX server
+# To add more, just extend this dict with more camera indices and stream names.
+RTSP_CAMERA_SOURCES = {
+    5: "rtsp://100.84.85.45:8554/live/camera1",   # iPhone 11 (BroadcastMe → RTMP)
+    6: "rtsp://100.84.85.45:8554/live/camera2",   # Android node (BroadcastMe → RTMP)
+    7: "rtsp://100.84.85.45:8554/live/camera7",   # POCO X6 Pro 5G (BroadcastMe stream key: camera7)
+    8: "rtsp://100.84.85.45:8554/live/camera8",   # POCO M5S (BroadcastMe stream key: camera8)
+}
+
 class CameraManager:
     """
     Manage camera inputs with a dedicated background capture thread.
     
+    Cameras 0–4  → local USB/integrated cameras (cv2.CAP_DSHOW, Windows)
+    Cameras 5–8  → remote RTSP streams via MediaMTX + Tailscale
+
     The background thread continuously reads frames from the camera and stores
     the latest one in a buffer. This means get_frame() is always instant —
     it never blocks waiting for the camera hardware. The result is much
@@ -30,19 +44,38 @@ class CameraManager:
         self._capture_thread: Optional[threading.Thread] = None
     
     def initialize_camera(self, camera_index: int = 0) -> bool:
-        """Initialize camera capture with optimized buffer settings."""
+        """
+        Initialize camera capture.
+        - Indices 0–4  : local USB cameras (CAP_DSHOW, Windows-optimized)
+        - Indices 5–8  : RTSP streams from MediaMTX (phone cameras via Tailscale)
+        """
         try:
-            self.camera = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)  # CAP_DSHOW = faster on Windows
-            
-            # Set camera properties
-            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
-            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
-            self.camera.set(cv2.CAP_PROP_FPS, self.fps)
-            
-            # CRITICAL: reduce internal buffer to 1 frame so we always get the LATEST frame
-            # Without this, OpenCV queues up old frames and you get noticeable lag
-            self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            
+            if camera_index in RTSP_CAMERA_SOURCES:
+                # ── RTSP / remote camera (5–8) ───────────────────────────────
+                rtsp_url = RTSP_CAMERA_SOURCES[camera_index]
+                self.logger.info(f"Camera {camera_index} → RTSP source: {rtsp_url}")
+
+                self.camera = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+
+                # Reduce buffer to get the freshest frame (avoids RTSP lag buildup)
+                self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+                # Request resolution — server may override but this sets preference
+                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
+                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
+
+            else:
+                # ── Local USB camera (0–4) ────────────────────────────────────
+                self.camera = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+
+                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
+                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
+                self.camera.set(cv2.CAP_PROP_FPS, self.fps)
+
+                # CRITICAL: reduce internal buffer to 1 frame so we always get the LATEST frame
+                # Without this, OpenCV queues up old frames and you get noticeable lag
+                self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
             if self.camera.isOpened():
                 self.is_running = True
                 # Start background capture thread
@@ -55,13 +88,14 @@ class CameraManager:
             else:
                 self.logger.error(f"Camera {camera_index} failed to open")
                 return False
+
         except Exception as e:
-            self.logger.error(f"Failed to initialize camera: {e}")
+            self.logger.error(f"Failed to initialize camera {camera_index}: {e}")
             return False
 
     def _capture_loop(self):
         """
-        Background thread: continuously pull frames from the hardware buffer.
+        Background thread: continuously pull frames from the hardware/RTSP buffer.
         Stores only the most recent frame. This drains the camera buffer to
         avoid lag, and makes get_frame() a near-instantaneous operation.
         """

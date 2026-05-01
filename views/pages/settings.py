@@ -181,17 +181,33 @@ class SettingsPage:
             SETTINGS[config_key] = new_val
             print(f"Setting '{config_key}' changed to {new_val}")
 
-        combo = ctk.CTkOptionMenu(container, values=["Simulated", "Camera 0", "Camera 1", "Camera 2", "Camera 3"],
-                                  command=on_combo_change,
-                                  fg_color="#1E293B",
-                                  button_color="#334155",
-                                  button_hover_color="#475569",
-                                  dropdown_fg_color="#1E293B",
-                                  dropdown_hover_color="#334155",
-                                  font=('Segoe UI', 13))
+        combo = ctk.CTkOptionMenu(
+            container,
+            values=[
+                "Simulated",
+                "Camera 0",
+                "Camera 1",
+                "Camera 2",
+                "Camera 3",
+                "Camera 4",
+                # ── Remote RTSP cameras via MediaMTX + Tailscale ──
+                "Camera 5 (iPhone 11)",
+                "Camera 6 (Android Node)",
+                "Camera 7 (POCO X6 Pro 5G)",
+                "Camera 8 (POCO M5S)",
+            ],
+            command=on_combo_change,
+            fg_color="#1E293B",
+            button_color="#334155",
+            button_hover_color="#475569",
+            dropdown_fg_color="#1E293B",
+            dropdown_hover_color="#334155",
+            font=('Segoe UI', 13)
+        )
         combo.set(current_val)
         combo.pack(side=tk.RIGHT)
         self.toggles[config_key] = combo
     
     def get_widget(self):
         return self.frame
+    
