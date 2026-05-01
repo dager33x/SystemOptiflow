@@ -276,8 +276,9 @@ class TrafficDB:
     
     # Issue Reporting
     def create_report(self, title: str, description: str, priority: str, 
-                     author_id: str = None, author_name: str = "Anonymous") -> bool:
-        """Create a new issue report"""
+                     author_id: str = None, author_name: str = "Anonymous", 
+                     pdf_attachment: str = None) -> bool:
+        """Create a new issue report with optional PDF attachment"""
         try:
             data = {
                 "title": title,
@@ -286,15 +287,33 @@ class TrafficDB:
                 "status": "Open",
                 "author_id": author_id,
                 "author_name": author_name,
-                "created_at": datetime.utcnow().isoformat()
+                "created_at": datetime.utcnow().isoformat(),
+                "pdf_attachment": pdf_attachment
             }
-            # Attempt to insert, might fail if table doesn't exist yet
+            # Attempt to insert with pdf_attachment
             self.supabase.table("reports").insert(data).execute()
             self.save_system_log("REPORT_CREATED", f"New report: {title}")
             return True
         except Exception as e:
-            self.logger.error(f"Error creating report: {e}")
-            return False
+            # If pdf_attachment column doesn't exist, try without it
+            self.logger.warning(f"Insert with pdf_attachment failed: {e}. Retrying without pdf_attachment...")
+            try:
+                data_without_pdf = {
+                    "title": title,
+                    "description": description,
+                    "priority": priority,
+                    "status": "Open",
+                    "author_id": author_id,
+                    "author_name": author_name,
+                    "created_at": datetime.utcnow().isoformat()
+                }
+                self.supabase.table("reports").insert(data_without_pdf).execute()
+                self.save_system_log("REPORT_CREATED", f"New report: {title}")
+                self.logger.info("Report created successfully without PDF attachment")
+                return True
+            except Exception as e2:
+                self.logger.error(f"Error creating report: {e2}")
+                return False
 
     def get_all_reports(self) -> List[Dict]:
         """Get all issue reports"""

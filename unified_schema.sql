@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS public.reports (
     status TEXT CHECK (status IN ('Open', 'In Progress', 'Resolved', 'Closed')) DEFAULT 'Open',
     author_id UUID REFERENCES public.users(user_id) ON DELETE SET NULL,
     author_name TEXT,
+    pdf_attachment TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );

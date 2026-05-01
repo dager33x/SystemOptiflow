@@ -1,10 +1,12 @@
 # views/pages/issue_reports.py
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 import customtkinter as ctk
 from views.components.message_box import MessageBox
 from ..styles import Colors, Fonts
 from datetime import datetime
+import os
+import shutil
 
 class IssueReportsPage:
     """Page for managing and viewing issue reports with CustomTkinter styling"""
@@ -137,7 +139,7 @@ class IssueReportsPage:
         """Show modern CTk dialog to create new report"""
         dialog = ctk.CTkToplevel(self.parent)
         dialog.title("Create New Report")
-        dialog.geometry("600x650")
+        dialog.geometry("600x750")
         dialog.configure(fg_color=Colors.BACKGROUND)
         
         # Optional: Make sure it layers properly if Main Dashboard is zoomed
@@ -147,8 +149,12 @@ class IssueReportsPage:
         dialog.transient(self.parent)
         dialog.grab_set()
         
+        # Use scrollable frame for better layout with PDF attachment
+        scroll_frame = ctk.CTkScrollableFrame(dialog, fg_color="transparent")
+        scroll_frame.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+        
         # Form Container inside dialog
-        container = ctk.CTkFrame(dialog, fg_color='#161F33', corner_radius=15, border_width=1, border_color='#2c3a52')
+        container = ctk.CTkFrame(scroll_frame, fg_color='#161F33', corner_radius=15, border_width=1, border_color='#2c3a52')
         container.pack(fill=tk.BOTH, expand=True, padx=30, pady=30)
         
         inner = ctk.CTkFrame(container, fg_color="transparent")
@@ -187,8 +193,52 @@ class IssueReportsPage:
                 
         desc_text = ctk.CTkTextbox(inner, font=('Segoe UI', 14), 
                                    fg_color="#0B111D", border_color="#2c3a52", border_width=1, 
-                                   text_color=Colors.TEXT, corner_radius=6)
-        desc_text.pack(fill=tk.BOTH, expand=True, pady=(0, 25))
+                                   text_color=Colors.TEXT, corner_radius=6, height=120)
+        desc_text.pack(fill=tk.BOTH, expand=False, pady=(0, 25))
+        
+        # PDF Attachment Section
+        ctk.CTkLabel(inner, text="Attach PDF (Optional)", font=('Segoe UI', 12, 'bold'), 
+                     text_color=Colors.TEXT_MUTED).pack(anchor=tk.W, pady=(0, 5))
+        
+        pdf_frame = ctk.CTkFrame(inner, fg_color="#0B111D", border_color="#2c3a52", border_width=1, corner_radius=6)
+        pdf_frame.pack(fill=tk.X, pady=(0, 25))
+        
+        pdf_info_label = ctk.CTkLabel(pdf_frame, text="No file selected", font=('Segoe UI', 12), 
+                                      text_color=Colors.TEXT_MUTED)
+        pdf_info_label.pack(anchor=tk.W, padx=15, pady=(10, 5))
+        
+        selected_pdf = {"path": None}
+        
+        def select_pdf_file():
+            file_path = filedialog.askopenfilename(
+                parent=dialog,
+                title="Select a PDF file",
+                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+                initialdir=os.path.expanduser("~")
+            )
+            if file_path:
+                selected_pdf["path"] = file_path
+                file_name = os.path.basename(file_path)
+                file_size = os.path.getsize(file_path) / 1024  # Size in KB
+                pdf_info_label.configure(text=f"✓ {file_name} ({file_size:.1f} KB)")
+                pdf_info_label.configure(text_color=Colors.SUCCESS)
+        
+        def clear_pdf_file():
+            selected_pdf["path"] = None
+            pdf_info_label.configure(text="No file selected", text_color=Colors.TEXT_MUTED)
+        
+        pdf_btn_frame = ctk.CTkFrame(pdf_frame, fg_color="transparent")
+        pdf_btn_frame.pack(fill=tk.X, padx=15, pady=(5, 10))
+        
+        ctk.CTkButton(pdf_btn_frame, text="Browse PDF", command=select_pdf_file,
+                      font=('Segoe UI', 11, 'bold'), fg_color=Colors.PRIMARY, 
+                      hover_color=Colors.PRIMARY_DARK,
+                      corner_radius=6, width=100, height=30).pack(side=tk.LEFT, padx=(0, 10))
+        
+        ctk.CTkButton(pdf_btn_frame, text="Clear", command=clear_pdf_file,
+                      font=('Segoe UI', 11, 'bold'), fg_color='#1E293B', 
+                      hover_color='#334155', text_color=Colors.TEXT,
+                      corner_radius=6, width=80, height=30).pack(side=tk.LEFT)
         
         def submit():
             title = title_entry.get().strip()
@@ -200,12 +250,30 @@ class IssueReportsPage:
                 return
                 
             if self.db:
+                # Handle PDF attachment
+                pdf_path = None
+                if selected_pdf["path"]:
+                    try:
+                        # Create attachments folder if it doesn't exist
+                        attachments_dir = os.path.join(os.getcwd(), "attachments", "reports")
+                        os.makedirs(attachments_dir, exist_ok=True)
+                        
+                        # Copy PDF to attachments folder with timestamp to avoid conflicts
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        file_name = f"{timestamp}_{os.path.basename(selected_pdf['path'])}"
+                        pdf_path = os.path.join(attachments_dir, file_name)
+                        shutil.copy2(selected_pdf["path"], pdf_path)
+                    except Exception as e:
+                        MessageBox.showerror("Error", f"Failed to attach PDF: {str(e)}", parent=dialog)
+                        return
+                
                 success = self.db.create_report(
                     title=title,
                     description=desc,
                     priority=priority,
                     author_id=self.current_user.get('user_id') if self.current_user else None,
-                    author_name=self.current_user.get('username') if self.current_user else 'Anonymous'
+                    author_name=self.current_user.get('username') if self.current_user else 'Anonymous',
+                    pdf_attachment=pdf_path
                 )
                 
                 if success:
@@ -254,7 +322,7 @@ class IssueReportsPage:
         """Show modern CTk dialog to view report details"""
         dialog = ctk.CTkToplevel(self.parent)
         dialog.title(f"Report: {report.get('title')}")
-        dialog.geometry("600x600")
+        dialog.geometry("650x700")
         dialog.configure(fg_color=Colors.BACKGROUND)
         
         dialog.attributes('-topmost', True)
@@ -273,7 +341,7 @@ class IssueReportsPage:
         
         # Title
         ctk.CTkLabel(inner, text=report.get('title'), font=('Segoe UI', 24, 'bold'), 
-                     text_color=Colors.TEXT, wraplength=480, justify="left").pack(anchor=tk.W, pady=(0, 25))
+                     text_color=Colors.TEXT, wraplength=520, justify="left").pack(anchor=tk.W, pady=(0, 25))
         
         # Metadata Frame (sleeker inline badges)
         meta_frame = ctk.CTkFrame(inner, fg_color='#0B111D', corner_radius=10)
@@ -297,18 +365,92 @@ class IssueReportsPage:
         create_meta_block(inner_meta, "PRIORITY", report.get('priority').upper(), priority_color)
         create_meta_block(inner_meta, "AUTHOR", report.get('author_name'))
         create_meta_block(inner_meta, "DATE", report.get('created_at')[:10])
-
+        
         # Description
         ctk.CTkLabel(inner, text="DESCRIPTION", font=('Segoe UI', 11, 'bold'), 
                      text_color=Colors.TEXT_MUTED).pack(anchor=tk.W, pady=(0, 8))
         
         desc_lbl = ctk.CTkLabel(inner, text=report.get('description'), font=('Segoe UI', 15), 
-                                text_color=Colors.TEXT, wraplength=480, justify="left")
-        desc_lbl.pack(anchor=tk.W)
+                                text_color=Colors.TEXT, wraplength=520, justify="left")
+        desc_lbl.pack(anchor=tk.W, pady=(0, 25))
         
-        def safely_close():
-             # Drop topmost locking rule
-             dialog.attributes('-topmost', False)
+        # PDF Attachment Section
+        pdf_attachment = report.get('pdf_attachment')
+        if pdf_attachment:
+            ctk.CTkLabel(inner, text="ATTACHMENT", font=('Segoe UI', 11, 'bold'), 
+                         text_color=Colors.TEXT_MUTED).pack(anchor=tk.W, pady=(0, 8))
+            
+            pdf_card = ctk.CTkFrame(inner, fg_color="#0B111D", corner_radius=10, border_width=1, border_color="#2c3a52")
+            pdf_card.pack(fill=tk.X, pady=(0, 25))
+            
+            pdf_content = ctk.CTkFrame(pdf_card, fg_color="transparent")
+            pdf_content.pack(fill=tk.BOTH, expand=True, padx=15, pady=12)
+            
+            # File info with icon
+            pdf_info_frame = ctk.CTkFrame(pdf_content, fg_color="transparent")
+            pdf_info_frame.pack(anchor=tk.W, fill=tk.X)
+            
+            ctk.CTkLabel(pdf_info_frame, text="📄", font=('Segoe UI', 16)).pack(side=tk.LEFT, padx=(0, 10))
+            
+            pdf_name = os.path.basename(pdf_attachment)
+            try:
+                pdf_size = os.path.getsize(pdf_attachment) / 1024  # KB
+                pdf_size_str = f"{pdf_size:.1f} KB" if pdf_size < 1024 else f"{pdf_size/1024:.1f} MB"
+            except:
+                pdf_size_str = "Unknown size"
+            
+            info_text = f"{pdf_name} ({pdf_size_str})"
+            ctk.CTkLabel(pdf_info_frame, text=info_text, font=('Segoe UI', 13, 'bold'), 
+                         text_color=Colors.TEXT).pack(side=tk.LEFT, anchor=tk.W)
+            
+            # Action buttons
+            btn_frame = ctk.CTkFrame(pdf_content, fg_color="transparent")
+            btn_frame.pack(fill=tk.X, pady=(12, 0))
+            
+            def view_pdf():
+                try:
+                    if os.path.exists(pdf_attachment):
+                        import subprocess
+                        if os.name == 'nt':  # Windows
+                            os.startfile(pdf_attachment)
+                        else:  # Mac/Linux
+                            subprocess.Popen(['open', pdf_attachment])
+                    else:
+                        MessageBox.showerror("Error", "PDF file not found", parent=dialog)
+                except Exception as e:
+                    MessageBox.showerror("Error", f"Failed to open PDF: {str(e)}", parent=dialog)
+            
+            def download_pdf():
+                try:
+                    if os.path.exists(pdf_attachment):
+                        # Get default downloads folder
+                        downloads_path = os.path.expanduser("~/Downloads")
+                        dest_path = os.path.join(downloads_path, os.path.basename(pdf_attachment))
+                        
+                        # If file exists, add number suffix
+                        if os.path.exists(dest_path):
+                            base, ext = os.path.splitext(os.path.basename(pdf_attachment))
+                            counter = 1
+                            while os.path.exists(os.path.join(downloads_path, f"{base}_{counter}{ext}")):
+                                counter += 1
+                            dest_path = os.path.join(downloads_path, f"{base}_{counter}{ext}")
+                        
+                        shutil.copy2(pdf_attachment, dest_path)
+                        MessageBox.showsuccess("Success", f"PDF downloaded to:\n{dest_path}", parent=dialog)
+                    else:
+                        MessageBox.showerror("Error", "PDF file not found", parent=dialog)
+                except Exception as e:
+                    MessageBox.showerror("Error", f"Failed to download PDF: {str(e)}", parent=dialog)
+            
+            ctk.CTkButton(btn_frame, text="👁 View PDF", command=view_pdf,
+                          font=('Segoe UI', 11, 'bold'), fg_color=Colors.PRIMARY, 
+                          hover_color=Colors.PRIMARY_DARK,
+                          corner_radius=6, width=100, height=30).pack(side=tk.LEFT, padx=(0, 10))
+            
+            ctk.CTkButton(btn_frame, text="⬇ Download", command=download_pdf,
+                          font=('Segoe UI', 11, 'bold'), fg_color='#1E293B', 
+                          hover_color='#334155', text_color=Colors.TEXT,
+                          corner_radius=6, width=100, height=30).pack(side=tk.LEFT)
              dialog.destroy()
 
         # Close Button
