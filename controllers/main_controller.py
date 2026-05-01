@@ -65,6 +65,7 @@ class MainController:
         from utils.paths import get_resource_path
             
         _model_candidates = [
+            "smart_traffic_dqn.zip",
             "Optiflow_Dqn.pth",
             "models/dqn/dqn_best.pth",
             "models/dqn/dqn_final.pth",
@@ -105,11 +106,14 @@ class MainController:
                 'current_source': 'Simulated'
             }
         
-        # North starts green (will be managed by camera_loop state machine)
+        # The controller owns the real signal state; initialize the dashboard
+        # to the synchronized NS pair until the first controller sync arrives.
         self.states['north']['signal_state'] = 'GREEN'
-        self.states['north']['time_remaining'] = 30
+        self.states['south']['signal_state'] = 'GREEN'
+        self.states['north']['time_remaining'] = 60
+        self.states['south']['time_remaining'] = 60
         
-        self.logger.info("Initial traffic state: NORTH → GREEN (30s)")
+        self.logger.info("Initial traffic state: synchronized NS GREEN")
         
         # specific counters
         self.session_violations = 0
@@ -246,7 +250,7 @@ class MainController:
         # The controller tracks: phase, buffer lock, emergency override, starvation.
         # We only need to push detections into it and read back the active lane/phase.
         
-        self.logger.info(f"🟢 Initial: {self.directions[0].upper()} → GREEN (15s) [Observing]")
+        self.logger.info("Initial: synchronized NS GREEN")
         
         loop_count = 0
         last_status_time = time.time()
@@ -331,9 +335,11 @@ class MainController:
                         # Create blank frame for demo
                         frame = np.zeros((480, 640, 3), dtype=np.uint8)
                         
-                        # SIMULATOR: Generate fake traffic for cameras targeting Simulation
+                        # SIMULATOR: Generate fake traffic only for explicit Simulation.
+                        # A real USB/RTSP source with no frame must report no detections
+                        # so camera dropouts do not disturb the signal controller.
                         detections = []
-                        if camera_source == "Simulated" or frame is None:
+                        if camera_source == "Simulated":
                             # DYNAMIC SIMULATION: Smoothly rise and fall over time to test DQN
                             import random
                             
@@ -444,7 +450,12 @@ class MainController:
                                     last_acc = getattr(self, 'last_accident_log', 0)
                                     if hasattr(self, 'accident_controller') and self.accident_controller:
                                         if current_time - last_acc > 10.0:
-                                            self.accident_controller.report_accident(lane=lane_id, severity="High", description="Simulated Multi-Vehicle Crash")
+                                            self.accident_controller.report_accident(
+                                                lane=lane_id,
+                                                severity="Severe",
+                                                description="Simulated Multi-Vehicle Crash",
+                                                frame=frame
+                                            )
                                             self.last_accident_log = current_time
                                             self.logger.info(f"Simulated Accident recorded for {direction}")
                                             # Notify
@@ -753,7 +764,8 @@ class MainController:
                                         if current_time - last_acc > 10.0:
                                             self.accident_controller.report_accident(
                                                 lane=lane_id, severity="Severe",
-                                                description=accident_desc
+                                                description=accident_desc,
+                                                frame=annotated_frame
                                             )
                                             self.last_accident_log = current_time
                                             self.root.after(0, lambda: self.notification_manager.show(
@@ -852,6 +864,11 @@ class MainController:
                     )
                     ctrl_is_emergency = self.traffic_controller.is_emergency_active
                     ctrl_buffer_locked = self.traffic_controller.buffer_locked
+                    lane_signal_states = (
+                        self.traffic_controller.get_lane_signal_states()
+                        if hasattr(self.traffic_controller, 'get_lane_signal_states')
+                        else {}
+                    )
                     
                     # Map controller's numeric active_lane back to directions
                     for i, direction in enumerate(self.directions):
@@ -873,7 +890,19 @@ class MainController:
                                 self.states[direction]['time_remaining'] = (
                                     ctrl_remaining + (hops - 1) * est_phase
                                 )
-                    
+
+                    # Paired NS/EW flow: trust the controller's per-lane map.
+                    if lane_signal_states:
+                        for i, direction in enumerate(self.directions):
+                            lane_signal = lane_signal_states.get(i, 'RED')
+                            self.states[direction]['signal_state'] = lane_signal
+                            if hasattr(self.traffic_controller, 'get_lane_time_remaining'):
+                                self.states[direction]['time_remaining'] = (
+                                    self.traffic_controller.get_lane_time_remaining(i)
+                                )
+                            elif lane_signal in ('GREEN', 'YELLOW'):
+                                self.states[direction]['time_remaining'] = ctrl_remaining
+
                     # Log meaningful transitions
                     if decision is not None:
                         phase_name = decision.get('phase', 'unknown')
@@ -902,50 +931,33 @@ class MainController:
                 # if it's trimmed by more than 2s the display snaps down to match,
                 # preventing both drift and abrupt UI jumps from adaptive trims.
                 # Red lanes use proper delta-time decrement with a stored timestamp.
-                ctrl_remaining_live = max(
-                    0.0,
-                    self.traffic_controller.phase_duration -
-                    (current_time - self.traffic_controller.phase_start_time)
-                )
-
                 # Initialise per-lane display trackers once
                 if not hasattr(self, '_display_remaining'):
                     self._display_remaining = {d: 0.0 for d in self.directions}
                 if not hasattr(self, '_display_last_tick'):
                     self._display_last_tick = {d: current_time for d in self.directions}
+                if not hasattr(self, '_display_signal_state'):
+                    self._display_signal_state = {d: None for d in self.directions}
 
                 for direction in self.directions:
                     st  = self.states[direction]
-                    i_d = self.directions.index(direction)
                     dt_since_last = current_time - self._display_last_tick[direction]
                     self._display_last_tick[direction] = current_time
 
-                    if i_d == ctrl_lane and ctrl_phase in ('green', 'yellow'):
-                        # Green/Yellow lane: decrement display at wall-clock rate
-                        prev_disp = self._display_remaining[direction]
-                        # Natural decrement
-                        new_disp = max(0.0, prev_disp - dt_since_last)
-                        # Snap DOWN only if controller's value is significantly lower
-                        # (phase was trimmed, not just normal countdown drift)
-                        if ctrl_remaining_live < new_disp - 2.0:
-                            new_disp = ctrl_remaining_live
-                        # Initialise display on a new phase (display is far below ctrl)
-                        if ctrl_remaining_live > new_disp + 3.0:
-                            new_disp = ctrl_remaining_live
-                        self._display_remaining[direction] = new_disp
-                        st['time_remaining'] = new_disp
-                    else:
-                        # Red lanes: decrement display at wall-clock rate
-                        prev_disp = self._display_remaining.get(direction, st['time_remaining'])
-                        new_disp  = max(0.0, prev_disp - dt_since_last)
-                        
-                        # Snap to the estimated time if it drifts or is initialised at 0
-                        target_red_time = st['time_remaining']
-                        if abs(new_disp - target_red_time) > 3.0:
-                            new_disp = target_red_time
-                            
-                        self._display_remaining[direction] = new_disp
-                        st['time_remaining'] = new_disp
+                    target_time = max(0.0, float(st.get('time_remaining', 0.0)))
+                    signal_state = st.get('signal_state', 'RED')
+                    prev_signal = self._display_signal_state.get(direction)
+                    prev_disp = self._display_remaining.get(direction, target_time)
+                    new_disp = max(0.0, prev_disp - max(0.0, dt_since_last))
+
+                    if prev_signal != signal_state:
+                        new_disp = target_time
+                    elif target_time < new_disp - 1.5:
+                        new_disp = target_time
+
+                    self._display_signal_state[direction] = signal_state
+                    self._display_remaining[direction] = new_disp
+                    st['time_remaining'] = new_disp
                     st['last_update_time'] = current_time
                     
             except Exception as e:

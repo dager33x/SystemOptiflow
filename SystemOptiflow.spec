@@ -1,20 +1,29 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 from PyInstaller.utils.hooks import collect_data_files, collect_all
 
-datas = [
-    ('assets', 'assets'), 
-    ('views', 'views'), 
-    ('controllers', 'controllers'), 
-    ('utils', 'utils'), 
-    ('detection', 'detection'), 
-    ('models', 'models'), 
-    ('best.pt', '.'), 
-    ('yolov8n.pt', '.'), 
-    ('Optiflow_Dqn.pth', '.'), 
-    ('.env', '.'),
-    ('image_mapping.json', '.'),
-    ('settings.json', '.')
-]
+datas = []
+
+def add_data(source, destination):
+    if os.path.exists(source):
+        datas.append((source, destination))
+
+for folder in ('assets', 'views', 'controllers', 'utils', 'detection', 'models'):
+    add_data(folder, folder)
+
+for file_name in (
+    'best.pt',
+    'yolov8n.pt',
+    'Optiflow_Dqn.pth',
+    'smart_traffic_dqn.zip',
+    'image_mapping.json',
+    'accident_image_mapping.json',
+    'settings.json',
+):
+    add_data(file_name, '.')
+
+add_data('.env', '.')
+add_data(os.path.join('..', '.env'), '.')
 binaries = []
 hiddenimports = [
     'utils.paths', 
@@ -24,7 +33,7 @@ hiddenimports = [
     'postgrest', 
     'supabase', 
     'realtime',
-    'python-dotenv',
+    'dotenv',
     'uvicorn',
     'fastapi'
 ]

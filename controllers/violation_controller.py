@@ -6,6 +6,11 @@ class ViolationController:
     """Handle traffic violation reports"""
     def __init__(self, db: TrafficDB):
         self.db = db
+
+    def _app_path(self, *parts):
+        import os
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base_dir, *parts)
     
     @run_in_background
     def save_violation(self, lane, violation_type="Red Light Violation", frame=None):
@@ -20,9 +25,10 @@ class ViolationController:
         # Save screenshot locally if frame is provided
         if frame is not None:
             try:
-                os.makedirs("screenshots/violations", exist_ok=True)
+                screenshot_dir = self._app_path("screenshots", "violations")
+                os.makedirs(screenshot_dir, exist_ok=True)
                 timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                filename = f"screenshots/violations/violation_lane{lane}_{timestamp_str}.jpg"
+                filename = os.path.join(screenshot_dir, f"violation_lane{lane}_{timestamp_str}.jpg")
                 cv2.imwrite(filename, frame)
                 image_url = filename
             except Exception as e:
@@ -51,9 +57,12 @@ class ViolationController:
         # Merge local images mapped by violation_id
         import os
         import json
-        if os.path.exists("image_mapping.json"):
+        mapping_files = [self._app_path("image_mapping.json"), "image_mapping.json"]
+        for mapping_file in mapping_files:
+            if not os.path.exists(mapping_file):
+                continue
             try:
-                with open("image_mapping.json", "r") as f:
+                with open(mapping_file, "r") as f:
                     image_map = json.load(f)
                 for log in logs:
                     vid = log.get("violation_id")
@@ -68,7 +77,7 @@ class ViolationController:
         import os
         import json
         image_map = {}
-        file_path = "image_mapping.json"
+        file_path = self._app_path("image_mapping.json")
         if os.path.exists(file_path):
             try:
                 with open(file_path, "r") as f:
@@ -94,7 +103,7 @@ class ViolationController:
                 pass
                 
         # Clear screenshot directory
-        screenshot_dir = "screenshots/violations"
+        screenshot_dir = self._app_path("screenshots", "violations")
         if os.path.exists(screenshot_dir):
             try:
                 for f in os.listdir(screenshot_dir):
