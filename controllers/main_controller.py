@@ -419,18 +419,21 @@ class MainController:
                     
                     # Get Frame
                     frame = None
+                    got_live_frame = False
                     if self.hybrid_mode:
                         frame = self.camera_managers[direction].get_frame()
+                        got_live_frame = frame is not None
                     elif self._is_live_source(camera_source):
                         frame = self.camera_managers[direction].get_frame()
-                    
+                        got_live_frame = frame is not None
+
                     if frame is None:
                         # Create blank frame for demo
                         frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                        
+
                         # SIMULATOR: Generate fake traffic for cameras targeting Simulation
                         detections = []
-                        if not self.hybrid_mode and (camera_source == "Simulated" or frame is None):
+                        if camera_source == "Simulated" or not got_live_frame:
                             # DYNAMIC SIMULATION: Smoothly rise and fall over time to test DQN
                             import random
                             
@@ -623,11 +626,14 @@ class MainController:
                         
                         annotated_frame = frame
                     else:
-                        # REAL CAMERA
+                        # REAL CAMERA or HYBRID SERVER FRAME
                         detections = []
                         annotated_frame = frame
-                        
-                        if enable_detection:
+
+                        if self.hybrid_mode:
+                            # Server already ran detection and drew results; use frame as-is.
+                            pass
+                        elif enable_detection:
                             # ---------------------------
                             # PERFORMANCE OPTIMIZATION
                             # Throttle AI inference so video rendering stays responsive.

@@ -158,6 +158,7 @@ class DQNRuleController:
             current_time=current_time,
             lane_detections=lane_detections,
             audit=audit,
+            wait_times=wait_times,
         )
 
         audit['final_action'] = final_action
@@ -187,6 +188,7 @@ class DQNRuleController:
         current_time:    float,
         lane_detections: List[List[Dict]],
         audit:           Dict,
+        wait_times:      Optional[List[float]] = None,
     ) -> int:
 
         # ── Priority 1: 10-second minimum buffer ──────────────────────────
