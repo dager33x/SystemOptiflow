@@ -1,5 +1,6 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
+websockets>=13,<16
 supabase==1.1.1
 python-dotenv==1.0.0
 httpx==0.25.0
@@ -9,3 +10,4 @@ gotrue==0.2.0
 requests==2.31.0
 python-dotenv==1.0.0
 smtplib-plus==1.1.0
+stable-baselines3>=2.0.0

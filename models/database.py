@@ -22,9 +22,24 @@ if workspace_dir not in sys.path:
 
 from utils.paths import get_resource_path
 
-# Load environment variables from .env file FIRST - with absolute path
-env_path = get_resource_path('.env')
-load_dotenv(dotenv_path=env_path, override=True)
+
+def _load_environment():
+    """Load .env from packaged, project, or parent workspace locations."""
+    candidates = [
+        get_resource_path('.env'),
+        os.path.join(workspace_dir, '.env'),
+        os.path.join(os.path.dirname(workspace_dir), '.env'),
+        os.path.join(os.getcwd(), '.env'),
+    ]
+
+    for env_path in candidates:
+        if os.path.exists(env_path):
+            load_dotenv(dotenv_path=env_path, override=True)
+            return env_path
+    return None
+
+
+_load_environment()
 
 class TrafficDB:
     """Supabase database connection and operations"""
@@ -154,7 +169,8 @@ class TrafficDB:
     def save_accident(self, lane: int, severity: str = "Moderate", 
                      detection_type: str = "SYSTEM", 
                      description: str = "", 
-                     reported_by: str = None) -> Optional[str]:
+                     reported_by: str = None,
+                     image_url: str = None) -> Optional[str]:
         """Save accident detection"""
         try:
             # Ensure severity case matches CHECK constraint
@@ -170,7 +186,20 @@ class TrafficDB:
                 "status": "pending",
                 "created_at": datetime.utcnow().isoformat()
             }
-            response = self.supabase.table("accidents").insert(data).execute()
+            if image_url:
+                data["image_url"] = image_url
+
+            try:
+                response = self.supabase.table("accidents").insert(data).execute()
+            except Exception as e:
+                error_str = str(e).lower()
+                if "could not find the 'image_url' column" in error_str or "image_url" in error_str:
+                    self.logger.warning("Supabase 'image_url' schema cache error detected for accidents. Retrying without image_url...")
+                    if "image_url" in data:
+                        del data["image_url"]
+                    response = self.supabase.table("accidents").insert(data).execute()
+                else:
+                    raise e
             self.save_system_log("ACCIDENT_DETECTED", f"Accident on lane {lane} - {severity}")
             return response.data[0]['accident_id']
         except Exception as e:

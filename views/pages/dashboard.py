@@ -1,6 +1,7 @@
 # views/pages/dashboard.py
 import tkinter as tk
 import customtkinter as ctk
+import math
 from PIL import Image, ImageTk
 import cv2
 from ..styles import Colors, Fonts
@@ -240,7 +241,7 @@ class DashboardPage:
         state_lbl.configure(text=signal_state, text_color=sig_colors.get(signal_state, _MUTED))
 
         # ── Timer ─────────────────────────────────────────────────
-        t = int(time_left)
+        t = max(0, math.ceil(float(time_left)))
         timer_fg = _SUCCESS if signal_state == 'GREEN' else (_WARN if signal_state == 'YELLOW' else _DANGER)
         self.timer_labels[direction].configure(text=f'{t:>3}s', text_color=timer_fg)
 

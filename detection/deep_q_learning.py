@@ -64,9 +64,12 @@ DEFAULT_WEIGHT = 2.0
 
 # Timing (seconds)
 MIN_BUFFER_TIME      = 10    # hard minimum green — no switch allowed before this
-NORMAL_MIN_GREEN     = 15    # absolute floor for any green phase
-MAX_GREEN_NORMAL     = 60    # absolute ceiling for any normal green phase
-MAX_GREEN_EMERGENCY  = 60    # max emergency green
+NORMAL_MIN_GREEN     = 60    # minimum green for each NS/EW phase
+MAX_GREEN_NORMAL     = 120   # adaptive ceiling for heavy traffic
+MAX_GREEN_EMERGENCY  = 20    # emergency priority is two 10-second attempts
+YELLOW_TIME          = 5
+ALL_RED_TIME         = 2
+SECONDARY_GREEN_TIME = 15    # turning lane green window at phase start
 STARVATION_THRESHOLD = 60    # seconds a lane may wait before starvation override
 
 
@@ -161,13 +164,11 @@ class TrafficStateBuilder:
     def calculate_green_time(weighted_count: float, has_accident: bool, has_violation: bool) -> int:
         """Calculate green time extension based on proportional congestion count."""
         if weighted_count >= 40:
-            base_time = min(60.0, 40.0 + (weighted_count - 40.0))
-        elif weighted_count >= 15:
-            base_time = 20.0 + ((weighted_count - 15.0) / 24.0) * 20.0
-        elif weighted_count > 5:
-            base_time = 15.0 + ((weighted_count - 6.0) / 8.0) * 10.0
+            base_time = 80.0 + ((weighted_count - 40.0) * 1.5)
+        elif weighted_count >= 25:
+            base_time = 60.0 + ((weighted_count - 25.0) / 15.0) * 20.0
         else:
-            base_time = float(MIN_BUFFER_TIME)
+            base_time = float(NORMAL_MIN_GREEN)
         
         # Accident restricted mode penalty -> reduce green extension
         if has_accident:
@@ -178,7 +179,7 @@ class TrafficStateBuilder:
             base_time -= 5
 
         # Capped securely between NORMAL_MIN_GREEN (10s/15s) and MAX_GREEN_NORMAL (60s)
-        return max(MIN_BUFFER_TIME, min(int(base_time), MAX_GREEN_NORMAL))
+        return max(NORMAL_MIN_GREEN, min(int(base_time), MAX_GREEN_NORMAL))
 
     @staticmethod
     def relative_green_time(target_lane: int, all_w_counts: List[float], all_accidents: List[bool] = None, all_violations: List[bool] = None) -> int:
@@ -259,6 +260,7 @@ class TrafficLightDQN:
                  target_update_freq: int = 200):      # hard update every N steps
 
         self.logger = logging.getLogger(__name__)
+        self.external_model = None
 
         self.state_size   = state_size
         self.action_size  = action_size
@@ -275,8 +277,9 @@ class TrafficLightDQN:
         self.normal_min_green   = NORMAL_MIN_GREEN
         self.max_green_normal   = MAX_GREEN_NORMAL
         self.max_green_emergency = MAX_GREEN_EMERGENCY
-        self.yellow_time        = 3
-        self.all_red_time       = 2
+        self.yellow_time        = YELLOW_TIME
+        self.all_red_time       = ALL_RED_TIME
+        self.secondary_green_time = SECONDARY_GREEN_TIME
 
         # Device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -353,6 +356,18 @@ class TrafficLightDQN:
         if allowed_actions is None:
             allowed_actions = list(range(self.action_size))
 
+        if self.external_model is not None:
+            try:
+                action, _ = self.external_model.predict(
+                    np.array(state, dtype=np.float32),
+                    deterministic=True
+                )
+                action = int(np.asarray(action).item())
+                if action in allowed_actions:
+                    return action
+            except Exception as e:
+                self.logger.warning(f"[DQN] External model predict failed: {e}")
+
         # Exploration
         if training and random.random() < self.epsilon:
             return random.choice(allowed_actions)
@@ -368,6 +383,24 @@ class TrafficLightDQN:
             masked[a] = q_values[a]
 
         return int(np.argmax(masked))
+
+    def get_q_values(self, state: np.ndarray) -> np.ndarray:
+        """Return action scores for either the native torch DQN or optional SB3 zip model."""
+        if self.external_model is not None:
+            try:
+                action, _ = self.external_model.predict(
+                    np.array(state, dtype=np.float32),
+                    deterministic=True
+                )
+                scores = np.zeros(self.action_size, dtype=np.float32)
+                scores[int(np.asarray(action).item())] = 1.0
+                return scores
+            except Exception as e:
+                self.logger.warning(f"[DQN] External model score failed: {e}")
+
+        with torch.no_grad():
+            state_t = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            return self.policy_net(state_t).squeeze(0).cpu().numpy()
 
     # ── Action → recommendation ───────────────────────────────────────────
     def action_to_recommendation(self,
@@ -608,6 +641,19 @@ class TrafficLightDQN:
 
     def load_model(self, filepath: str):
         try:
+            if str(filepath).lower().endswith('.zip'):
+                try:
+                    from stable_baselines3 import DQN as SB3DQN
+                    self.external_model = SB3DQN.load(filepath, device=str(self.device))
+                    self.epsilon = self.epsilon_end
+                    self.logger.info(f"[DQN] Stable-Baselines3 model loaded <- {filepath}")
+                    return
+                except Exception as sb3_error:
+                    self.logger.warning(
+                        f"[DQN] Could not load zip as Stable-Baselines3 DQN ({sb3_error}); "
+                        "trying native torch loader."
+                    )
+
             ckpt = torch.load(filepath, map_location=self.device)
             if isinstance(ckpt, dict) and 'policy_net' in ckpt:
                 self.policy_net.load_state_dict(ckpt['policy_net'])

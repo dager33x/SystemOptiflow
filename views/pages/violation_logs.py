@@ -22,6 +22,18 @@ class ViolationLogsPage:
         
         # Load data immediately
         self.refresh_data()
+
+    def _resolve_image_path(self, image_path):
+        if not image_path:
+            return None
+        if os.path.exists(image_path):
+            return image_path
+        if not os.path.isabs(image_path):
+            app_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            app_path = os.path.join(app_dir, image_path)
+            if os.path.exists(app_path):
+                return app_path
+        return None
     
     def create_widgets(self):
         """Create violation logs page layout"""
@@ -215,12 +227,14 @@ class ViolationLogsPage:
         if not log:
             return
             
-        image_url = log.get('image_url')
-        if not image_url or not os.path.exists(image_url):
+        image_url = self._resolve_image_path(log.get('image_url'))
+        if not image_url:
             from tkinter import messagebox
             messagebox.showinfo("No Image", "No image available for this violation.", parent=self.frame)
             return
-            
+
+        log = dict(log)
+        log['image_url'] = image_url
         self.show_image_popup(log)
 
     def show_image_popup(self, log):

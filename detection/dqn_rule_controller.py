@@ -70,6 +70,8 @@ CLASS_EMERGENCY  = 'emergency_vehicle'
 CLASS_ACCIDENT   = 'z_accident'
 CLASS_VIOLATION  = 'z_jaywalker'
 
+EMERGENCY_CONFIRM_SECS = 2.5
+
 # Screenshot save directory (relative to project root)
 SCREENSHOT_DIR = 'screenshots'
 
@@ -125,6 +127,7 @@ class DQNRuleController:
 
         self.em_cooldown_until = 0.0
         self.em_consecutive_detections = {i: 0 for i in range(num_lanes)}
+        self.em_first_detected_time = {i: None for i in range(num_lanes)}
         self.em_last_detected_time = 0.0
         self._exit_buffer_start = None
         self._yield_buffer_start = None
@@ -365,8 +368,11 @@ class DQNRuleController:
         for i in range(self.num_lanes):
             em_dets = [d for d in lane_detections[i] if d.get('class_name') == CLASS_EMERGENCY]
             if em_dets:
+                if self.em_first_detected_time[i] is None:
+                    self.em_first_detected_time[i] = current_time
                 self.em_consecutive_detections[i] += 1
             else:
+                self.em_first_detected_time[i] = None
                 self.em_consecutive_detections[i] = 0
 
         # If already in an active emergency, just keep tracking if it's still visible
@@ -381,8 +387,12 @@ class DQNRuleController:
         best_score = -1
 
         for i in range(self.num_lanes):
-            # Require 3 consecutive frames (~0.3s) to confirm it's a real emergency vehicle
-            if self.em_consecutive_detections[i] >= 3:
+            first_seen = self.em_first_detected_time.get(i)
+            confirmed = (
+                first_seen is not None
+                and (current_time - first_seen) >= EMERGENCY_CONFIRM_SECS
+            )
+            if confirmed:
                 em_dets = [d for d in lane_detections[i] if d.get('class_name') == CLASS_EMERGENCY]
                 if em_dets:
                     max_area = 0.0
@@ -432,7 +442,7 @@ class DQNRuleController:
 
             if yield_timer < MIN_BUFFER_TIME:
                 audit['rule_fired'] = 'emergency_yield_buffer'
-                audit['details']    = f"Emergency Yield Buffer: {yield_timer:.1f}/10s warning active."
+                audit['details']    = f"Emergency Yield Buffer: {yield_timer:.1f}/{MIN_BUFFER_TIME}s warning active."
                 return ACTION_EXTEND_GREEN
             else:
                 # SWITCH to emergency_lane immediately
@@ -446,9 +456,9 @@ class DQNRuleController:
 
         # While actively detected (or at least detected very recently)
         if (current_time - self.em_last_detected_time) < 1.0:
-            if elapsed_green >= 60.0:
+            if elapsed_green >= float(MAX_GREEN_EMERGENCY):
                 # Force exit (safety fallback)
-                self.logger.warning("[EM] Max limit >= 60s reached. Forcing exit.")
+                self.logger.warning(f"[EM] Max limit >= {MAX_GREEN_EMERGENCY}s reached. Forcing exit.")
                 self.release_emergency_lock(current_time)
                 return None
             else:
@@ -469,9 +479,9 @@ class DQNRuleController:
         self.exit_timer = current_time - self._exit_buffer_start
 
         # Continue GREEN for at least 10 seconds AFTER last detection
-        if self.exit_timer < 10.0:
+        if self.exit_timer < float(MIN_BUFFER_TIME):
             audit['rule_fired'] = 'emergency_exit_buffer'
-            audit['details']    = f"Emergency EXIT BUFFER in progress ({self.exit_timer:.1f}/10s)."
+            audit['details']    = f"Emergency EXIT BUFFER in progress ({self.exit_timer:.1f}/{MIN_BUFFER_TIME}s)."
             return ACTION_EXTEND_GREEN
         else:
             # RELEASE LOCK
