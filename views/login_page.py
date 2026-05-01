@@ -57,7 +57,7 @@ class LoginPage(ctk.CTkFrame):
 
         self.server_url_entry = ctk.CTkEntry(
             inner_form,
-            placeholder_text="Server URL (optional for live mode)",
+            placeholder_text="SystemOptiflow server URL (optional for live mode)",
             width=320,
             height=45,
             corner_radius=8,
@@ -135,13 +135,13 @@ class LoginPage(ctk.CTkFrame):
         server_url = self.server_url_entry.get().strip()
         if server_url:
             self.mode_hint.configure(
-                text="Live mode ready. The desktop app will authenticate against the saved server.",
+                text="Proxy mode — authenticates through the SystemOptiflow web server.",
                 text_color=Colors.PRIMARY,
             )
         else:
             self.mode_hint.configure(
-                text="Local demo mode. Leave the server URL blank to use standalone login.",
-                text_color=Colors.TEXT_MUTED,
+                text="Direct mode — connects straight to the central Supabase database.",
+                text_color="#22c55e",
             )
 
     def handle_login(self):

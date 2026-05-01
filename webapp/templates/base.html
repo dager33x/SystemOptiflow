@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>{% block title %}{{ title }}{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css?v=3.1">
+  {% block head %}{% endblock %}
+</head>
+<body class="app-body {% block body_class %}{% endblock %}">
+  <nav class="app-nav">
+    <a href="{% if user %}/dashboard{% else %}/login{% endif %}" style="text-decoration:none;"><span class="brand">SystemOptiflow</span></a>
+    <div class="app-nav-links">
+      {% if user %}
+      <a href="/dashboard" class="{% if request.url.path == '/dashboard' %}active{% endif %}"><span>Dashboard</span></a>
+      <a href="/violations" class="{% if request.url.path == '/violations' %}active{% endif %}"><span>Violations</span></a>
+      <a href="/reports" class="{% if request.url.path == '/reports' %}active{% endif %}"><span>Reports</span></a>
+      <a href="/incidents" class="{% if request.url.path == '/incidents' %}active{% endif %}"><span>Incidents</span></a>
+      <a href="/traffic-reports" class="{% if request.url.path == '/traffic-reports' %}active{% endif %}"><span>Traffic Reports</span></a>
+      <a href="/stream" class="stream-link {% if request.url.path == '/stream' %}active{% endif %}"><span>Stream</span></a>
+      <a href="/settings" class="{% if request.url.path == '/settings' %}active{% endif %}"><span>Settings</span></a>
+      {% else %}
+      <a href="/login" class="{% if request.url.path == '/login' %}active{% endif %}"><span>Operator Login</span></a>
+      {% endif %}
+    </div>
+    <div class="app-nav-right">
+      {% if user %}
+      <span class="badge">{{ user.username }}</span>
+      <button id="logout-button" class="ghost" style="width:auto;padding:8px 14px">Log out</button>
+      {% else %}
+      <span class="badge">Public access</span>
+      {% endif %}
+    </div>
+  </nav>
+
+  {% block content %}{% endblock %}
+
+  <script>
+    const logoutBtn = document.getElementById('logout-button');
+    if (logoutBtn) {
+      logoutBtn.addEventListener('click', async () => {
+        try {
+          await fetch('/api/auth/logout', { method: 'POST' });
+        } catch(e) {}
+        window.location.href = '/login';
+      });
+    }
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

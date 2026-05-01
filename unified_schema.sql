@@ -13,9 +13,12 @@ CREATE TABLE IF NOT EXISTS public.users (
     last_name TEXT,
     password_hash TEXT NOT NULL,
     role TEXT DEFAULT 'operator', -- 'admin' or 'operator'
+    is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     last_login TIMESTAMPTZ
 );
+
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
 
 -- 2. VEHICLES TABLE (Traffic Flow)
 CREATE TABLE IF NOT EXISTS public.vehicles (
@@ -46,8 +49,12 @@ CREATE TABLE IF NOT EXISTS public.accidents (
     description TEXT,
     reported_by TEXT, -- User ID or Name
     timestamp TIMESTAMPTZ DEFAULT NOW(),
-    resolved BOOLEAN DEFAULT FALSE
+    resolved BOOLEAN DEFAULT FALSE,
+    image_url TEXT
 );
+
+-- Migration for existing databases: run once if column does not exist
+-- ALTER TABLE public.accidents ADD COLUMN IF NOT EXISTS image_url TEXT;
 
 -- 5. EMERGENCY EVENTS TABLE (Ambulance/Fire)
 CREATE TABLE IF NOT EXISTS public.emergency_events (
@@ -111,35 +118,68 @@ CREATE POLICY "Users can view own data" ON public.users
 -- Global Read Access for Dashboard Data
 -- Allow all authenticated users to view reports
 CREATE POLICY "Enable read access for all users" ON public.reports
-    FOR SELECT USING (true);
-CREATE POLICY "Enable read access for vehicles" ON public.vehicles FOR SELECT USING (true);
-CREATE POLICY "Enable read access for violations" ON public.violations FOR SELECT USING (true);
-CREATE POLICY "Enable read access for accidents" ON public.accidents FOR SELECT USING (true);
-CREATE POLICY "Enable read access for emergency" ON public.emergency_events FOR SELECT USING (true);
-CREATE POLICY "Enable read access for logs" ON public.system_logs FOR SELECT USING (true);
-CREATE POLICY "Enable read access for verification codes" ON public.verification_codes FOR SELECT USING (true);
+    FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Enable read access for vehicles" ON public.vehicles FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Enable read access for violations" ON public.violations FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Enable read access for accidents" ON public.accidents FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Enable read access for emergency" ON public.emergency_events FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Enable read access for logs" ON public.system_logs FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Enable read access for verification codes" ON public.verification_codes FOR SELECT TO authenticated USING (true);
 
 -- Insert Access for System/Authenticated Users
 -- Allow authenticated users to insert reports
 CREATE POLICY "Enable insert for authenticated users" ON public.reports
-    FOR INSERT WITH CHECK (true);
-CREATE POLICY "Enable insert for vehicles" ON public.vehicles FOR INSERT WITH CHECK (true);
-CREATE POLICY "Enable insert for violations" ON public.violations FOR INSERT WITH CHECK (true);
-CREATE POLICY "Enable insert for accidents" ON public.accidents FOR INSERT WITH CHECK (true);
-CREATE POLICY "Enable insert for emergency" ON public.emergency_events FOR INSERT WITH CHECK (true);
-CREATE POLICY "Enable insert for logs" ON public.system_logs FOR INSERT WITH CHECK (true);
-CREATE POLICY "Enable insert for verification codes" ON public.verification_codes FOR INSERT WITH CHECK (true);
+    FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY "Enable insert for vehicles" ON public.vehicles FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY "Enable insert for violations" ON public.violations FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY "Enable insert for accidents" ON public.accidents FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY "Enable insert for emergency" ON public.emergency_events FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY "Enable insert for logs" ON public.system_logs FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY "Enable insert for verification codes" ON public.verification_codes FOR INSERT TO authenticated WITH CHECK (true);
 
 -- Allow admins/authors to update reports
 CREATE POLICY "Enable update for users based on email" ON public.reports
-    FOR UPDATE USING (true);
+    FOR UPDATE TO authenticated USING (true);
 CREATE POLICY "Enable update for verification codes" ON public.verification_codes
-    FOR UPDATE USING (true);
+    FOR UPDATE TO authenticated USING (true);
 
 -- 9. INDEXES
 CREATE INDEX IF NOT EXISTS idx_reports_status ON public.reports(status);
 CREATE INDEX IF NOT EXISTS idx_reports_priority ON public.reports(priority);
 CREATE INDEX IF NOT EXISTS idx_users_username ON public.users(username);
+CREATE INDEX IF NOT EXISTS idx_violations_lane ON public.violations(lane);
+CREATE INDEX IF NOT EXISTS idx_violations_type ON public.violations(violation_type);
 CREATE INDEX IF NOT EXISTS idx_accidents_time ON public.accidents(timestamp);
+CREATE INDEX IF NOT EXISTS idx_accidents_lane ON public.accidents(lane);
+CREATE INDEX IF NOT EXISTS idx_accidents_severity ON public.accidents(severity);
 CREATE INDEX IF NOT EXISTS idx_violations_time ON public.violations(timestamp);
 CREATE INDEX IF NOT EXISTS idx_verification_codes_email_type ON public.verification_codes(email, code_type);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 10. SUPABASE STORAGE SETUP
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Storage buckets cannot be created via plain SQL.
+-- Perform these steps ONCE in the Supabase Dashboard:
+--
+--   a) Go to Storage → New bucket
+--      Name  : evidence
+--      Public: YES  (images are served as public URLs in the dashboard)
+--
+--   b) Supabase Storage has its own RLS. The app uses the service_role key
+--      (SUPABASE_SERVICE_ROLE_KEY) for server-side uploads, which bypasses
+--      RLS entirely — no additional storage policy is needed for uploads.
+--
+--   c) Copy the service_role key from:
+--        Supabase Dashboard → Project Settings → API → service_role (secret)
+--      Add it to your .env file:
+--        SUPABASE_SERVICE_ROLE_KEY=eyJ...
+--
+-- If you prefer to use the anon key instead, create these storage policies
+-- in the Dashboard (Storage → Policies → evidence bucket):
+--
+--   INSERT policy  — allow anon uploads:
+--     (bucket_id = 'evidence')
+--
+--   SELECT policy  — public reads (auto-enabled on public buckets):
+--     (bucket_id = 'evidence')
+-- ═══════════════════════════════════════════════════════════════════════════

@@ -129,6 +129,10 @@ class ViolationLogsPage:
         # Bind double-click event
         self.tree.bind("<Double-1>", self.on_item_double_click)
 
+    def on_show(self):
+        """Called every time this page becomes visible."""
+        self.refresh_data()
+
     def export_csv(self):
         """Export treeview data to CSV"""
         import csv

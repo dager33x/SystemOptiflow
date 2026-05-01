@@ -135,6 +135,10 @@ class IncidentHistoryPage:
         scrollbar = ctk.CTkScrollbar(tree_frame, orientation="vertical", command=self.tree.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
         self.tree.configure(yscrollcommand=scrollbar.set)
+
+    def on_show(self):
+        """Called every time this page becomes visible."""
+        self.load_data()
         
     def export_csv(self):
         """Export treeview data to CSV"""

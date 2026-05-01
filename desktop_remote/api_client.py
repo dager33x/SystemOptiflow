@@ -111,6 +111,9 @@ class RemoteAPIClient:
     def get_status(self) -> Dict[str, Any]:
         return self.get("/api/status")
 
+    def get_client_config(self) -> Dict[str, Any]:
+        return self.get("/api/client-config")
+
     def get_stream_health(self) -> Dict[str, Any]:
         return self.get("/api/streams/health")
 
@@ -176,6 +179,20 @@ class RemoteAPIClient:
 
     def update_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         return self.put("/api/settings", json={"settings": settings}).get("settings", {})
+
+    def create_violation(self, lane: str, violation_type: str, image_bytes: Optional[bytes] = None) -> dict:
+        data = {"lane": lane, "violation_type": violation_type}
+        files = {"image": ("evidence.jpg", image_bytes, "image/jpeg")} if image_bytes else None
+        r = self.session.post(self.build_url("/api/events/violation"), data=data, files=files, timeout=10)
+        self._handle_response(r)
+        return r.json()
+
+    def create_accident(self, lane: str, severity: str, description: str, image_bytes: Optional[bytes] = None) -> dict:
+        data = {"lane": lane, "severity": severity, "description": description}
+        files = {"image": ("evidence.jpg", image_bytes, "image/jpeg")} if image_bytes else None
+        r = self.session.post(self.build_url("/api/events/accident"), data=data, files=files, timeout=10)
+        self._handle_response(r)
+        return r.json()
 
     def fetch_image_bytes(self, url_or_path: str) -> bytes:
         response = self.session.get(self.build_url(url_or_path) if url_or_path.startswith("/") else url_or_path, timeout=30)

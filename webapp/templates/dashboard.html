@@ -1,50 +1,32 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ title }}</title>
-  <link rel="stylesheet" href="/static/app.css?v=3.0">
-</head>
-<body class="app-body">
-  <nav class="app-nav">
-    <span class="brand">SystemOptiflow</span>
-    <div class="app-nav-links">
-      <a href="/dashboard" class="active"><span>Dashboard</span></a>
-      <a href="/violations"><span>Violations</span></a>
-      <a href="/reports"><span>Reports</span></a>
-      <a href="/incidents"><span>Incidents</span></a>
-      <a href="/traffic-reports"><span>Traffic Reports</span></a>
-      <a href="/stream" class="stream-link">📱 <span>Stream</span></a>
-      <a href="/settings"><span>Settings</span></a>
-    </div>
-    <div class="app-nav-right">
-      <span class="badge">{{ user.username }}</span>
-      <button id="logout-button" class="ghost" style="width:auto;padding:8px 14px">Log out</button>
-    </div>
-  </nav>
+{% extends "base.html" %}
+
+{% block content %}
 
   <main class="app-main">
     <section class="panel panel-wide">
       <div class="panel-header">
         <h2>Lane streams</h2>
-        <p>Live annotated feeds with signal state, source health, and lane-level operator notes.</p>
+        <p>Live annotated feeds with source health, stream mode, AI detections, and lane notes.</p>
       </div>
       <div class="camera-grid">
         {% for lane in lanes %}
         <article class="camera-card" id="card-{{ lane }}">
           <div class="camera-meta">
             <span><span class="camera-status-dot simulated" id="dot-{{ lane }}"></span><strong>{{ lane|upper }}</strong></span>
-            <span id="status-{{ lane }}" style="font-size:.8rem;color:var(--muted)">waiting</span>
+            <span id="status-{{ lane }}" class="camera-status-line">waiting</span>
           </div>
           <div style="position:relative">
-            <canvas id="img-{{ lane }}" onclick="openModal('{{ lane }}')" style="width:100%;display:block;cursor:pointer;background:#111;border-radius:12px"></canvas>
+            <canvas id="img-{{ lane }}" data-lane="{{ lane }}" class="lane-canvas" style="width:100%;display:block;cursor:pointer;background:#111;border-radius:12px"></canvas>
             <span class="signal-pill RED" id="pill-{{ lane }}">RED</span>
           </div>
           <div class="detect-chips" id="chips-{{ lane }}"></div>
           <div class="camera-stats">
             <span id="count-{{ lane }}">0 vehicles</span>
             <span id="timer-{{ lane }}">0.0s</span>
+          </div>
+          <div class="camera-meta camera-meta-secondary">
+            <span id="mode-{{ lane }}">Viewer: websocket</span>
+            <span id="age-{{ lane }}">Frame age: -</span>
           </div>
           <div class="camera-note empty" id="note-{{ lane }}">No runtime notes yet.</div>
         </article>
@@ -56,7 +38,7 @@
       <section class="panel">
         <div class="panel-header">
           <h2>Controller</h2>
-          <p>Traffic phase, database connectivity, and current runtime health.</p>
+          <p>Traffic phase, database connectivity, and runtime health.</p>
         </div>
         <div class="controller-strip">
           <span class="health-badge" id="runtime-badge">Runtime unknown</span>
@@ -88,183 +70,18 @@
           <h2 id="modal-lane-title">NORTH</h2>
           <p class="app-modal-subtitle" id="modal-lane-status">Waiting for lane status.</p>
         </div>
-        <button class="close-btn" onclick="closeModal()">Close</button>
+        <button id="lane-modal-close" class="close-btn" type="button">Close</button>
       </div>
-      <img src="" alt="" id="modal-img">
+      <canvas id="modal-canvas" class="modal-canvas"></canvas>
       <div class="lane-modal-footer">
         <div class="detect-chips" id="modal-chips"></div>
         <span class="toolbar-note" id="modal-lane-note">No lane notes.</span>
         <a id="modal-stream-link" href="/stream?lane=north" style="margin-left:auto">
-          <button style="width:auto;padding:8px 18px;font-size:.85rem">📱 Stream from phone to this lane</button>
+          <button style="width:auto;padding:8px 18px;font-size:.85rem">Stream phone to this lane</button>
         </a>
       </div>
     </div>
   </div>
 
-  <script>
-    const laneData = {};
-    const setText = (id, value) => {
-      const el = document.getElementById(id);
-      if (el) el.textContent = value;
-    };
-    const escapeHtml = value => String(value ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#39;");
-
-    function formatTime(value) {
-      if (!value) return "-";
-      const date = new Date(value);
-      return Number.isNaN(date.getTime()) ? "-" : date.toLocaleTimeString();
-    }
-
-    function renderChips(elId, detections) {
-      const el = document.getElementById(elId);
-      if (!el) return;
-      const counts = {};
-      detections.forEach(name => { counts[name] = (counts[name] || 0) + 1; });
-      el.innerHTML = Object.entries(counts).map(([name, count]) =>
-        `<span class="detect-chip">${escapeHtml(name)} ×${count}</span>`).join("");
-    }
-
-    function renderLane(lane, data) {
-      laneData[lane] = data;
-      const dot = document.getElementById(`dot-${lane}`);
-      if (dot) dot.className = `camera-status-dot ${data.camera_status}`;
-      const modeLabel = data.capture_mode ? ` (${data.capture_mode})` : "";
-      const sourceLabel = data.source === "Browser" ? `Browser${modeLabel}` : data.source;
-      setText(`status-${lane}`, `${data.camera_status} · ${sourceLabel}`);
-      setText(`count-${lane}`, `${data.vehicle_count} vehicles`);
-      setText(`timer-${lane}`, `${Number(data.time_remaining || 0).toFixed(1)}s`);
-      const pill = document.getElementById(`pill-${lane}`);
-      if (pill) {
-        pill.textContent = data.signal_state;
-        pill.className = `signal-pill ${data.signal_state}`;
-      }
-      renderChips(`chips-${lane}`, data.detections || []);
-      const noteEl = document.getElementById(`note-${lane}`);
-      if (noteEl) {
-        const note = data.note || "No runtime notes.";
-        noteEl.textContent = note;
-        noteEl.className = `camera-note ${data.note ? "" : "empty"}`.trim();
-      }
-      if (document.getElementById("lane-modal").classList.contains("open")) {
-        const title = document.getElementById("modal-lane-title").textContent.toLowerCase();
-        if (title === lane) updateModalLane(lane);
-      }
-    }
-
-    function updateController(payload) {
-      setText("phase-name", payload.controller?.current_phase || "-");
-      setText("phase-remaining", `${Number(payload.controller?.phase_remaining ?? 0).toFixed(1)}s`);
-      setText("emergency-state", payload.controller?.is_emergency ? "yes" : "no");
-      setText("server-time", formatTime(payload.server_time));
-
-      const runtimeBadge = document.getElementById("runtime-badge");
-      const dbBadge = document.getElementById("db-badge");
-      if (runtimeBadge) {
-        if (payload.runtime_error) {
-          runtimeBadge.textContent = "Runtime degraded";
-          runtimeBadge.className = "health-badge error";
-        } else {
-          runtimeBadge.textContent = "Runtime healthy";
-          runtimeBadge.className = "health-badge ok";
-        }
-      }
-      if (dbBadge) {
-        dbBadge.textContent = payload.db_connected ? "Database connected" : "Database offline";
-        dbBadge.className = `health-badge ${payload.db_connected ? "ok" : "warn"}`;
-      }
-
-      const runtimeError = document.getElementById("runtime-error");
-      if (runtimeError) {
-        runtimeError.hidden = !payload.runtime_error;
-        runtimeError.textContent = payload.runtime_error || "";
-      }
-    }
-
-    function renderAlerts(alerts) {
-      const list = document.getElementById("alerts");
-      if (!list) return;
-      if (!alerts || !alerts.length) {
-        list.innerHTML = '<li class="alert-item">No recent alerts.</li>';
-        return;
-      }
-      list.innerHTML = alerts.slice(0, 8).map(alert =>
-        `<li class="alert-item ${alert.level}">
-          ${escapeHtml(formatTime(alert.timestamp))} · ${escapeHtml(String(alert.lane || "").toUpperCase())} · ${escapeHtml(alert.message)}
-        </li>`
-      ).join("");
-    }
-
-    function updateModalLane(lane) {
-      const data = laneData[lane] || {};
-      setText("modal-lane-title", lane.toUpperCase());
-      setText("modal-lane-status", `${data.camera_status || "unknown"} · ${data.source || "unknown"} · ${data.signal_state || "RED"}`);
-      setText("modal-lane-note", data.note || "No lane notes.");
-      renderChips("modal-chips", data.detections || []);
-      document.getElementById("modal-stream-link").href = `/stream?lane=${lane}`;
-    }
-
-    function openModal(lane) {
-      updateModalLane(lane);
-      document.getElementById("modal-img").src = `/api/streams/${lane}.mjpeg`;
-      document.getElementById("lane-modal").classList.add("open");
-    }
-
-    function closeModal() {
-      document.getElementById("lane-modal").classList.remove("open");
-      document.getElementById("modal-img").src = "";
-    }
-
-    document.getElementById("lane-modal").addEventListener("click", event => {
-      if (event.target === event.currentTarget) closeModal();
-    });
-    document.addEventListener("keydown", event => {
-      if (event.key === "Escape") closeModal();
-    });
-
-    const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/dashboard`);
-    socket.onmessage = ({ data }) => {
-      const payload = JSON.parse(data);
-      updateController(payload);
-      Object.entries(payload.lanes || {}).forEach(([lane, laneState]) => renderLane(lane, laneState));
-      renderAlerts(payload.alerts || []);
-    };
-
-    const viewCanvases = {};
-    const viewContexts = {};
-    function connectViewSocket(lane) {
-      const canvas = document.getElementById(`img-${lane}`);
-      if (!canvas) return;
-      viewCanvases[lane] = canvas;
-      viewContexts[lane] = canvas.getContext("2d");
-      const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      const viewSocket = new WebSocket(`${proto}//${location.host}/ws/view/${lane}`);
-      viewSocket.binaryType = "blob";
-      viewSocket.onmessage = async ({ data }) => {
-        try {
-          const bitmap = await createImageBitmap(data);
-          const target = viewCanvases[lane];
-          if (target.width !== bitmap.width || target.height !== bitmap.height) {
-            target.width = bitmap.width;
-            target.height = bitmap.height;
-          }
-          viewContexts[lane].drawImage(bitmap, 0, 0);
-          bitmap.close();
-        } catch (_) {}
-      };
-      viewSocket.onclose = () => setTimeout(() => connectViewSocket(lane), 2000);
-    }
-
-    ["north", "south", "east", "west"].forEach(connectViewSocket);
-
-    document.getElementById("logout-button").addEventListener("click", async () => {
-      await fetch("/api/auth/logout", { method: "POST" });
-      window.location.href = "/login";
-    });
-  </script>
-</body>
-</html>
+  
+{% endblock %}

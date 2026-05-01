@@ -108,6 +108,10 @@ class IssueReportsPage:
         
         # Initial Load
         self.load_reports()
+
+    def on_show(self):
+        """Called every time this page becomes visible."""
+        self.load_reports()
         
     def load_reports(self):
         """Load reports from database"""

@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block body_class %}public-body{% endblock %}
+
+{% block content %}
+
+  <main class="release-shell">
+    <section class="panel release-hero">
+      <p class="eyebrow">Desktop Distribution</p>
+      <h1>Download SystemOptiflow Desktop</h1>
+      <p class="lede">Install the desktop client that connects to the live web backend, streams lane views, and exposes the operator interface outside the browser.</p>
+      {% if release_data.latest %}
+      <div class="release-hero-actions">
+        {% set first_asset = release_data.latest.assets[0] %}
+        <a class="release-download-primary" href="{{ first_asset.download_url }}" target="_blank" rel="noopener">
+          Download {{ first_asset.name }}
+        </a>
+        {% if release_data.latest.html_url %}
+        <a class="button-link" href="{{ release_data.latest.html_url }}" target="_blank" rel="noopener">View on GitHub</a>
+        {% endif %}
+      </div>
+      <p class="release-meta-line">Latest release: {{ release_data.latest.name }}{% if release_data.latest.tag_name %} / {{ release_data.latest.tag_name }}{% endif %}</p>
+      {% else %}
+      <p class="release-meta-line">No desktop release assets are published yet.</p>
+      {% endif %}
+      {% if release_data.error %}
+      <p class="error-text release-error">{{ release_data.error }}{% if release_data.stale %} Showing cached results.{% endif %}</p>
+      {% endif %}
+    </section>
+
+    <section class="release-list">
+      {% if release_data.releases %}
+        {% for release in release_data.releases %}
+        <article class="panel release-card">
+          <div class="release-card-header">
+            <div>
+              <h2>{{ release.name }}</h2>
+              <p class="release-meta-line">
+                {% if release.tag_name %}<span>{{ release.tag_name }}</span>{% endif %}
+                {% if release.published_at %}<span>{{ release.published_at }}</span>{% endif %}
+                {% if release.prerelease %}<span>Prerelease</span>{% endif %}
+              </p>
+            </div>
+            {% if release.html_url %}
+            <a class="button-link" href="{{ release.html_url }}" target="_blank" rel="noopener">Release notes</a>
+            {% endif %}
+          </div>
+
+          {% if release.body %}
+          <div class="release-notes">{{ release.body }}</div>
+          {% endif %}
+
+          <div class="release-assets">
+            {% for asset in release.assets %}
+            <a class="release-asset" href="{{ asset.download_url }}" target="_blank" rel="noopener">
+              <strong>{{ asset.name }}</strong>
+              <span>{{ asset.download_kind|capitalize }}{% if asset.is_windows %} / Windows{% endif %}</span>
+              <span>{{ asset.download_count }} downloads</span>
+            </a>
+            {% endfor %}
+          </div>
+        </article>
+        {% endfor %}
+      {% else %}
+      <section class="panel">
+        <div class="empty-state">No GitHub release assets are available for download yet.</div>
+      </section>
+      {% endif %}
+    </section>
+  </main>
+{% endblock %}

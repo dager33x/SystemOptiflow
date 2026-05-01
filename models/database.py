@@ -1,7 +1,7 @@
 # models/database.py
 import os
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import logging
 try:
@@ -32,7 +32,9 @@ class TrafficDB:
     def __init__(self):
         self.url: str = os.environ.get("SUPABASE_URL")
         self.key: str = os.environ.get("SUPABASE_KEY")
+        self.service_role_key: str = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
         self.supabase: Optional[Any] = None
+        self._storage_client: Optional[Any] = None
         self.logger = self.setup_logging()
         
         # Initialize Supabase client
@@ -54,6 +56,19 @@ class TrafficDB:
                 raise ImportError("supabase library not installed")
                 
             self.supabase: Client = create_client(self.url, self.key)
+
+            # Use the service role key for storage uploads (bypasses RLS).
+            # Falls back to the anon client if the service key is not set.
+            if self.service_role_key:
+                self._storage_client = create_client(self.url, self.service_role_key)
+                self.logger.info("Supabase storage client initialised with service role key")
+            else:
+                self._storage_client = self.supabase
+                self.logger.warning(
+                    "SUPABASE_SERVICE_ROLE_KEY not set — storage uploads will use the anon key. "
+                    "Uploads may fail if the 'evidence' bucket has RLS enabled."
+                )
+
             self.logger.info("Supabase client initialized successfully")
             return True
         except Exception as e:
@@ -63,6 +78,17 @@ class TrafficDB:
     def is_connected(self) -> bool:
         """Check if database is connected"""
         return self.supabase is not None
+
+    @property
+    def storage(self):
+        """Return the SyncStorageClient (service role if available, else anon).
+
+        Usage: db.storage.from_("bucket").upload(...)
+               db.storage.list_buckets()
+        """
+        if self._storage_client is None:
+            return None
+        return self._storage_client.storage
     
     # Vehicle Operations
     def save_vehicle(self, vehicle_type: str, lane: int) -> Optional[str]:
@@ -102,7 +128,7 @@ class TrafficDB:
                 "violation_type": violation_type,
                 "lane": lane,
                 "source": source,
-                "created_at": datetime.utcnow().isoformat()
+                "timestamp": datetime.utcnow().isoformat()
             }
             if image_url:
                 data["image_url"] = image_url
@@ -127,6 +153,8 @@ class TrafficDB:
     
     def get_recent_violations(self, limit: int = 50) -> List[Dict]:
         """Get recent violations"""
+        if not self.is_connected():
+            return []
         try:
             response = self.supabase.table("violations")\
                 .select("*")\
@@ -151,11 +179,14 @@ class TrafficDB:
             return False
             
     # Accident Operations
-    def save_accident(self, lane: int, severity: str = "Moderate", 
-                     detection_type: str = "SYSTEM", 
-                     description: str = "", 
-                     reported_by: str = None) -> Optional[str]:
+    def save_accident(self, lane: int, severity: str = "Moderate",
+                     detection_type: str = "SYSTEM",
+                     description: str = "",
+                     reported_by: str = None,
+                     image_url: str = None) -> Optional[str]:
         """Save accident detection"""
+        if not self.is_connected():
+            return None
         try:
             # Ensure severity case matches CHECK constraint
             severity = severity.capitalize() 
@@ -167,9 +198,12 @@ class TrafficDB:
                 "severity": severity,
                 "detection_type": detection_type,
                 "description": description,
-                "status": "pending",
-                "created_at": datetime.utcnow().isoformat()
+                "reported_by": reported_by,
+                "timestamp": datetime.utcnow().isoformat(),
+                "resolved": False,
             }
+            if image_url:
+                data["image_url"] = image_url
             response = self.supabase.table("accidents").insert(data).execute()
             self.save_system_log("ACCIDENT_DETECTED", f"Accident on lane {lane} - {severity}")
             return response.data[0]['accident_id']
@@ -179,6 +213,8 @@ class TrafficDB:
     
     def get_recent_accidents(self, limit: int = 50) -> List[Dict]:
         """Get recent accidents"""
+        if not self.is_connected():
+            return []
         try:
             response = self.supabase.table("accidents")\
                 .select("*")\
@@ -204,10 +240,14 @@ class TrafficDB:
             
     def get_accident_stats(self, hours: int = 24) -> Dict[str, Any]:
         """Get accident statistics"""
+        if not self.is_connected():
+            return {}
         try:
+            safe_hours = max(1, min(168, int(hours)))
+            cutoff = (datetime.utcnow() - timedelta(hours=safe_hours)).isoformat()
             response = self.supabase.table("accidents")\
                 .select("*")\
-                .gte("created_at", f"now() - interval '{hours} hours'")\
+                .gte("timestamp", cutoff)\
                 .execute()
             
             accidents = response.data
@@ -232,12 +272,14 @@ class TrafficDB:
     def log_emergency_event(self, vehicle_type: str, lane: int, 
                            action_taken: str) -> Optional[str]:
         """Log emergency vehicle prioritization"""
+        if not self.is_connected():
+            return None
         try:
             data = {
                 "vehicle_type": vehicle_type,
                 "lane": lane,
                 "action_taken": action_taken,
-                "created_at": datetime.utcnow().isoformat()
+                "timestamp": datetime.utcnow().isoformat()
             }
             response = self.supabase.table("emergency_events").insert(data).execute()
             return response.data[0]['event_id']
@@ -294,6 +336,8 @@ class TrafficDB:
     # System Logs
     def save_system_log(self, event_type: str, description: str) -> None:
         """Save system log entry"""
+        if not self.is_connected():
+            return
         try:
             data = {
                 "event_type": event_type,
@@ -306,7 +350,7 @@ class TrafficDB:
     
     # ==================== USER MANAGEMENT ====================
     
-    def create_user(self, first_name: str, last_name: str, username: str, email: str, password_hash: str, 
+    def create_user(self, first_name: str, last_name: str, username: str, email: str, password_hash: str,
                    role: str = "operator", is_active: bool = True) -> tuple[Optional[str], Optional[str]]:
         """Create a new user account. Returns (user_id, error_message)"""
         if not self.is_connected():
@@ -329,7 +373,8 @@ class TrafficDB:
                 "username": username,
                 "email": email,
                 "password_hash": password_hash,
-                "role": role
+                "role": role,
+                "is_active": bool(is_active),
             }
             response = self.supabase.table("users").insert(data).execute()
             self.logger.info(f"User created: {username}")
@@ -364,8 +409,7 @@ class TrafficDB:
                 return None
             
             user = response.data[0]
-            # Check is_active only if column exists
-            if 'is_active' in user and not user['is_active']:
+            if not user.get("is_active", True):
                 self.logger.warning(f"User account is inactive: {username}")
                 return None
             

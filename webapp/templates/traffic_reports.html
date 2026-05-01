@@ -1,28 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ title }}</title>
-  <link rel="stylesheet" href="/static/app.css?v=3.0">
-</head>
-<body class="app-body">
-  <nav class="app-nav">
-    <span class="brand">SystemOptiflow</span>
-    <div class="app-nav-links">
-      <a href="/dashboard"><span>Dashboard</span></a>
-      <a href="/violations"><span>Violations</span></a>
-      <a href="/reports"><span>Reports</span></a>
-      <a href="/incidents"><span>Incidents</span></a>
-      <a href="/traffic-reports" class="active"><span>Traffic Reports</span></a>
-      <a href="/stream" class="stream-link">📱 <span>Stream</span></a>
-      <a href="/settings"><span>Settings</span></a>
-    </div>
-    <div class="app-nav-right">
-      <span class="badge">{{ user.username }}</span>
-      <button id="logout-button" class="ghost" style="width:auto;padding:8px 14px">Log out</button>
-    </div>
-  </nav>
+{% extends "base.html" %}
+
+{% block content %}
 
   <main class="page-shell">
     <section class="panel">
@@ -73,7 +51,7 @@
     <section class="panel">
       <div class="panel-header">
         <h2>Lane runtime snapshot</h2>
-        <p>Current signal state, ingest source, and lane note for each direction.</p>
+        <p>Current signal state, ingest source, stream health, and lane notes for each direction.</p>
       </div>
       <div class="table-wrap">
         <table class="panel-table">
@@ -83,11 +61,12 @@
               <th>Signal</th>
               <th>Source</th>
               <th>Vehicles</th>
+              <th>Stream</th>
               <th>Note</th>
             </tr>
           </thead>
           <tbody id="traffic-body">
-            <tr><td colspan="5" class="toolbar-note">Waiting for live status.</td></tr>
+            <tr><td colspan="6" class="toolbar-note">Waiting for live status.</td></tr>
           </tbody>
         </table>
       </div>
@@ -104,60 +83,5 @@
     </section>
   </main>
 
-  <script>
-    const laneOrder = ["north", "south", "east", "west"];
-    const escapeHtml = value => String(value ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#39;");
-
-    function renderTraffic(payload) {
-      const laneStates = payload.lanes || {};
-      const activeCameraCount = laneOrder.filter(lane => ["active", "simulated"].includes(laneStates[lane]?.camera_status)).length;
-      const totalLoad = laneOrder.reduce((sum, lane) => sum + Number(laneStates[lane]?.vehicle_count || 0), 0);
-      const busiestLane = laneOrder.reduce((best, lane) => {
-        const current = Number(laneStates[lane]?.vehicle_count || 0);
-        return current > best.count ? { lane, count: current } : best;
-      }, { lane: null, count: -1 });
-
-      document.getElementById("active-cameras").textContent = `${activeCameraCount}/4`;
-      document.getElementById("camera-footnote").textContent = payload.db_connected ? "Runtime connected to persistence." : "Persistence currently offline.";
-      document.getElementById("total-load").textContent = String(totalLoad);
-      document.getElementById("busiest-lane").textContent = busiestLane.lane ? busiestLane.lane.toUpperCase() : "-";
-      document.getElementById("busiest-footnote").textContent = busiestLane.count > 0 ? `${busiestLane.count} vehicles right now.` : "No active traffic currently detected.";
-      document.getElementById("active-alerts").textContent = String((payload.alerts || []).length);
-
-      const maxCount = Math.max(1, ...laneOrder.map(lane => Number(laneStates[lane]?.vehicle_count || 0)));
-      laneOrder.forEach(lane => {
-        const count = Number(laneStates[lane]?.vehicle_count || 0);
-        document.getElementById(`bar-${lane}`).style.width = `${(count / maxCount) * 100}%`;
-        document.getElementById(`bar-value-${lane}`).textContent = String(count);
-      });
-
-      const trafficBody = document.getElementById("traffic-body");
-      trafficBody.innerHTML = laneOrder.map(lane => {
-        const state = laneStates[lane] || {};
-        return `
-          <tr>
-            <td><strong>${escapeHtml(lane.toUpperCase())}</strong></td>
-            <td>${escapeHtml(state.signal_state || "RED")}</td>
-            <td>${escapeHtml(state.camera_status || "unknown")} · ${escapeHtml(state.source || "unknown")}</td>
-            <td>${state.vehicle_count || 0}</td>
-            <td>${escapeHtml(state.note || "No runtime note.")}</td>
-          </tr>
-        `;
-      }).join("");
-    }
-
-    const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/dashboard`);
-    socket.onmessage = ({ data }) => renderTraffic(JSON.parse(data));
-
-    document.getElementById("logout-button").addEventListener("click", async () => {
-      await fetch("/api/auth/logout", { method: "POST" });
-      window.location.href = "/login";
-    });
-  </script>
-</body>
-</html>
+  
+{% endblock %}

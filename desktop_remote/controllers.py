@@ -1,13 +1,12 @@
+import json
 import threading
 import time
-from datetime import datetime
-from io import BytesIO
 from typing import Any, Dict, Optional
 
 import cv2
 import numpy as np
-from PIL import Image
 from tkinter import messagebox
+from websocket import WebSocketApp
 
 from views.pages import (
     AdminUsersPage,
@@ -18,7 +17,6 @@ from views.pages import (
     TrafficReportsPage,
     ViolationLogsPage,
 )
-from websocket import WebSocketApp
 
 from .api_client import APIClientError, RemoteAPIClient
 from .settings import RemoteSettingsProvider
@@ -101,7 +99,14 @@ class RemoteAccidentController:
 
     def get_incidents(self):
         try:
-            return self.client.list_accidents()
+            incidents = self.client.list_accidents()
+            for incident in incidents:
+                image_url = incident.get("image_url")
+                if image_url and not image_url.startswith(("http://", "https://")):
+                    accident_id = incident.get("accident_id")
+                    if accident_id:
+                        incident["image_url"] = self.client.build_url(f"/api/accidents/{accident_id}/image")
+            return incidents
         except APIClientError as exc:
             messagebox.showerror("Error", str(exc))
             return []
@@ -148,7 +153,21 @@ class RemoteMainController:
         self.report_thread = None
         self.stream_threads: Dict[str, threading.Thread] = {}
         self.latest_status: Dict[str, Any] = {
-            "lanes": {lane: {"camera_status": "unknown", "source": "remote", "vehicle_count": 0, "signal_state": "RED", "time_remaining": 0.0} for lane in LANES},
+            "lanes": {
+                lane: {
+                    "camera_status": "unknown",
+                    "source": "remote",
+                    "vehicle_count": 0,
+                    "signal_state": "RED",
+                    "time_remaining": 0.0,
+                    "capture_mode": None,
+                    "camera_error": None,
+                    "stream_state": "idle",
+                    "viewer_protocol": self._viewer_protocol(),
+                    "note": "",
+                }
+                for lane in LANES
+            },
             "alerts": [],
             "controller": {},
             "db_connected": False,
@@ -178,17 +197,32 @@ class RemoteMainController:
         if self.view and hasattr(self.view, "sidebar"):
             self.view.sidebar.on_nav_click = self.handle_navigation
 
+    def _viewer_protocol(self) -> str:
+        value = self.settings_provider.get("viewing_protocol", "websocket")
+        return str(value or "websocket").strip().lower()
+
+    def _update_dashboard_frame(self, lane: str, frame: np.ndarray, lane_state: Dict[str, Any]):
+        if self.current_page and hasattr(self.current_page, "update_camera_feed"):
+            self.current_page.update_camera_feed(frame, lane_state, lane)
+
+    def _push_lane_frame(self, lane: str, frame: np.ndarray):
+        self.latest_frames[lane] = frame
+        lane_state = self.latest_status.get("lanes", {}).get(lane, {}).copy()
+        self.root.after(0, lambda f=frame.copy(), d=lane_state, l=lane: self._update_dashboard_frame(l, f, d))
+
     def get_active_cameras(self):
         items = []
         for lane in LANES:
             lane_state = self.latest_status.get("lanes", {}).get(lane, {})
             source = lane_state.get("source", "remote")
             status = lane_state.get("camera_status", "unknown")
+            capture_mode = lane_state.get("capture_mode")
             label = LANE_LABELS.get(lane, lane.title())
             if source == "Simulated":
                 name = f"{label} (Sim)"
             else:
-                name = f"{label} ({source})"
+                mode_suffix = f" / {capture_mode}" if capture_mode else ""
+                name = f"{label} ({source}{mode_suffix})"
             items.append({"name": name, "status": status, "id": lane})
         return items
 
@@ -203,11 +237,13 @@ class RemoteMainController:
                 if self.current_page:
                     try:
                         self.current_page.get_widget().pack_forget()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        print(f"Page hide error: {exc}")
                 page = self.pages[page_name]
                 page.get_widget().pack(fill="both", expand=True)
                 self.current_page = page
+                if hasattr(page, "on_show"):
+                    page.on_show()
                 if page_name == "dashboard":
                     self._refresh_dashboard_from_cache()
         except Exception as exc:
@@ -251,24 +287,25 @@ class RemoteMainController:
         url = self.client.websocket_url("/ws/dashboard")
 
         def on_message(_ws, message):
-            import json
-
             try:
                 self._push_status(json.loads(message))
-            except Exception:
+            except Exception as exc:
+                print(f"Remote status payload error: {exc}")
                 return
 
-        def on_error(_ws, _error):
-            return
-
+        retry_delay = 1
         while self.is_running:
-            self.ws_app = WebSocketApp(url, on_message=on_message, on_error=on_error)
+            self.ws_app = WebSocketApp(url, on_message=on_message, on_error=lambda *_: None)
+            started_at = time.monotonic()
             try:
                 self.ws_app.run_forever(ping_interval=20, ping_timeout=10)
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"Remote status websocket error: {exc}")
             if self.is_running:
-                time.sleep(3)
+                duration = time.monotonic() - started_at
+                delay = retry_delay if duration < 15 else 1
+                time.sleep(delay)
+                retry_delay = min(delay * 2, 30)
 
     def _poll_reports_loop(self):
         while self.is_running:
@@ -277,52 +314,80 @@ class RemoteMainController:
                 unread = max(0, len(reports) - self.last_viewed_report_count)
                 if self.view and hasattr(self.view, "sidebar"):
                     self.root.after(0, lambda c=unread: self.view.sidebar.update_nav_badge("issue_reports", c))
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"Remote report polling error: {exc}")
             time.sleep(5)
 
     def _stream_lane_loop(self, lane: str):
+        retry_delay = 1
         while self.is_running:
-            response = None
-            try:
-                response = self.client.open_mjpeg_stream(lane)
-                buffer = b""
-                for chunk in response.iter_content(chunk_size=4096):
-                    if not self.is_running:
-                        break
-                    if not chunk:
-                        continue
-                    buffer += chunk
+            started_at = time.monotonic()
+            protocol = self._viewer_protocol()
+            if protocol == "mjpeg":
+                self._stream_lane_mjpeg(lane)
+            else:
+                self._stream_lane_websocket(lane)
+            if self.is_running:
+                duration = time.monotonic() - started_at
+                delay = retry_delay if duration < 15 else 1
+                time.sleep(delay)
+                retry_delay = min(delay * 2, 20)
+
+    def _stream_lane_websocket(self, lane: str):
+        url = self.client.websocket_url(f"/ws/view/{lane}")
+
+        def on_message(_ws, message):
+            if not isinstance(message, (bytes, bytearray)):
+                return
+            frame = cv2.imdecode(np.frombuffer(message, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if frame is not None:
+                self._push_lane_frame(lane, frame)
+
+        ws = WebSocketApp(url, on_message=on_message, on_error=lambda *_: None)
+        try:
+            ws.run_forever(ping_interval=20, ping_timeout=10)
+        except Exception as exc:
+            print(f"Lane {lane} websocket stream error: {exc}")
+            return
+
+    def _stream_lane_mjpeg(self, lane: str):
+        response = None
+        try:
+            response = self.client.open_mjpeg_stream(lane)
+            buffer = b""
+            for chunk in response.iter_content(chunk_size=4096):
+                if not self.is_running:
+                    break
+                if not chunk:
+                    continue
+                buffer += chunk
+                start = buffer.find(b"\xff\xd8")
+                end = buffer.find(b"\xff\xd9")
+                while start != -1 and end != -1 and end > start:
+                    jpg = buffer[start : end + 2]
+                    buffer = buffer[end + 2 :]
                     start = buffer.find(b"\xff\xd8")
                     end = buffer.find(b"\xff\xd9")
-                    while start != -1 and end != -1 and end > start:
-                        jpg = buffer[start : end + 2]
-                        buffer = buffer[end + 2 :]
-                        start = buffer.find(b"\xff\xd8")
-                        end = buffer.find(b"\xff\xd9")
-                        frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
-                        if frame is None:
-                            continue
-                        self.latest_frames[lane] = frame
-                        lane_state = self.latest_status.get("lanes", {}).get(lane, {})
-                        if self.current_page and hasattr(self.current_page, "update_camera_feed"):
-                            self.root.after(0, lambda f=frame.copy(), d=lane_state.copy(), l=lane: self.current_page.update_camera_feed(f, d, l))
-            except Exception:
-                time.sleep(3)
-            finally:
-                try:
-                    if response is not None:
-                        response.close()
-                except Exception:
-                    pass
+                    frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if frame is not None:
+                        self._push_lane_frame(lane, frame)
+        except Exception as exc:
+            print(f"Lane {lane} MJPEG stream error: {exc}")
+            return
+        finally:
+            try:
+                if response is not None:
+                    response.close()
+            except Exception as exc:
+                print(f"Lane {lane} stream close error: {exc}")
 
     def start_camera_feed(self):
         if self.ws_thread and self.ws_thread.is_alive():
             return
         try:
             self._push_status(self.client.get_status())
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"Initial remote status fetch failed: {exc}")
         self.ws_thread = threading.Thread(target=self._status_websocket_loop, daemon=True, name="remote-status-ws")
         self.ws_thread.start()
         self.report_thread = threading.Thread(target=self._poll_reports_loop, daemon=True, name="remote-reports")
@@ -344,5 +409,5 @@ class RemoteMainController:
         try:
             if self.ws_app:
                 self.ws_app.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"Remote websocket close error: {exc}")

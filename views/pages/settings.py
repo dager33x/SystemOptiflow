@@ -5,6 +5,7 @@ import customtkinter as ctk
 
 from ..styles import Colors
 from utils.app_config import SETTINGS
+from utils.public_url import get_public_base_url
 
 
 class _LocalSettingsProvider:
@@ -266,13 +267,13 @@ class SettingsPage:
 
         ctk.CTkLabel(
             inner,
-            text="Desktop Connection",
+            text="SystemOptiflow Server URL",
             font=("Segoe UI", 16, "bold"),
             text_color=Colors.TEXT,
         ).pack(anchor=tk.W)
         ctk.CTkLabel(
             inner,
-            text="This is a local desktop preference. It does not change backend runtime settings.",
+            text="This controls the live web server used by the desktop app. Camera source URLs remain separate runtime settings.",
             font=("Segoe UI", 11),
             text_color=Colors.TEXT_MUTED,
         ).pack(anchor=tk.W, pady=(2, 0))
@@ -284,7 +285,7 @@ class SettingsPage:
 
         ctk.CTkLabel(
             form_row,
-            text="Saved live server",
+            text="Server URL",
             font=("Segoe UI", 13),
             text_color=Colors.TEXT_LIGHT,
         ).grid(row=0, column=0, sticky="w", padx=(0, 12))
@@ -299,36 +300,12 @@ class SettingsPage:
         )
         self.connection_entry.grid(row=0, column=1, sticky="ew")
         saved_url = self.connection_profile.last_server_url()
-        if saved_url:
-            self.connection_entry.insert(0, saved_url)
-
-        toggle_row = ctk.CTkFrame(inner, fg_color="transparent")
-        toggle_row.pack(fill=tk.X, pady=(0, 12))
-
-        ctk.CTkLabel(
-            toggle_row,
-            text="Prefill live server on startup",
-            font=("Segoe UI", 13),
-            text_color=Colors.TEXT_LIGHT,
-        ).pack(side=tk.LEFT)
-
-        self.prefill_switch = ctk.CTkSwitch(
-            toggle_row,
-            text="",
-            command=self._toggle_connection_prefill,
-            progress_color=Colors.PRIMARY,
-            button_color="#FFFFFF",
-            button_hover_color="#E0E0E0",
-        )
-        prefer_remote = bool(self.connection_profile.get("prefer_remote", bool(saved_url)))
-        if prefer_remote:
-            self.prefill_switch.select()
-        else:
-            self.prefill_switch.deselect()
-        self.prefill_switch.pack(side=tk.RIGHT)
+        default_url = saved_url or get_public_base_url()
+        if default_url:
+            self.connection_entry.insert(0, default_url)
 
         action_row = ctk.CTkFrame(inner, fg_color="transparent")
-        action_row.pack(fill=tk.X)
+        action_row.pack(fill=tk.X, pady=(0, 12))
 
         save_button = ctk.CTkButton(
             action_row,
@@ -356,12 +333,17 @@ class SettingsPage:
 
         self.connection_status = ctk.CTkLabel(
             inner,
-            text="The login screen uses this saved URL only when remote prefill is enabled.",
+            text="Saved URLs appear on the desktop login screen automatically. Clear the field to start in local demo mode.",
             font=("Segoe UI", 11),
             text_color=Colors.TEXT_MUTED,
             justify=tk.LEFT,
         )
         self.connection_status.pack(anchor=tk.W, pady=(12, 0))
+        if not saved_url and default_url:
+            self._set_connection_status(
+                "Using PUBLIC_BASE_URL as the default live server until you save a desktop-specific URL.",
+                Colors.PRIMARY,
+            )
 
     def _normalize_server_url(self, value):
         normalized = (value or "").strip()
@@ -393,18 +375,20 @@ class SettingsPage:
             self._set_connection_status("Enter a server URL or use Clear Saved Server to remove it.", "#F59E0B")
             return
         self.connection_profile.set_last_server_url(normalized)
-        self.connection_profile.set_prefer_remote(bool(self.prefill_switch.get()))
         self.connection_entry.delete(0, tk.END)
         self.connection_entry.insert(0, normalized)
-        self._set_connection_status("Saved. Future logins can use this live server without retyping it.", Colors.PRIMARY)
+        self._set_connection_status("Saved. Future desktop logins will prefill this SystemOptiflow server URL.", Colors.PRIMARY)
 
     def _clear_connection_profile(self):
         self.connection_profile.clear_last_server_url()
         if self.connection_entry is not None:
             self.connection_entry.delete(0, tk.END)
-        if self.prefill_switch is not None:
-            self.prefill_switch.deselect()
-        self._set_connection_status("Saved live server cleared. Future launches will start in local mode.", Colors.TEXT_MUTED)
+        fallback_url = get_public_base_url()
+        if self.connection_entry is not None and fallback_url:
+            self.connection_entry.insert(0, fallback_url)
+            self._set_connection_status("Desktop-specific URL cleared. PUBLIC_BASE_URL is now the default live server hint.", Colors.TEXT_MUTED)
+            return
+        self._set_connection_status("Saved server URL cleared. Future launches will start in local demo mode.", Colors.TEXT_MUTED)
 
     def create_combobox_card(self, parent, title, icon, options, row, col):
         self.create_phone_camera_card(parent, options, row, col)

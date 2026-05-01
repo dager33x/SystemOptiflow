@@ -13,13 +13,14 @@ from views.pages import (
     DashboardPage, TrafficReportsPage, IncidentHistoryPage,
     ViolationLogsPage, SettingsPage, IssueReportsPage, AdminUsersPage
 )
+from views.pages.settings import _LocalSettingsProvider
 
 from views.components.notification import NotificationManager
 
 class MainController:
     """Main application controller with 4-way camera and AI integration"""
     
-    def __init__(self, root, view, db=None, current_user=None, auth_controller=None, on_logout_callback=None, violation_controller=None, accident_controller=None, connection_profile=None):
+    def __init__(self, root, view, db=None, current_user=None, auth_controller=None, on_logout_callback=None, violation_controller=None, accident_controller=None, connection_profile=None, camera_managers=None, settings_provider=None):
         self.root = root
         self.view = view
         self.db = db
@@ -29,6 +30,10 @@ class MainController:
         self.accident_controller = accident_controller
         self.on_logout_callback = on_logout_callback
         self.connection_profile = connection_profile
+        self._injected_camera_managers = camera_managers
+        self.settings_provider = settings_provider or _LocalSettingsProvider()
+        self.hybrid_mode = self._injected_camera_managers is not None
+        self._last_settings_refresh = 0.0
         
         # Initialize Notification System
         self.notification_manager = NotificationManager(root)
@@ -49,44 +54,17 @@ class MainController:
             'west': 3
         }
         
-        # Camera Managers (0, 1, 2, 3)
-        self.camera_managers = {}
-        for i, direction in enumerate(self.directions):
-            self.camera_managers[direction] = CameraManager(camera_index=i)
-            
-        # Initialize YOLO and DQN-based Traffic Controller
-        # Try to load the best trained model; fall back to fresh model if not found
-        import os as _os
-        import sys
-        
-        # PyInstaller safe paths
-        workspace_dir = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-        if workspace_dir not in sys.path:
-            sys.path.insert(0, workspace_dir)
-        from utils.paths import get_resource_path
-            
-        _model_candidates = [
-            "Optiflow_Dqn.pth",
-            "models/dqn/dqn_best.pth",
-            "models/dqn/dqn_final.pth",
-        ]
-        _selected_model = next(
-            (get_resource_path(p) for p in _model_candidates if _os.path.exists(get_resource_path(p))), None
-        )
-        self.yolo_detector = YOLODetector("best.pt")
-        self.traffic_controller = TrafficLightController(
-            num_lanes=4,
-            model_path=_selected_model,
-            use_pretrained=(_selected_model is not None)
-        )
-        if _selected_model:
-            self.logger.info(f"[Main] Loaded trained DQN model: {_selected_model}")
+        # Camera Managers (0, 1, 2, 3) — use injected managers in hybrid mode
+        if self._injected_camera_managers is not None:
+            self.camera_managers = self._injected_camera_managers
         else:
-            self.logger.warning("[Main] No trained DQN model found — using untrained network. Run run_training.py first.")
-
-        # Wire violation screenshot callback into the DQN Rule Controller
-        # so frames are auto-saved whenever a z_jaywalker detection fires.
-        self.traffic_controller.set_screenshot_callback(self._rule_violation_screenshot)
+            self.camera_managers = {}
+            for i, direction in enumerate(self.directions):
+                self.camera_managers[direction] = CameraManager(camera_index=i)
+            
+        # YOLO and DQN are loaded lazily in the camera thread to avoid blocking the UI.
+        self.yolo_detector = None
+        self.traffic_controller = None
 
         # Per-lane frame cache so the rule controller can capture the right frame
         self._lane_frames: dict = {i: None for i in range(4)}
@@ -140,6 +118,7 @@ class MainController:
             self.pages['violation_logs'] = ViolationLogsPage(self.view.content_area, self.violation_controller, self.current_user)
             self.pages['settings'] = SettingsPage(
                 self.view.content_area,
+                settings_provider=self.settings_provider,
                 connection_profile=self.connection_profile,
             )
             
@@ -233,6 +212,8 @@ class MainController:
                 page = self.pages[page_name]
                 page.get_widget().pack(fill=tk.BOTH, expand=True)
                 self.current_page = page
+                if hasattr(page, 'on_show'):
+                    page.on_show()
         except Exception as e:
             print(f"Navigation error: {e}")
     
@@ -251,6 +232,22 @@ class MainController:
         # Phone stream URLs
         return source.startswith(("rtsp://", "http://", "https://", "rtsps://"))
 
+    def _get_setting(self, key: str, default=None):
+        return self.settings_provider.get(key, default)
+
+    def _refresh_settings(self, force: bool = False):
+        refresh = getattr(self.settings_provider, "refresh", None)
+        if not callable(refresh):
+            return
+        now = time.time()
+        if not force and now - self._last_settings_refresh < 5.0:
+            return
+        try:
+            refresh()
+            self._last_settings_refresh = now
+        except Exception as exc:
+            self.logger.debug(f"Settings refresh skipped: {exc}")
+
     @staticmethod
     def _resolve_source(source: str):
         """
@@ -268,12 +265,12 @@ class MainController:
 
     def start_camera_feed(self):
         """Start camera feeds in background thread"""
-        from utils.app_config import SETTINGS
-        # Initialize all cameras based on SETTINGS
+        self._refresh_settings(force=True)
+        # Initialize all cameras based on the active settings provider
         for direction in self.directions:
-            source = SETTINGS.get(f"camera_source_{direction}", "Simulated")
+            source = self._get_setting(f"camera_source_{direction}", "Simulated")
             self.states[direction]["current_source"] = source
-            if self._is_live_source(source):
+            if self.hybrid_mode or self._is_live_source(source):
                 resolved = self._resolve_source(source)
                 self.camera_managers[direction].initialize_source(resolved)
 
@@ -282,11 +279,40 @@ class MainController:
 
         self.logger.info("Camera feed started with DQN traffic control")
 
+    def _init_models(self):
+        """Load YOLO and DQN models. Called at the start of the camera thread to avoid UI freeze."""
+        import os as _os
+        import sys
+        workspace_dir = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        if workspace_dir not in sys.path:
+            sys.path.insert(0, workspace_dir)
+        from utils.paths import get_resource_path
+        _model_candidates = [
+            "Optiflow_Dqn.pth",
+            "models/dqn/dqn_best.pth",
+            "models/dqn/dqn_final.pth",
+        ]
+        _selected_model = next(
+            (get_resource_path(p) for p in _model_candidates if _os.path.exists(get_resource_path(p))), None
+        )
+        self.yolo_detector = YOLODetector("best.pt")
+        self.traffic_controller = TrafficLightController(
+            num_lanes=4,
+            model_path=_selected_model,
+            use_pretrained=(_selected_model is not None),
+        )
+        self.traffic_controller.set_screenshot_callback(self._rule_violation_screenshot)
+        if _selected_model:
+            self.logger.info(f"[Main] Loaded trained DQN model: {_selected_model}")
+        else:
+            self.logger.warning("[Main] No trained DQN model found — using untrained network.")
+
     def camera_loop(self):
         """Background thread for camera processing with DQN decision making"""
-        
+        self._init_models()
+
         self.logger.info("🚀 CAMERA LOOP STARTED!")
-        
+
         # Traffic light state is now fully managed by TrafficLightController.
         # The controller tracks: phase, buffer lock, emergency override, starvation.
         # We only need to push detections into it and read back the active lane/phase.
@@ -301,6 +327,7 @@ class MainController:
         while self.is_running:
             current_time = time.time()
             loop_count += 1
+            self._refresh_settings()
             
             # Status update every 5 seconds — read state from the controller, not cycle_state
             if current_time - last_status_time >= 5.0:
@@ -346,27 +373,28 @@ class MainController:
                     # ---------------------------
                     # READ GLOBAL SETTINGS
                     # ---------------------------
-                    # We check the dict inside the loop for real-time updates
-                    from utils.app_config import SETTINGS
-                    
-                    enable_detection = SETTINGS.get("enable_detection", True)
-                    show_boxes = SETTINGS.get("show_bounding_boxes", True)
-                    show_confidence = SETTINGS.get("show_confidence", True)
-                    show_sim_text = SETTINGS.get("show_simulation_text", True)
-                    dark_mode_cam = SETTINGS.get("dark_mode_cam", False)
-                    camera_source = SETTINGS.get(f"camera_source_{direction}", "Simulated")
+                    # We check the active settings provider inside the loop for real-time updates
+                    enable_detection = self._get_setting("enable_detection", True)
+                    show_boxes = self._get_setting("show_bounding_boxes", True)
+                    show_confidence = self._get_setting("show_confidence", True)
+                    show_sim_text = self._get_setting("show_simulation_text", True)
+                    dark_mode_cam = self._get_setting("dark_mode_cam", False)
+                    camera_source = self._get_setting(f"camera_source_{direction}", "Simulated")
                     
                     # Check if source changed
                     if camera_source != state.get("current_source", "Simulated"):
-                        self.camera_managers[direction].release()
-                        if self._is_live_source(camera_source):
+                        if not self.hybrid_mode:
+                            self.camera_managers[direction].release()
+                        if self.hybrid_mode or self._is_live_source(camera_source):
                             resolved = self._resolve_source(camera_source)
                             self.camera_managers[direction].initialize_source(resolved)
                         state["current_source"] = camera_source
                     
                     # Get Frame
                     frame = None
-                    if self._is_live_source(camera_source):
+                    if self.hybrid_mode:
+                        frame = self.camera_managers[direction].get_frame()
+                    elif self._is_live_source(camera_source):
                         frame = self.camera_managers[direction].get_frame()
                     
                     if frame is None:
@@ -375,7 +403,7 @@ class MainController:
                         
                         # SIMULATOR: Generate fake traffic for cameras targeting Simulation
                         detections = []
-                        if camera_source == "Simulated" or frame is None:
+                        if not self.hybrid_mode and (camera_source == "Simulated" or frame is None):
                             # DYNAMIC SIMULATION: Smoothly rise and fall over time to test DQN
                             import random
                             
@@ -402,38 +430,39 @@ class MainController:
                                 state["sim_count"] = max(0, min(50, state["sim_count"] + step))
                                 
                             count = int(state["sim_count"])
-                            
-                            # Create fake detections (Simulator always creates them, but we might not draw them)
-                            # Create fake detections (Simulator always creates them, but we might not draw them)
+
+                            _sim_types = ['car', 'car', 'car', 'truck', 'bus', 'motorcycle', 'jeepney', 'bicycle']
+                            _sim_sizes = {
+                                'car': (60, 40), 'motorcycle': (40, 30), 'bicycle': (38, 28),
+                                'truck': (80, 55), 'bus': (80, 55), 'jeepney': (70, 45),
+                            }
+                            # Create fake detections
                             for _ in range(count):
-                                cx, cy = random.randint(100, 500), random.randint(100, 400)
-                                w, h = 60, 40 # Approx car size
+                                v_type = random.choice(_sim_types)
+                                w, h = _sim_sizes[v_type]
+                                cx, cy = random.randint(80, 540), random.randint(60, 400)
                                 x1, y1 = cx - w//2, cy - h//2
                                 x2, y2 = cx + w//2, cy + h//2
-                                
-                                # Randomize types? For now mostly cars
-                                v_type = random.choice(['car', 'car', 'car', 'truck', 'bus', 'motorcycle'])
-                                
+
                                 det = {
-                                    'class_name': v_type, 
-                                    'confidence': 0.95,
+                                    'class_name': v_type,
+                                    'confidence': round(random.uniform(0.85, 0.98), 2),
                                     'bbox': [x1, y1, x2, y2],
                                     'center': (cx, cy)
                                 }
                                 detections.append(det)
-                                
+
                                 # Draw if enabled
                                 if show_boxes:
                                     color = getattr(self.yolo_detector, 'color_map', {}).get(v_type, (0, 255, 0))
                                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                                    # Simple label
-                                    # cv2.putText(frame, v_type, (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                                    cv2.putText(frame, v_type, (x1, max(y1 - 5, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
                             
                             # -------------------------------------------------------------
                             # AI EVENT SIMULATION (Accidents & Violations)
                             # -------------------------------------------------------------
                             # Check settings
-                            enable_sim = SETTINGS.get("enable_sim_events", True)
+                            enable_sim = self._get_setting("enable_sim_events", True)
                             
                             if enable_sim:
                                 # 1. Simulate ACCIDENT (Random low probability)
@@ -486,7 +515,12 @@ class MainController:
                                     last_acc = getattr(self, 'last_accident_log', 0)
                                     if hasattr(self, 'accident_controller') and self.accident_controller:
                                         if current_time - last_acc > 10.0:
-                                            self.accident_controller.report_accident(lane=lane_id, severity="High", description="Simulated Multi-Vehicle Crash")
+                                            self.accident_controller.report_accident(
+                                                lane=lane_id,
+                                                severity="High",
+                                                description="Simulated Multi-Vehicle Crash",
+                                                frame=frame,
+                                            )
                                             self.last_accident_log = current_time
                                             self.logger.info(f"Simulated Accident recorded for {direction}")
                                             # Notify
@@ -556,7 +590,8 @@ class MainController:
                                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                         else:
                              if show_sim_text:
-                                 cv2.putText(frame, "No Signal - No Traffic", (150, 240), 
+                                 message = "Waiting for server stream" if self.hybrid_mode else "No Signal - No Traffic"
+                                 cv2.putText(frame, message, (120, 240), 
                                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
                         
                         annotated_frame = frame
@@ -576,7 +611,7 @@ class MainController:
                             # Determine if we should run fresh detection
                             # Throttle YOLO inference - gives the UI display loop
                             # more time per cycle so video rendering stays smooth
-                            throttle_val = SETTINGS.get("ai_throttle_seconds", 0.125)
+                            throttle_val = self._get_setting("ai_throttle_seconds", 0.125)
                             should_detect = (current_ai_time - last_ai_time) > throttle_val
                             
                             if should_detect:
@@ -796,7 +831,8 @@ class MainController:
                                         if current_time - last_acc > 10.0:
                                             self.accident_controller.report_accident(
                                                 lane=lane_id, severity="Severe",
-                                                description=accident_desc
+                                                description=accident_desc,
+                                                frame=annotated_frame,
                                             )
                                             self.last_accident_log = current_time
                                             self.root.after(0, lambda: self.notification_manager.show(

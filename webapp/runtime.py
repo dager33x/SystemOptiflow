@@ -6,6 +6,7 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Deque, Dict, List, Optional, Set, Tuple
+from uuid import uuid4
 
 from utils.app_config import SETTINGS
 
@@ -13,6 +14,24 @@ from utils.app_config import SETTINGS
 LANES = ["north", "south", "east", "west"]
 LANE_INDEX = {lane: index for index, lane in enumerate(LANES)}
 TRAFFIC_CLASSES = ["car", "bus", "truck", "motorcycle", "bicycle", "jeepney"]
+
+_SIM_COLORS = {
+    "car":        (0, 255, 0),
+    "motorcycle": (0, 255, 255),
+    "bus":        (255, 255, 0),
+    "truck":      (0, 165, 255),
+    "bicycle":    (255, 0, 255),
+    "jeepney":    (128, 0, 128),
+}
+_SIM_TYPES = ["car", "car", "car", "truck", "bus", "motorcycle", "jeepney", "bicycle"]
+_SIM_SIZES = {
+    "car":        (60, 40),
+    "motorcycle": (40, 30),
+    "bicycle":    (38, 28),
+    "truck":      (80, 55),
+    "bus":        (80, 55),
+    "jeepney":    (70, 45),
+}
 
 
 class CameraRuntime:
@@ -35,7 +54,7 @@ class CameraRuntime:
 
     @staticmethod
     def _is_live(source: str) -> bool:
-        return source != "Simulated"
+        return source not in {"Simulated", "Browser"}
 
     @staticmethod
     def _resolve_source(source: str):
@@ -60,7 +79,6 @@ class CameraRuntime:
             if not self._is_live(desired):
                 continue
 
-            # Release stale or dead managers so we fall through to reconnect
             if manager and (not manager.is_running or manager.is_stale(15.0)):
                 manager.release()
                 self.managers.pop(lane, None)
@@ -98,6 +116,8 @@ class CameraRuntime:
         source = self.sources.get(lane, "Simulated")
         if source == "Simulated":
             return "simulated"
+        if source == "Browser":
+            return "waiting"
         manager = self.managers.get(lane)
         if manager and manager.is_running:
             return "active"
@@ -115,9 +135,7 @@ class DetectionRuntime:
     def __init__(self):
         self.detector = None
         self.last_run: Dict[str, float] = {lane: 0.0 for lane in LANES}
-        self.cache: Dict[str, List[Dict[str, Any]]] = {
-            lane: [] for lane in LANES
-        }
+        self.cache: Dict[str, List[Dict[str, Any]]] = {lane: [] for lane in LANES}
 
     def _load_detector(self):
         if self.detector is None:
@@ -173,8 +191,14 @@ class TrafficRuntime:
                 "latest_jpeg": None,
                 "latest_jpeg_at": 0.0,
                 "last_event_at": {},
-                "sim_count": random.randint(4, 18),
+                "camera_error": None,
+                "stream_state": "idle",
+                "browser_session_id": None,
+                "sim_count": random.randint(5, 30),
                 "sim_trend": random.choice([-1, 1]),
+                "last_sim_change": 0.0,
+                "last_sim_accident": 0.0,
+                "last_sim_violation": 0.0,
                 "note": "",
             }
             for lane in LANES
@@ -253,30 +277,63 @@ class TrafficRuntime:
         import numpy as np
 
         state = self.states[lane]
-        if random.random() < 0.2:
-            if state["sim_count"] >= 28:
+        now = time.time()
+        if now - state["last_sim_change"] > 1.5:
+            state["last_sim_change"] = now
+            if state["sim_count"] >= 45:
                 state["sim_trend"] = -1
-            elif state["sim_count"] <= 2:
+            elif state["sim_count"] <= 3:
                 state["sim_trend"] = 1
-            state["sim_count"] = max(0, min(30, state["sim_count"] + (state["sim_trend"] * random.randint(1, 3))))
+            elif random.random() < 0.15:
+                state["sim_trend"] *= -1
+            step = random.randint(1, 4) * state["sim_trend"]
+            state["sim_count"] = max(0, min(45, state["sim_count"] + step))
 
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         detections: List[Dict[str, Any]] = []
-        for index in range(state["sim_count"]):
-            x1 = 25 + (index % 6) * 95
-            y1 = 60 + (index // 6) * 80
-            x2 = x1 + 56
-            y2 = y1 + 34
-            class_name = random.choice(TRAFFIC_CLASSES)
+        for _ in range(state["sim_count"]):
+            v_type = random.choice(_SIM_TYPES)
+            w, h = _SIM_SIZES[v_type]
+            cx = random.randint(80, 540)
+            cy = random.randint(60, 400)
+            x1, y1 = cx - w // 2, cy - h // 2
+            x2, y2 = cx + w // 2, cy + h // 2
+            color = _SIM_COLORS[v_type]
             detections.append(
                 {
-                    "class_name": class_name,
-                    "confidence": 0.99,
+                    "class_name": v_type,
+                    "confidence": round(random.uniform(0.85, 0.98), 2),
                     "bbox": (x1, y1, x2, y2),
-                    "center": ((x1 + x2) // 2, (y1 + y2) // 2),
+                    "center": (cx, cy),
                 }
             )
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 180, 255), 2)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame, v_type, (x1, max(y1 - 5, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+
+        # Simulated accident: 2% chance per call, throttled to 10 s between events
+        if random.random() < 0.02 and now - state["last_sim_accident"] > 10.0:
+            state["last_sim_accident"] = now
+            cx, cy = 320, 240
+            detections.append({
+                "class_name": "z_accident",
+                "confidence": 0.95,
+                "bbox": (cx - 50, cy - 40, cx + 20, cy + 30),
+                "center": (cx, cy),
+            })
+            cv2.rectangle(frame, (cx - 50, cy - 40), (cx + 20, cy + 30), (0, 0, 220), 3)
+            cv2.putText(frame, "ACCIDENT", (cx - 50, cy - 45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 220), 1)
+
+        # Simulated violation: 3% chance when signal is RED, throttled to 5 s between events
+        if state.get("signal_state") == "RED" and random.random() < 0.03 and now - state["last_sim_violation"] > 5.0:
+            state["last_sim_violation"] = now
+            detections.append({
+                "class_name": "z_jaywalker",
+                "confidence": 0.95,
+                "bbox": (100, 300, 210, 380),
+                "center": (155, 340),
+            })
+            cv2.rectangle(frame, (100, 300), (210, 380), (0, 0, 255), 3)
+            cv2.putText(frame, "VIOLATION", (100, 295), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
         cv2.putText(frame, f"{lane.upper()} SIMULATION", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         cv2.putText(frame, f"Vehicles: {state['sim_count']}", (20, 455), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (120, 255, 120), 2)
@@ -296,28 +353,40 @@ class TrafficRuntime:
         state = self.states[lane]
         source = SETTINGS.get(f"camera_source_{lane}", "Simulated")
         throttle_seconds = float(SETTINGS.get("ai_throttle_seconds", 0.2))
+        camera_status = "unknown"
 
         if source == "Browser":
             frame = self.browser_frames.get(lane)
             if frame is not None:
                 detections, annotated = self.detection_runtime.process(lane, frame, throttle_seconds)
                 state["note"] = "Browser stream active."
+                stream_state = "live"
+                camera_status = "active"
             else:
                 frame, detections = self._simulate_frame(lane)
                 annotated = frame
-                state["note"] = "Waiting for browser stream…"
+                state["note"] = "Waiting for browser stream..."
+                stream_state = "waiting"
+                camera_status = "waiting"
         elif source == "Simulated":
             frame, detections = self._simulate_frame(lane)
             annotated = frame
+            state["note"] = "Simulation mode active."
+            stream_state = "simulated"
+            camera_status = "simulated"
         else:
             frame = self.camera_runtime.get_frame(lane)
             if frame is None:
                 frame, detections = self._simulate_frame(lane)
                 annotated = frame
                 state["note"] = "Live source unavailable, showing simulation fallback."
+                stream_state = "reconnecting"
+                camera_status = "error"
             else:
                 detections, annotated = self.detection_runtime.process(lane, frame, throttle_seconds)
                 state["note"] = ""
+                stream_state = "live"
+                camera_status = "active"
 
         vehicle_count = len([d for d in detections if d.get("class_name") in TRAFFIC_CLASSES])
         lane_id = LANE_INDEX[lane]
@@ -331,11 +400,13 @@ class TrafficRuntime:
 
         with self.lock:
             state["source"] = source
-            state["camera_status"] = self.camera_runtime.status(lane)
+            state["camera_status"] = camera_status
+            state["camera_error"] = self.camera_runtime.errors.get(lane) if self.camera_runtime else None
             state["vehicle_count"] = vehicle_count
             state["detections"] = detections
             state["latest_jpeg"] = jpeg_bytes
             state["latest_jpeg_at"] = current_time
+            state["stream_state"] = stream_state
 
         self._notify_viewers(lane, jpeg_bytes)
         return vehicle_count
@@ -388,6 +459,10 @@ class TrafficRuntime:
                     "note": state.get("note", ""),
                     "detections": [det.get("class_name") for det in state["detections"]],
                     "capture_mode": self.browser_mode.get(lane),
+                    "camera_error": state.get("camera_error"),
+                    "stream_state": state.get("stream_state", "idle"),
+                    "last_frame_age": round(max(0.0, time.time() - state["latest_jpeg_at"]), 2) if state["latest_jpeg_at"] else None,
+                    "viewer_protocol": str(SETTINGS.get("viewing_protocol", "websocket")),
                 }
                 for lane, state in self.states.items()
             }
@@ -403,6 +478,25 @@ class TrafficRuntime:
 
     def set_browser_mode(self, lane: str, mode: Optional[str]) -> None:
         self.browser_mode[lane] = mode
+
+    def begin_browser_stream(self, lane: str, mode: str) -> str:
+        token = f"{mode}-{uuid4().hex}"
+        with self.lock:
+            self.browser_mode[lane] = mode
+            self.states[lane]["browser_session_id"] = token
+            self.states[lane]["stream_state"] = "connecting"
+            self.states[lane]["note"] = f"Browser stream negotiating ({mode})."
+        return token
+
+    def end_browser_stream(self, lane: str, token: Optional[str], note: str = "Browser stream disconnected.") -> None:
+        with self.lock:
+            if token and self.states[lane].get("browser_session_id") != token:
+                return
+            self.browser_mode[lane] = None
+            self.states[lane]["browser_session_id"] = None
+            self.states[lane]["stream_state"] = "idle"
+            self.states[lane]["note"] = note
+        self.browser_frames[lane] = None
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -441,11 +535,7 @@ class TrafficRuntime:
             self.browser_frames[lane] = frame
 
     async def inject_webrtc_track(self, lane: str, track) -> None:
-        """Receive video frames from an aiortc VideoStreamTrack and feed them into the pipeline.
-
-        Runs as an asyncio Task for the lifetime of the WebRTC peer connection.
-        MediaStreamError is raised by aiortc when the track ends.
-        """
+        """Receive video frames from an aiortc VideoStreamTrack and feed them into the pipeline."""
         import av
 
         try:
@@ -454,7 +544,6 @@ class TrafficRuntime:
                 img = frame.to_ndarray(format="bgr24")
                 self.browser_frames[lane] = img
         except Exception:
-            # Track ended or peer disconnected — caller handles cleanup.
             pass
 
     def mjpeg_frame(self, lane: str) -> Optional[bytes]:

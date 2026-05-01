@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS public.accidents (
     description TEXT,
     reported_by TEXT,
     timestamp TIMESTAMPTZ DEFAULT NOW(),
-    resolved BOOLEAN DEFAULT FALSE
+    resolved BOOLEAN DEFAULT FALSE,
+    image_url TEXT
 );
 
 -- 5. EMERGENCY EVENTS TABLE
@@ -120,9 +121,34 @@ Create a file named `.env` in the project root directory and paste the following
 ```bash
 SUPABASE_URL=your_project_url_here
 SUPABASE_KEY=your_anon_public_key_here
+# Service role key for server-side Storage uploads (bypasses RLS)
+# Supabase Dashboard → Project Settings → API → service_role
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key_here
 ```
 
-## 3. Install Requirements
+> **Security**: `SUPABASE_SERVICE_ROLE_KEY` is used only by the backend process. Never expose it in the browser or commit it to source control.
+
+## 3. Supabase Storage Setup
+
+Evidence images (violations, accidents) are uploaded to Supabase Storage. Complete these steps once in the Supabase Dashboard:
+
+1. Go to **Storage → New bucket**
+   - Name: `evidence`
+   - Public bucket: **Yes** (images are served as public URLs in the dashboard)
+
+2. Copy your **service_role** key from **Project Settings → API → service_role (secret)** and add it as `SUPABASE_SERVICE_ROLE_KEY` in your `.env` file. The app uses this key for server-side uploads, which bypasses bucket RLS automatically — no additional storage policies are required.
+
+3. *(Optional — if not using service_role key)* Add these Storage policies on the `evidence` bucket under **Storage → Policies**:
+   - `INSERT` for anon role: `(bucket_id = 'evidence')`
+   - `SELECT` is covered automatically by the public bucket setting
+
+4. Run this migration in the **SQL Editor** to add the `image_url` column to the accidents table if you already created the schema before this update:
+
+```sql
+ALTER TABLE public.accidents ADD COLUMN IF NOT EXISTS image_url TEXT;
+```
+
+## 4. Install Requirements
 Run this command in your terminal to install the necessary libraries:
 
 ```bash

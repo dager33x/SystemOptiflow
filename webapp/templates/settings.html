@@ -1,41 +1,113 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Settings · SystemOptiflow</title>
-  <link rel="stylesheet" href="/static/app.css?v=3.0">
-</head>
-<body class="app-body">
-  <nav class="app-nav">
-    <span class="brand">SystemOptiflow</span>
-    <div class="app-nav-links">
-      <a href="/dashboard"><span>Dashboard</span></a>
-      <a href="/violations"><span>Violations</span></a>
-      <a href="/reports"><span>Reports</span></a>
-      <a href="/incidents"><span>Incidents</span></a>
-      <a href="/traffic-reports"><span>Traffic Reports</span></a>
-      <a href="/stream" class="stream-link">📱 <span>Stream</span></a>
-      <a href="/settings" class="active"><span>Settings</span></a>
-    </div>
-    <div class="app-nav-right">
-      <span class="badge">{{ user.username }}</span>
-      <button id="logout-button" class="ghost" style="width:auto;padding:8px 14px">Log out</button>
-    </div>
-  </nav>
+{% extends "base.html" %}
+{% block head %}
+<style>
+
+    .lane-source-grid { display: grid; gap: 14px; margin-top: 16px; }
+    .lane-source-card {
+      display: grid;
+      gap: 12px;
+      padding: 16px;
+      border-radius: 16px;
+      background: rgba(7, 18, 27, 0.78);
+      border: 1px solid rgba(159, 183, 201, 0.16);
+    }
+    .lane-source-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .lane-source-head strong { letter-spacing: 0.06em; }
+    .lane-source-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .lane-source-status.connected { background: rgba(156, 242, 141, 0.14); color: var(--accent-2); }
+    .lane-source-status.simulated { background: rgba(159, 183, 201, 0.12); color: var(--muted); }
+    .lane-source-status.browser { background: rgba(118, 189, 255, 0.14); color: var(--accent); }
+    .lane-source-status.error { background: rgba(255, 123, 114, 0.14); color: var(--danger); }
+    .lane-source-controls {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 10px;
+      align-items: end;
+    }
+    .lane-source-controls input { width: 100%; }
+    .lane-source-note {
+      min-height: 1.2em;
+      font-size: 0.84rem;
+      color: var(--muted);
+    }
+    .lane-source-note.ok { color: var(--accent-2); }
+    .lane-source-note.error { color: var(--danger); }
+    .qr-modal-copy {
+      width: 100%;
+      font-family: inherit;
+      margin-top: 12px;
+    }
+    .qr-preview {
+      min-height: 220px;
+      display: grid;
+      place-items: center;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.96);
+      padding: 16px;
+      margin: 16px 0;
+    }
+    .qr-preview canvas,
+    .qr-preview img {
+      max-width: 100%;
+      height: auto;
+    }
+    .qr-modal-help {
+      display: grid;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    @media (max-width: 760px) {
+      .lane-source-controls { grid-template-columns: 1fr; }
+      .lane-source-controls button { width: 100%; }
+    }
+  
+</style>
+{% endblock %}
+
+{% block content %}
 
   <main style="padding:20px 24px;padding-bottom:80px">
     <div class="panel settings-page">
       <div class="settings-section">
         <h3>Camera Sources</h3>
-        <p class="hint">Examples: <code>Simulated</code> · <code>Camera 0</code> · <code>rtsp://mediamtx:8554/north</code> · <code>http://phone-ip:8080/video</code></p>
-        <div class="settings-grid" style="margin-top:16px">
+        <p class="hint">Examples: <code>Simulated</code> / <code>Camera 0</code> / <code>rtsp://mediamtx:8554/north</code> / <code>http://phone-ip:8080/video</code></p>
+        <div class="lane-source-grid">
           {% for lane in lanes %}
-          <label class="settings-field">
-            <span>{{ lane|upper }}</span>
-            <input type="text" id="src-{{ lane }}" placeholder="Simulated">
-          </label>
+          <section class="lane-source-card" data-lane-card="{{ lane }}">
+            <div class="lane-source-head">
+              <strong>{{ lane|upper }}</strong>
+              <span id="status-{{ lane }}" class="lane-source-status simulated">Simulated</span>
+            </div>
+            <div class="lane-source-controls">
+              <label class="settings-field" style="margin:0">
+                <span>Lane source</span>
+                <input type="text" id="src-{{ lane }}" placeholder="Simulated">
+              </label>
+              <button type="button" class="button-muted" data-test-lane="{{ lane }}">Test</button>
+              <button type="button" class="button-success" data-qr-lane="{{ lane }}">QR</button>
+            </div>
+            <p id="status-note-{{ lane }}" class="lane-source-note">Waiting for runtime status.</p>
+          </section>
           {% endfor %}
+        </div>
+        <div class="settings-grid" style="margin-top:16px">
           <label class="settings-field">
             <span>RTSP transport</span>
             <select id="src-rtsp-transport">
@@ -86,20 +158,20 @@
 
       <div class="settings-section">
         <h3>Dashboard Viewing Protocol</h3>
-        <p class="hint">WebSocket Push delivers frames instantly as they are ready. MJPEG is the legacy fallback (requires a page reload to change).</p>
+        <p class="hint">WebSocket push delivers frames as soon as they are ready. MJPEG is the compatibility fallback.</p>
         <div class="settings-grid" style="margin-top:16px">
           <label class="settings-field">
             <span>Viewing protocol</span>
             <select id="viewing_protocol">
-              <option value="websocket">WebSocket Push (low-latency, recommended)</option>
-              <option value="mjpeg">MJPEG (legacy)</option>
+              <option value="websocket">WebSocket push (recommended)</option>
+              <option value="mjpeg">MJPEG (fallback)</option>
             </select>
           </label>
           <label class="settings-field">
             <span>Phone capture mode</span>
             <select id="phone_capture_mode">
-              <option value="canvas_jpeg">Canvas JPEG (default, no extra setup)</option>
-              <option value="webrtc">WebRTC (low-latency, cellular — requires coturn)</option>
+              <option value="canvas_jpeg">Canvas JPEG (default)</option>
+              <option value="webrtc">WebRTC (requires coturn)</option>
             </select>
           </label>
         </div>
@@ -108,80 +180,35 @@
   </main>
 
   <div class="save-bar">
-    <button id="settings-save">Save &amp; apply</button>
+    <button id="settings-save">Save and apply</button>
     <span id="settings-msg" style="font-size:.9rem"></span>
   </div>
 
-  <script>
-    async function loadSettings() {
-      const res = await fetch("/api/settings");
-      if (!res.ok) return;
-      const { settings: s } = await res.json();
-      ["north","south","east","west"].forEach(l => {
-        const el = document.getElementById(`src-${l}`);
-        if (el) el.value = s[`camera_source_${l}`] ?? "Simulated";
-      });
-      const t = document.getElementById("src-rtsp-transport");
-      if (t) t.value = s.rtsp_transport ?? "tcp";
-      ["enable_detection","show_bounding_boxes","show_confidence"].forEach(k => {
-        const el = document.getElementById(k);
-        if (el) el.checked = s[k] === "true" || s[k] === true;
-      });
-      const thr = document.getElementById("ai_throttle_seconds");
-      if (thr) thr.value = s.ai_throttle_seconds ?? "0.2";
-      ["browser_capture_fps","stream_output_fps","browser_stream_jpeg_quality","browser_stream_width","browser_stream_height"].forEach(k => {
-        const el = document.getElementById(k);
-        if (el && s[k] != null) el.value = s[k];
-      });
-      const vp = document.getElementById("viewing_protocol");
-      if (vp) vp.value = s.viewing_protocol ?? "websocket";
-      const pc = document.getElementById("phone_capture_mode");
-      if (pc) pc.value = s.phone_capture_mode ?? "canvas_jpeg";
-    }
+  <div class="app-modal-overlay" id="qr-modal">
+    <div class="app-modal">
+      <div class="app-modal-header">
+        <div>
+          <h2 id="qr-modal-title">Phone Stream QR</h2>
+          <p class="app-modal-subtitle">Scan on a phone, sign in, and continue to the selected lane stream page.</p>
+        </div>
+        <button id="qr-modal-close" class="close-btn" type="button">Close</button>
+      </div>
+      <div class="qr-preview" id="qr-preview"></div>
+      <label class="settings-field" style="margin:0">
+        <span>Raw stream URL</span>
+        <input id="qr-modal-url" class="qr-modal-copy" type="text" readonly>
+      </label>
+      <div class="qr-modal-help">
+        <span>Phone sign-in is still required before streaming starts.</span>
+        <span id="qr-modal-hint">Or enter your phone's IP Webcam URL above, for example: <code>http://192.168.x.x:8080/video</code></span>
+      </div>
+    </div>
+  </div>
 
-    loadSettings();
+  
+  
+{% block scripts %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" integrity="sha512-CNgIRecGo7nphbeZ04Sc13ka07paqdeTu0WR1IM4kNcpmBAUSHSQX0FslNhTDadL4O5SAGapGt4FodqL8My0mA==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
-    document.getElementById("settings-save").addEventListener("click", async () => {
-      const msg = document.getElementById("settings-msg");
-      const updates = {};
-      ["north","south","east","west"].forEach(l => {
-        const v = (document.getElementById(`src-${l}`)?.value ?? "").trim();
-        updates[`camera_source_${l}`] = v || "Simulated";
-      });
-      updates.rtsp_transport = document.getElementById("src-rtsp-transport")?.value ?? "tcp";
-      ["enable_detection","show_bounding_boxes","show_confidence"].forEach(k => {
-        updates[k] = document.getElementById(k)?.checked ? "true" : "false";
-      });
-      updates.ai_throttle_seconds = document.getElementById("ai_throttle_seconds")?.value ?? "0.2";
-      updates.browser_capture_fps = document.getElementById("browser_capture_fps")?.value ?? "20";
-      updates.stream_output_fps = document.getElementById("stream_output_fps")?.value ?? "20";
-      updates.browser_stream_jpeg_quality = document.getElementById("browser_stream_jpeg_quality")?.value ?? "0.6";
-      updates.browser_stream_width = document.getElementById("browser_stream_width")?.value ?? "640";
-      updates.browser_stream_height = document.getElementById("browser_stream_height")?.value ?? "480";
-      updates.viewing_protocol = document.getElementById("viewing_protocol")?.value ?? "websocket";
-      updates.phone_capture_mode = document.getElementById("phone_capture_mode")?.value ?? "canvas_jpeg";
-      updates.browser_stream_width = document.getElementById("browser_stream_width")?.value ?? "640";
-      updates.browser_stream_height = document.getElementById("browser_stream_height")?.value ?? "480";
-
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settings: updates }),
-      });
-      if (res.ok) {
-        msg.style.color = "var(--accent-2)";
-        msg.textContent = "Saved! Streams will reconnect within 30s.";
-      } else {
-        msg.style.color = "var(--danger)";
-        msg.textContent = "Save failed.";
-      }
-      setTimeout(() => { msg.textContent = ""; }, 4000);
-    });
-
-    document.getElementById("logout-button")?.addEventListener("click", async () => {
-      await fetch("/api/auth/logout", { method: "POST" });
-      window.location.href = "/login";
-    });
-  </script>
-</body>
-</html>
+{% endblock %}
+{% endblock %}

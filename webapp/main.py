@@ -1,9 +1,15 @@
+import asyncio
+import ipaddress
 import logging
 import os
-import asyncio
+import re
+import time
 from pathlib import Path
+from typing import Optional
+from urllib.parse import quote
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, Form, HTTPException, Request, WebSocket
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -12,27 +18,33 @@ from starlette.websockets import WebSocketDisconnect
 
 from models.database import TrafficDB
 from models.user import User
-from webapp.auth import AuthError, AuthService
-from webapp.persistence import PersistenceService
-from webapp.settings_service import SettingsService
 from utils.app_config import SETTINGS
-from webapp.runtime import LANES, TrafficRuntime
+from utils.public_url import get_public_base_url, normalize_public_base_url
+from webapp.auth import AuthError, AuthService
+from webapp.evidence import safe_local_evidence_path
+from webapp.persistence import PersistenceService
+from webapp.releases import GitHubReleaseService
+from webapp.runtime import LANE_INDEX, LANES, TrafficRuntime
 from webapp.schemas import (
     AdminUserCreateRequest,
     AdminUserUpdateRequest,
+    CameraTestRequest,
     PasswordResetConfirmRequest,
     PasswordResetRequest,
-    ReportCreateRequest,
     RegisterRequest,
+    ReportCreateRequest,
     SettingsUpdateRequest,
     VerifyEmailRequest,
     WebRTCOfferRequest,
 )
+from webapp.settings_service import SettingsService
 
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 logger = logging.getLogger(__name__)
+_CAMERA_DEVICE_RE = re.compile(r"^Camera\s+(\d+)$")
+_ALLOWED_CAMERA_HOSTS = {"localhost", "127.0.0.1", "::1", "mediamtx"}
 
 
 def _require_user(request: Request):
@@ -49,22 +61,11 @@ def _require_admin(request: Request):
     return user
 
 
-def _safe_local_evidence_path(image_url: str) -> Path | None:
-    candidate = Path(image_url)
-    if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
-    candidate = candidate.resolve()
-    allowed_roots = [
-        (Path.cwd() / "assets" / "web_evidence").resolve(),
-        (Path.cwd() / "screenshots" / "violations").resolve(),
-    ]
-    for root in allowed_roots:
-        try:
-            candidate.relative_to(root)
-            return candidate
-        except ValueError:
-            continue
-    return None
+def _require_session_secret() -> str:
+    secret = (os.getenv("SESSION_SECRET") or "").strip()
+    if not secret or secret == "dev-secret-change-me":
+        raise RuntimeError("SESSION_SECRET must be set to a non-default value before starting the web app.")
+    return secret
 
 
 def _stream_settings_payload() -> dict:
@@ -76,6 +77,21 @@ def _stream_settings_payload() -> dict:
         "browser_stream_height": int(SETTINGS.get("browser_stream_height", 480)),
         "phone_capture_mode": str(SETTINGS.get("phone_capture_mode", "canvas_jpeg")),
     }
+
+
+def _safe_next_path(candidate: Optional[str], default: str = "/dashboard") -> str:
+    value = (candidate or "").strip()
+    if not value.startswith("/") or value.startswith("//"):
+        return default
+    return value
+
+
+def _login_redirect_target(request: Request) -> str:
+    target = request.url.path
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    safe_target = _safe_next_path(target, "/dashboard")
+    return f"/login?next={quote(safe_target, safe='')}"
 
 
 def _page_context(request: Request, title: str, **extra) -> dict:
@@ -92,9 +108,105 @@ def _page_context(request: Request, title: str, **extra) -> dict:
     return context
 
 
+def _public_page_context(request: Request, title: str, **extra) -> dict:
+    context = {
+        "request": request,
+        "title": title,
+        "user": request.session.get("user"),
+    }
+    context.update(extra)
+    return context
+
+
+def _resolve_camera_source(source: str):
+    value = (source or "").strip()
+    match = _CAMERA_DEVICE_RE.match(value)
+    if match:
+        return int(match.group(1))
+    return value
+
+
+def _is_safe_camera_source(source: str) -> bool:
+    value = (source or "").strip() or "Simulated"
+    if value in {"Simulated", "Browser"}:
+        return True
+
+    match = _CAMERA_DEVICE_RE.match(value)
+    if match:
+        return 0 <= int(match.group(1)) <= 16
+
+    parsed = urlparse(value)
+    if parsed.scheme not in {"rtsp", "rtsps", "http", "https"}:
+        return False
+    hostname = (parsed.hostname or "").strip().lower()
+    if not hostname:
+        return False
+    if hostname in _ALLOWED_CAMERA_HOSTS or hostname.endswith(".local"):
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_private or ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _probe_camera_source_sync(source: str) -> dict:
+    normalized_source = (source or "").strip() or "Simulated"
+    started = time.perf_counter()
+
+    if normalized_source in {"Simulated", "Browser"}:
+        return {
+            "ok": True,
+            "source": normalized_source,
+            "error": None,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+        }
+
+    import cv2
+
+    capture = None
+    try:
+        capture = cv2.VideoCapture(_resolve_camera_source(normalized_source))
+        if not capture or not capture.isOpened():
+            raise RuntimeError(f"Unable to open source {normalized_source}")
+        ok, _frame = capture.read()
+        if not ok:
+            raise RuntimeError(f"Unable to read a frame from {normalized_source}")
+        return {
+            "ok": True,
+            "source": normalized_source,
+            "error": None,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "source": normalized_source,
+            "error": str(exc),
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+        }
+    finally:
+        if capture is not None:
+            try:
+                capture.release()
+            except Exception:
+                pass
+
+
+def _evidence_response(item: Optional[dict], detail: str):
+    if not item or not item.get("image_url"):
+        raise HTTPException(status_code=404, detail=detail)
+    image_url = item["image_url"]
+    if image_url.startswith(("http://", "https://")):
+        return RedirectResponse(url=image_url, status_code=307)
+    local_path = safe_local_evidence_path(image_url)
+    if not local_path or not local_path.exists():
+        raise HTTPException(status_code=404, detail="Evidence image file is unavailable.")
+    return FileResponse(local_path)
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="SystemOptiflow Web", version="2.0.0")
-    app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "dev-secret-change-me"))
+    app.add_middleware(SessionMiddleware, secret_key=_require_session_secret())
     app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
     db = TrafficDB()
@@ -102,12 +214,15 @@ def create_app() -> FastAPI:
     auth_service = AuthService(db, persistence)
     runtime = TrafficRuntime(persistence)
     settings_service = SettingsService()
+    release_service = GitHubReleaseService()
+    webrtc_tasks: set[asyncio.Task] = set()
 
     app.state.db = db
     app.state.persistence = persistence
     app.state.auth_service = auth_service
     app.state.runtime = runtime
     app.state.settings_service = settings_service
+    app.state.release_service = release_service
 
     @app.on_event("startup")
     async def _startup():
@@ -128,15 +243,25 @@ def create_app() -> FastAPI:
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request):
+        next_path = _safe_next_path(request.query_params.get("next"), "/dashboard")
         if request.session.get("user"):
-            return RedirectResponse(url="/dashboard", status_code=303)
+            return RedirectResponse(url=next_path, status_code=303)
         return templates.TemplateResponse(
             "login.html",
             {
                 "request": request,
                 "title": "SystemOptiflow Login",
                 "demo_username": os.getenv("DEMO_USERNAME", "admin"),
+                "next_path": next_path,
             },
+        )
+
+    @app.get("/releases", response_class=HTMLResponse)
+    async def releases_page(request: Request):
+        release_data = release_service.list_releases()
+        return templates.TemplateResponse(
+            "releases.html",
+            _public_page_context(request, "Desktop Releases · SystemOptiflow", release_data=release_data),
         )
 
     @app.get("/dashboard", response_class=HTMLResponse)
@@ -161,7 +286,12 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/auth/login")
-    async def login(request: Request, username: str = Form(...), password: str = Form(...)):
+    async def login(
+        request: Request,
+        username: str = Form(...),
+        password: str = Form(...),
+        next_path: str = Form("/dashboard"),
+    ):
         try:
             user = auth_service.authenticate(username, password)
         except AuthError as exc:
@@ -172,7 +302,7 @@ def create_app() -> FastAPI:
             "email": user.get("email"),
             "role": user.get("role", "operator"),
         }
-        return {"ok": True, "user": request.session["user"]}
+        return {"ok": True, "user": request.session["user"], "redirect_to": _safe_next_path(next_path)}
 
     @app.post("/api/auth/logout")
     async def logout(request: Request):
@@ -227,6 +357,35 @@ def create_app() -> FastAPI:
         _require_user(request)
         return runtime.snapshot()
 
+    @app.get("/api/client-config")
+    async def client_config(request: Request):
+        _require_user(request)
+        return {
+            "public_base_url": normalize_public_base_url(get_public_base_url()),
+            "lanes": LANES,
+            "viewer_protocol": str(SETTINGS.get("viewing_protocol", "websocket")),
+        }
+
+    @app.post("/api/camera-test")
+    async def camera_test(request: Request, payload: CameraTestRequest):
+        _require_user(request)
+        lane = payload.lane.strip().lower()
+        if lane not in LANES:
+            raise HTTPException(status_code=404, detail="Unknown lane.")
+        if not _is_safe_camera_source(payload.source):
+            raise HTTPException(status_code=400, detail="Unsupported source format.")
+        try:
+            result = await asyncio.wait_for(asyncio.to_thread(_probe_camera_source_sync, payload.source), timeout=3.5)
+        except asyncio.TimeoutError:
+            result = {
+                "ok": False,
+                "source": (payload.source or "").strip() or "Simulated",
+                "error": "Camera probe timed out after 3 seconds.",
+                "elapsed_ms": 3000.0,
+            }
+        result["lane"] = lane
+        return result
+
     @app.get("/api/violations")
     async def violations(request: Request, limit: int = 50):
         _require_user(request)
@@ -246,6 +405,35 @@ def create_app() -> FastAPI:
     async def clear_accidents(request: Request):
         _require_admin(request)
         return {"ok": persistence.clear_accidents()}
+
+    @app.post("/api/events/violation", status_code=201)
+    async def ingest_violation(
+        request: Request,
+        lane: str = Form(...),
+        violation_type: str = Form(...),
+        image: Optional[UploadFile] = File(None),
+    ):
+        _require_user(request)
+        if lane not in LANES:
+            raise HTTPException(status_code=400, detail="Unknown lane.")
+        image_bytes = await image.read() if image else None
+        record = persistence.save_violation(LANE_INDEX[lane], violation_type, image_bytes)
+        return JSONResponse(record, status_code=201)
+
+    @app.post("/api/events/accident", status_code=201)
+    async def ingest_accident(
+        request: Request,
+        lane: str = Form(...),
+        severity: str = Form("Moderate"),
+        description: str = Form(""),
+        image: Optional[UploadFile] = File(None),
+    ):
+        _require_user(request)
+        if lane not in LANES:
+            raise HTTPException(status_code=400, detail="Unknown lane.")
+        image_bytes = await image.read() if image else None
+        record = persistence.save_accident(LANE_INDEX[lane], severity, description, image_bytes)
+        return JSONResponse(record, status_code=201)
 
     @app.get("/api/reports")
     async def reports(request: Request, limit: int = 50):
@@ -327,19 +515,18 @@ def create_app() -> FastAPI:
         return {
             lane: {
                 "status": camera_rt.status(lane) if camera_rt else "unknown",
-                "stale": (
-                    camera_rt.managers[lane].is_stale(15.0)
-                    if camera_rt and lane in camera_rt.managers
-                    else False
-                ),
+                "stale": (manager.is_stale(15.0) if manager else False),
                 "source": SETTINGS.get(f"camera_source_{lane}", "Simulated"),
+                "capture_mode": runtime.browser_mode.get(lane),
+                "viewer_protocol": SETTINGS.get("viewing_protocol", "websocket"),
+                "error": (camera_rt.errors.get(lane) if camera_rt else None),
             }
             for lane in LANES
+            for manager in [camera_rt.managers.get(lane) if camera_rt else None]
         }
 
     @app.post("/api/streams/{lane}/restart")
     async def restart_stream(request: Request, lane: str):
-        """Release a camera connection and let sync_sources() reconnect it on the next tick."""
         _require_user(request)
         if lane not in LANES:
             raise HTTPException(status_code=404, detail="Unknown lane.")
@@ -364,7 +551,7 @@ def create_app() -> FastAPI:
             last_ts = 0.0
             while True:
                 if await request.is_disconnected():
-                    logger.debug(f"MJPEG client disconnected from lane {lane}")
+                    logger.debug("MJPEG client disconnected from lane %s", lane)
                     break
                 frame, ts = runtime.mjpeg_frame_with_ts(lane)
                 if frame and ts > last_ts:
@@ -378,17 +565,14 @@ def create_app() -> FastAPI:
     @app.get("/api/violations/{violation_id}/image")
     async def violation_image(request: Request, violation_id: str):
         _require_user(request)
-        items = persistence.list_violations(limit=500)
-        item = next((entry for entry in items if entry.get("violation_id") == violation_id), None)
-        if not item or not item.get("image_url"):
-            raise HTTPException(status_code=404, detail="Violation image not found.")
-        image_url = item["image_url"]
-        if image_url.startswith(("http://", "https://")):
-            return RedirectResponse(url=image_url, status_code=307)
-        local_path = _safe_local_evidence_path(image_url)
-        if not local_path or not local_path.exists():
-            raise HTTPException(status_code=404, detail="Violation image file is unavailable.")
-        return FileResponse(local_path)
+        item = persistence.get_violation(violation_id)
+        return _evidence_response(item, "Violation image not found.")
+
+    @app.get("/api/accidents/{accident_id}/image")
+    async def accident_image(request: Request, accident_id: str):
+        _require_user(request)
+        item = persistence.get_accident(accident_id)
+        return _evidence_response(item, "Accident image not found.")
 
     @app.get("/violations", response_class=HTMLResponse)
     async def violations_page(request: Request):
@@ -422,7 +606,11 @@ def create_app() -> FastAPI:
     async def settings_page(request: Request):
         return templates.TemplateResponse(
             "settings.html",
-            _page_context(request, "Settings · SystemOptiflow"),
+            _page_context(
+                request,
+                "Settings · SystemOptiflow",
+                public_base_url=normalize_public_base_url(get_public_base_url()),
+            ),
         )
 
     @app.get("/stream", response_class=HTMLResponse)
@@ -445,8 +633,9 @@ def create_app() -> FastAPI:
             await websocket.close(code=1008)
             return
         await websocket.accept()
+        previous_source = SETTINGS.get(f"camera_source_{lane}", "Simulated")
         settings_service.apply({f"camera_source_{lane}": "Browser"}, persist=False)
-        runtime.set_browser_mode(lane, "canvas")
+        session_token = runtime.begin_browser_stream(lane, "canvas")
         try:
             while True:
                 data = await websocket.receive_bytes()
@@ -456,9 +645,8 @@ def create_app() -> FastAPI:
         except Exception:
             pass
         finally:
-            settings_service.apply({f"camera_source_{lane}": "Simulated"}, persist=False)
-            runtime.set_browser_mode(lane, None)
-            runtime.browser_frames[lane] = None
+            settings_service.apply({f"camera_source_{lane}": previous_source}, persist=False)
+            runtime.end_browser_stream(lane, session_token)
 
     @app.websocket("/ws/view/{lane}")
     async def view_ws(websocket: WebSocket, lane: str):
@@ -485,6 +673,10 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws/dashboard")
     async def dashboard_ws(websocket: WebSocket):
+        user = websocket.session.get("user")
+        if not user:
+            await websocket.close(code=1008)
+            return
         await websocket.accept()
         try:
             while True:
@@ -492,28 +684,29 @@ def create_app() -> FastAPI:
                 await asyncio.sleep(1.0)
         except WebSocketDisconnect:
             return
-
-    # ── WebRTC signalling endpoints ────────────────────────────────────────────
+        except Exception as exc:
+            logger.debug("Dashboard websocket closed while sending updates: %s", exc)
+            return
 
     @app.get("/api/webrtc/ice-config")
     async def webrtc_ice_config(request: Request):
-        """Return ICE server list (STUN + TURN credentials) for the phone browser."""
         _require_user(request)
         vps_ip = os.getenv("VPS_PUBLIC_IP", "")
         turn_user = os.getenv("TURN_USERNAME", "optiflow")
         turn_pass = os.getenv("TURN_PASSWORD", "changeme")
         ice_servers = [{"urls": "stun:stun.l.google.com:19302"}]
         if vps_ip:
-            ice_servers.append({
-                "urls": f"turn:{vps_ip}:3478",
-                "username": turn_user,
-                "credential": turn_pass,
-            })
+            ice_servers.append(
+                {
+                    "urls": f"turn:{vps_ip}:3478",
+                    "username": turn_user,
+                    "credential": turn_pass,
+                }
+            )
         return JSONResponse({"iceServers": ice_servers})
 
     @app.post("/api/webrtc/offer/{lane}")
     async def webrtc_offer(request: Request, lane: str, body: WebRTCOfferRequest):
-        """SDP exchange: accept a WebRTC offer from the phone and return an answer."""
         _require_user(request)
         if lane not in LANES:
             raise HTTPException(status_code=404, detail="Unknown lane.")
@@ -526,23 +719,26 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=501, detail="aiortc is not installed on this server.")
 
         pc = RTCPeerConnection()
-        track_task: asyncio.Task = None
+        track_task: Optional[asyncio.Task] = None
+        stream_token: Optional[str] = None
+        previous_source = SETTINGS.get(f"camera_source_{lane}", "Simulated")
 
         @pc.on("track")
         def on_track(track):
-            nonlocal track_task
+            nonlocal track_task, stream_token
             if track.kind == "video":
-                track_task = asyncio.ensure_future(runtime.inject_webrtc_track(lane, track))
-                runtime.set_browser_mode(lane, "webrtc")
+                stream_token = runtime.begin_browser_stream(lane, "webrtc")
+                track_task = asyncio.create_task(runtime.inject_webrtc_track(lane, track))
+                webrtc_tasks.add(track_task)
+                track_task.add_done_callback(webrtc_tasks.discard)
 
         @pc.on("connectionstatechange")
         async def on_connection_state_change():
             if pc.connectionState in ("failed", "closed", "disconnected"):
                 if track_task and not track_task.done():
                     track_task.cancel()
-                settings_service.apply({f"camera_source_{lane}": "Simulated"}, persist=False)
-                runtime.set_browser_mode(lane, None)
-                runtime.browser_frames[lane] = None
+                settings_service.apply({f"camera_source_{lane}": previous_source}, persist=False)
+                runtime.end_browser_stream(lane, stream_token)
                 await pc.close()
 
         await pc.setRemoteDescription(RTCSessionDescription(sdp=body.sdp, type=body.type))
@@ -558,7 +754,7 @@ def create_app() -> FastAPI:
         if request.url.path.startswith("/api/"):
             return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
         if exc.status_code == 401:
-            return RedirectResponse(url="/login", status_code=303)
+            return RedirectResponse(url=_login_redirect_target(request), status_code=303)
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     return app

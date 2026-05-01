@@ -18,9 +18,46 @@ class PersistenceService:
         self.evidence_dir = Path("assets") / "web_evidence"
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
         self.bucket_name = os.getenv("SUPABASE_EVIDENCE_BUCKET", "evidence")
+        self.local_history_limit = 200
+        self._json_cache: Dict[str, Any] = {}
+        self._json_cache_mtime: Dict[str, int] = {}
+        self._json_index_cache: Dict[tuple[str, str], Dict[str, Dict[str, Any]]] = {}
+        if self.is_connected():
+            self._sync_local_to_supabase()
 
     def is_connected(self) -> bool:
         return bool(self.db and self.db.is_connected())
+
+    def _sync_local_to_supabase(self) -> None:
+        """Push any JSON-fallback records that were written during Supabase downtime."""
+        synced = 0
+        for filename, table, id_key in [
+            ("violations.json", "violations", "violation_id"),
+            ("accidents.json", "accidents", "accident_id"),
+            ("reports.json", "reports", "report_id"),
+        ]:
+            records: List[Dict[str, Any]] = self._read_json(filename, [])
+            if not records:
+                continue
+            for record in records:
+                rid = record.get(id_key)
+                if not rid:
+                    continue
+                try:
+                    existing = (
+                        self.db.supabase.table(table)
+                        .select(id_key)
+                        .eq(id_key, rid)
+                        .execute()
+                    )
+                    if existing.data:
+                        continue
+                    self.db.supabase.table(table).insert(record).execute()
+                    synced += 1
+                except Exception as exc:
+                    self.logger.debug("Sync skipped %s %s: %s", table, rid, exc)
+        if synced:
+            self.logger.info("Synced %d local fallback record(s) to Supabase.", synced)
 
     def _json_path(self, name: str) -> Path:
         return self.data_dir / name
@@ -30,7 +67,14 @@ class PersistenceService:
         if not path.exists():
             return default
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            mtime = path.stat().st_mtime_ns
+            if name in self._json_cache and self._json_cache_mtime.get(name) == mtime:
+                return self._json_cache[name]
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self._json_cache[name] = payload
+            self._json_cache_mtime[name] = mtime
+            self._invalidate_index_cache(name)
+            return payload
         except Exception as exc:
             self.logger.warning("Failed to read %s: %s", path, exc)
             return default
@@ -38,19 +82,76 @@ class PersistenceService:
     def _write_json(self, name: str, payload: Any) -> None:
         path = self._json_path(name)
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self._json_cache[name] = payload
+        self._json_cache_mtime[name] = path.stat().st_mtime_ns
+        self._invalidate_index_cache(name)
+
+    def _invalidate_index_cache(self, filename: str) -> None:
+        for key in [cache_key for cache_key in self._json_index_cache if cache_key[0] == filename]:
+            self._json_index_cache.pop(key, None)
 
     def upload_evidence_image(self, image_bytes: bytes, filename: str) -> str:
         if self.is_connected():
             try:
-                storage = self.db.supabase.storage.from_(self.bucket_name)
-                storage.upload(filename, image_bytes, {"content-type": "image/jpeg"})
+                storage = self.db.storage.from_(self.bucket_name)
+                storage.upload(
+                    filename,
+                    image_bytes,
+                    {"content-type": "image/jpeg", "upsert": "true"},
+                )
                 return storage.get_public_url(filename)
             except Exception as exc:
                 self.logger.warning("Supabase Storage upload failed, using local fallback: %s", exc)
 
-        target = self.evidence_dir / filename.replace("/", "_")
+        target = self.evidence_dir / Path(filename).name
         target.write_bytes(image_bytes)
         return str(target).replace("\\", "/")
+
+    def _sort_records(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return sorted(
+            items,
+            key=lambda item: item.get("timestamp") or item.get("created_at") or "",
+            reverse=True,
+        )
+
+    def _evidence_filename(self, category: str, lane: int, extension: str = "jpg") -> str:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+        return f"{category}/{stamp}_lane{lane}.{extension}"
+
+    def persist_evidence_image(self, category: str, lane: int, image_bytes: Optional[bytes]) -> Optional[str]:
+        if not image_bytes:
+            return None
+        return self.upload_evidence_image(image_bytes, self._evidence_filename(category, lane))
+
+    def get_violation(self, violation_id: str) -> Optional[Dict[str, Any]]:
+        if self.is_connected():
+            try:
+                response = (
+                    self.db.supabase.table("violations")
+                    .select("*")
+                    .eq("violation_id", violation_id)
+                    .limit(1)
+                    .execute()
+                )
+                return (response.data or [None])[0]
+            except Exception as exc:
+                self.logger.warning("Failed to fetch violation from Supabase: %s", exc)
+        return self._get_local_record("violations.json", "violation_id", violation_id)
+
+    def get_accident(self, accident_id: str) -> Optional[Dict[str, Any]]:
+        if self.is_connected():
+            try:
+                response = (
+                    self.db.supabase.table("accidents")
+                    .select("*")
+                    .eq("accident_id", accident_id)
+                    .limit(1)
+                    .execute()
+                )
+                return (response.data or [None])[0]
+            except Exception as exc:
+                self.logger.warning("Failed to fetch accident from Supabase: %s", exc)
+        return self._get_local_record("accidents.json", "accident_id", accident_id)
 
     def list_violations(self, limit: int = 50) -> List[Dict[str, Any]]:
         if self.is_connected():
@@ -58,14 +159,14 @@ class PersistenceService:
                 response = (
                     self.db.supabase.table("violations")
                     .select("*")
-                    .order("timestamp", desc=True)
+                    .order("created_at", desc=True)
                     .limit(limit)
                     .execute()
                 )
                 return response.data or []
             except Exception as exc:
                 self.logger.warning("Failed to fetch violations from Supabase: %s", exc)
-        return self._read_json("violations.json", [])[:limit]
+        return self._sort_records(self._read_json("violations.json", []))[:limit]
 
     def list_accidents(self, limit: int = 50) -> List[Dict[str, Any]]:
         if self.is_connected():
@@ -73,14 +174,14 @@ class PersistenceService:
                 response = (
                     self.db.supabase.table("accidents")
                     .select("*")
-                    .order("timestamp", desc=True)
+                    .order("created_at", desc=True)
                     .limit(limit)
                     .execute()
                 )
                 return response.data or []
             except Exception as exc:
                 self.logger.warning("Failed to fetch accidents from Supabase: %s", exc)
-        return self._read_json("accidents.json", [])[:limit]
+        return self._sort_records(self._read_json("accidents.json", []))[:limit]
 
     def list_reports(self, limit: int = 50) -> List[Dict[str, Any]]:
         if self.is_connected():
@@ -95,7 +196,7 @@ class PersistenceService:
                 return response.data or []
             except Exception as exc:
                 self.logger.warning("Failed to fetch reports from Supabase: %s", exc)
-        return self._read_json("reports.json", [])[:limit]
+        return self._sort_records(self._read_json("reports.json", []))[:limit]
 
     def get_report(self, report_id: str) -> Optional[Dict[str, Any]]:
         if self.is_connected():
@@ -110,15 +211,23 @@ class PersistenceService:
                 return (response.data or [None])[0]
             except Exception as exc:
                 self.logger.warning("Failed to fetch report from Supabase: %s", exc)
-        for report in self._read_json("reports.json", []):
-            if report.get("report_id") == report_id:
-                return report
-        return None
+        return self._get_local_record("reports.json", "report_id", report_id)
+
+    def _get_local_record(self, filename: str, key_field: str, key_value: str) -> Optional[Dict[str, Any]]:
+        cache_key = (filename, key_field)
+        if cache_key not in self._json_index_cache:
+            records = self._read_json(filename, [])
+            self._json_index_cache[cache_key] = {
+                str(record.get(key_field)): record
+                for record in records
+                if isinstance(record, dict) and record.get(key_field) is not None
+            }
+        return self._json_index_cache[cache_key].get(str(key_value))
 
     def _append_local(self, filename: str, record: Dict[str, Any], limit: int = 200) -> Dict[str, Any]:
         records = self._read_json(filename, [])
         records.insert(0, record)
-        self._write_json(filename, records[:limit])
+        self._write_json(filename, self._sort_records(records)[:limit])
         return record
 
     def clear_violations(self) -> bool:
@@ -168,18 +277,13 @@ class PersistenceService:
         return self._append_local("reports.json", record)
 
     def save_violation(self, lane: int, violation_type: str, image_bytes: Optional[bytes]) -> Dict[str, Any]:
-        timestamp = datetime.now(timezone.utc).isoformat()
-        image_url = None
-        if image_bytes:
-            filename = f"violations/{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_lane{lane}.jpg"
-            image_url = self.upload_evidence_image(image_bytes, filename)
+        image_url = self.persist_evidence_image("violations", lane, image_bytes)
         record = {
             "violation_id": str(uuid.uuid4()),
             "vehicle_id": None,
             "violation_type": violation_type,
             "lane": lane,
             "source": "SYSTEM",
-            "timestamp": timestamp,
             "image_url": image_url,
         }
         if self.is_connected():
@@ -197,29 +301,21 @@ class PersistenceService:
         description: str = "",
         image_bytes: Optional[bytes] = None,
     ) -> Dict[str, Any]:
-        timestamp = datetime.now(timezone.utc).isoformat()
-        image_url = None
-        if image_bytes:
-            filename = f"accidents/{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_lane{lane}.jpg"
-            image_url = self.upload_evidence_image(image_bytes, filename)
+        image_url = self.persist_evidence_image("accidents", lane, image_bytes)
         record = {
             "accident_id": str(uuid.uuid4()),
             "lane": lane,
-            "severity": severity.capitalize(),
+            "severity": {"high": "Severe", "critical": "Severe", "low": "Minor", "medium": "Moderate"}.get(severity.lower(), severity.capitalize()),
             "detection_type": "SYSTEM",
             "description": description,
-            "reported_by": "system",
-            "timestamp": timestamp,
+            "reported_by": None,
             "resolved": False,
             "image_url": image_url,
         }
         if self.is_connected():
-            payload = {k: v for k, v in record.items() if k != "image_url"}
             try:
-                response = self.db.supabase.table("accidents").insert(payload).execute()
-                saved = (response.data or [payload])[0]
-                saved["image_url"] = image_url
-                return saved
+                response = self.db.supabase.table("accidents").insert(record).execute()
+                return (response.data or [record])[0]
             except Exception as exc:
                 self.logger.warning("Failed to persist accident to Supabase: %s", exc)
         return self._append_local("accidents.json", record)
@@ -317,7 +413,11 @@ class PersistenceService:
                 self.logger.warning("Failed to consume verification code in Supabase: %s", exc)
 
         records = self._read_json("verification_codes.json", [])
+        updated = False
         for record in records:
             if record.get("verification_id") == verification_id:
                 record["consumed_at"] = consumed_at
-        self._write_json("verification_codes.json", records)
+                updated = True
+                break
+        if updated:
+            self._write_json("verification_codes.json", records)

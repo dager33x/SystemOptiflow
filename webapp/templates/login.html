@@ -1,18 +1,13 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ title }}</title>
-  <link rel="stylesheet" href="/static/app.css?v=3.0">
-</head>
-<body class="login-body">
+{% extends "base.html" %}
+{% block body_class %}login-body{% endblock %}
+{% block content %}
   <main class="login-shell">
     <section class="login-card">
       <p class="eyebrow">SystemOptiflow</p>
       <h1>Traffic command center</h1>
-      <p class="lede">Headless web deployment for streaming, signal control, and incident monitoring.</p>
+      <p class="lede">Headless web deployment for streaming, signal control, incident monitoring, and desktop distribution.</p>
       <form id="login-form" class="stack">
+        <input type="hidden" name="next_path" value="{{ next_path | e }}">
         <label>
           <span>Username</span>
           <input type="text" name="username" value="{{ demo_username }}" required>
@@ -23,11 +18,16 @@
         </label>
         <button type="submit">Sign in</button>
       </form>
+      <div class="inline-actions">
+        <a class="button-link" href="/releases">Download desktop release</a>
+      </div>
       <p id="error" class="error-text" hidden></p>
       <p class="hint">If Supabase is offline, the default demo login is <code>{{ demo_username }}</code> / <code>admin123</code>.</p>
     </section>
   </main>
-  <script>
+  
+{% block scripts %}
+<script>
     const form = document.getElementById("login-form");
     const errorEl = document.getElementById("error");
     form.addEventListener("submit", async (event) => {
@@ -45,8 +45,11 @@
         errorEl.hidden = false;
         return;
       }
-      window.location.href = "/dashboard";
+      const payload = await response.json().catch(() => ({ redirect_to: "/dashboard" }));
+      const dest = payload.redirect_to || "/dashboard";
+      window.location.href = dest.startsWith("/") && !dest.startsWith("//") ? dest : "/dashboard";
     });
   </script>
-</body>
-</html>
+
+{% endblock %}
+{% endblock %}

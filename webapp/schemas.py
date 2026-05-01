@@ -38,6 +38,11 @@ class SettingsUpdateRequest(BaseModel):
     settings: Dict[str, Any]
 
 
+class CameraTestRequest(BaseModel):
+    lane: str = Field(..., min_length=1)
+    source: str = Field(default="", max_length=512)
+
+
 class AdminUserCreateRequest(BaseModel):
     username: str = Field(..., min_length=1)
     email: EmailStr
@@ -53,3 +58,14 @@ class AdminUserUpdateRequest(BaseModel):
 class WebRTCOfferRequest(BaseModel):
     sdp: str
     type: str = "offer"
+
+
+class ViolationIngestRequest(BaseModel):
+    lane: str = Field(..., pattern="^(north|south|east|west)$")
+    violation_type: str = Field(..., min_length=1, max_length=120)
+
+
+class AccidentIngestRequest(BaseModel):
+    lane: str = Field(..., pattern="^(north|south|east|west)$")
+    severity: str = Field(default="Moderate")
+    description: str = Field(default="", max_length=500)

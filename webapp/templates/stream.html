@@ -1,11 +1,8 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>{{ title }}</title>
-  <link rel="stylesheet" href="/static/app.css?v=3.0">
-  <style>
+{% extends "base.html" %}
+{% block body_class %}stream-body{% endblock %}
+{% block head %}
+<style>
+
     .stream-body { padding: 0; }
     .stream-shell { min-height: calc(100vh - 88px); display: grid; place-items: center; padding: 16px; }
     .stream-card {
@@ -39,45 +36,31 @@
       letter-spacing: 0.06em;
       text-transform: uppercase;
     }
-    .stream-status.idle     { background: rgba(159,183,201,.15); color: var(--muted); }
+    .stream-status.idle { background: rgba(159,183,201,.15); color: var(--muted); }
     .stream-status.connecting { background: rgba(255,200,87,.15); color: var(--warning); }
-    .stream-status.live     { background: rgba(156,242,141,.15); color: var(--accent-2); }
-    .stream-status.error    { background: rgba(255,123,114,.15); color: var(--danger); }
+    .stream-status.live { background: rgba(156,242,141,.15); color: var(--accent-2); }
+    .stream-status.error { background: rgba(255,123,114,.15); color: var(--danger); }
     .stream-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
     #toggle-btn { width: auto; padding: 12px 28px; touch-action: manipulation; }
     .back-link { display: inline-block; margin-top: 20px; color: var(--muted); font-size: 0.85rem; text-decoration: none; }
     .back-link:hover { color: var(--accent); }
     canvas { display: none; }
-  </style>
-</head>
-<body class="app-body stream-body">
-  <nav class="app-nav">
-    <span class="brand">SystemOptiflow</span>
-    <div class="app-nav-links">
-      <a href="/dashboard"><span>Dashboard</span></a>
-      <a href="/violations"><span>Violations</span></a>
-      <a href="/reports"><span>Reports</span></a>
-      <a href="/incidents"><span>Incidents</span></a>
-      <a href="/traffic-reports"><span>Traffic Reports</span></a>
-      <a href="/stream" class="active stream-link">📱 <span>Stream</span></a>
-      <a href="/settings"><span>Settings</span></a>
-    </div>
-    <div class="app-nav-right">
-      <span class="badge">{{ user.username }}</span>
-      <button id="logout-button" class="ghost" style="width:auto;padding:8px 14px">Log out</button>
-    </div>
-  </nav>
+  
+</style>
+{% endblock %}
+
+{% block content %}
   <main class="stream-shell">
     <section class="stream-card">
       <p class="eyebrow">SystemOptiflow</p>
-      <h1>&#128247; Phone Camera Stream</h1>
+      <h1>Phone Camera Stream</h1>
       <p class="lede">Stream your phone camera to a traffic lane without a separate app.</p>
 
       <video id="preview" class="stream-preview" autoplay playsinline muted></video>
       <canvas id="canvas" width="640" height="480"></canvas>
 
       <p id="orientation-hint" style="display:none;color:var(--warning);font-size:.85rem;margin-bottom:12px">
-        &#8635; Rotate your phone to landscape for the best frame coverage.
+        Rotate your phone to landscape for the best frame coverage.
       </p>
       <div class="stream-controls">
         <label>
@@ -99,8 +82,10 @@
       <a class="back-link" href="/dashboard">&#8592; Back to Dashboard</a>
     </section>
   </main>
+{% endblock %}
 
-  <script>
+{% block scripts %}
+<script>
     const streamSettings = {{ stream_settings | tojson }};
     const urlLane = new URLSearchParams(location.search).get("lane");
     if (urlLane) {
@@ -108,22 +93,22 @@
       if (opt) opt.selected = true;
     }
 
-    const preview = document.getElementById("preview");
-    const canvas = document.getElementById("canvas");
-    const ctx = canvas.getContext("2d");
-    const toggleBtn = document.getElementById("toggle-btn");
+    const preview    = document.getElementById("preview");
+    const canvas     = document.getElementById("canvas");
+    const ctx        = canvas.getContext("2d");
+    const toggleBtn  = document.getElementById("toggle-btn");
     const laneSelect = document.getElementById("lane-select");
-    const statusEl = document.getElementById("status");
+    const statusEl   = document.getElementById("status");
 
-    let ws = null;
-    let stream = null;
-    let active = false;
-    let frameInFlight = false;  // prevents overlapping encodes, not the loop clock
-    let rtcPc = null;           // WebRTC peer connection (webrtc mode only)
+    let ws          = null;
+    let stream      = null;
+    let active      = false;
+    let frameInFlight = false;
+    let rtcPc       = null;
 
     const captureMode = streamSettings.phone_capture_mode ?? "canvas_jpeg";
 
-    // Orientation handling — prefer landscape for road coverage
+    // Orientation handling
     const orientationHint = document.getElementById("orientation-hint");
     function checkOrientation() {
       orientationHint.style.display = window.matchMedia("(orientation: portrait)").matches ? "block" : "none";
@@ -132,11 +117,11 @@
     window.matchMedia("(orientation: portrait)").addEventListener("change", checkOrientation);
     checkOrientation();
 
-    // Show active capture mode before streaming starts
+    // Show active capture mode
     const modeLabelEl = document.getElementById("mode-label");
     modeLabelEl.textContent = captureMode === "webrtc" ? "Mode: WebRTC" : "Mode: Canvas JPEG";
 
-    // For WebRTC mode, check whether the server has a TURN relay configured
+    // For WebRTC mode, check TURN relay config
     if (captureMode === "webrtc") {
       fetch("/api/webrtc/ice-config").then(r => r.ok ? r.json() : null).then(data => {
         const turnWarning = document.getElementById("turn-warning");
@@ -154,9 +139,9 @@
     function normalizedSettings() {
       return {
         captureFps: Math.max(5, Math.min(30, Number(streamSettings.browser_capture_fps) || 20)),
-        width: Math.max(160, Math.min(1920, Number(streamSettings.browser_stream_width) || 640)),
-        height: Math.max(120, Math.min(1080, Number(streamSettings.browser_stream_height) || 480)),
-        quality: Math.max(0.3, Math.min(0.9, Number(streamSettings.browser_stream_jpeg_quality) || 0.6)),
+        width:      Math.max(160, Math.min(1920, Number(streamSettings.browser_stream_width) || 640)),
+        height:     Math.max(120, Math.min(1080, Number(streamSettings.browser_stream_height) || 480)),
+        quality:    Math.max(0.3, Math.min(0.9, Number(streamSettings.browser_stream_jpeg_quality) || 0.6)),
       };
     }
 
@@ -170,10 +155,10 @@
     }
 
     async function startStreaming() {
-      const lane = laneSelect.value;
+      const lane     = laneSelect.value;
       const settings = normalizedSettings();
       setStatus("connecting", "Connecting...");
-      toggleBtn.disabled = true;
+      toggleBtn.disabled  = true;
       laneSelect.disabled = true;
 
       try {
@@ -187,7 +172,6 @@
           audio: false,
         });
         preview.srcObject = stream;
-        // Set canvas to the camera's actual resolution so no stretching occurs
         await new Promise(resolve => {
           if (preview.readyState >= 1) { resolve(); return; }
           preview.onloadedmetadata = resolve;
@@ -197,7 +181,7 @@
       } catch (_err) {
         setStatus("error", "Camera denied");
         toggleBtn.textContent = "Start Streaming";
-        toggleBtn.disabled = false;
+        toggleBtn.disabled  = false;
         laneSelect.disabled = false;
         return;
       }
@@ -215,17 +199,8 @@
         void runStreamingLoop(settings);
       };
 
-      ws.onerror = () => {
-        setStatus("error", "Connection error");
-        stopStreaming();
-      };
-
-      ws.onclose = () => {
-        if (active) {
-          setStatus("idle", "Disconnected");
-          stopStreaming();
-        }
-      };
+      ws.onerror = () => { setStatus("error", "Connection error"); stopStreaming(); };
+      ws.onclose = () => { if (active) { setStatus("idle", "Disconnected"); stopStreaming(); } };
     }
 
     async function captureAndSend(quality) {
@@ -236,9 +211,7 @@
         const blob = await blobFromCanvas("image/jpeg", quality);
         if (!blob || !ws || ws.readyState !== WebSocket.OPEN) return;
         const buf = await blob.arrayBuffer();
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(buf);
-        }
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(buf);
       } finally {
         frameInFlight = false;
       }
@@ -247,8 +220,6 @@
     async function runStreamingLoop(settings) {
       const intervalMs = 1000 / settings.captureFps;
       while (active && ws && ws.readyState === WebSocket.OPEN) {
-        // Fire-and-forget: don't await encode/send — keep the timer ticking at
-        // exactly captureFps regardless of how long toBlob() takes.
         void captureAndSend(settings.quality);
         await new Promise(resolve => setTimeout(resolve, intervalMs));
       }
@@ -259,25 +230,22 @@
       frameInFlight = false;
       if (ws && ws.readyState === WebSocket.OPEN) ws.close();
       ws = null;
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-        stream = null;
-      }
+      if (stream) { stream.getTracks().forEach(track => track.stop()); stream = null; }
       preview.srcObject = null;
       if (screen.orientation?.unlock) screen.orientation.unlock();
       toggleBtn.textContent = "Start Streaming";
-      toggleBtn.disabled = false;
+      toggleBtn.disabled  = false;
       laneSelect.disabled = false;
       if (statusEl.classList.contains("live") || statusEl.classList.contains("connecting")) {
         setStatus("idle", "Idle");
       }
     }
 
-    // ── WebRTC mode ──────────────────────────────────────────────────────────────
+    // ── WebRTC mode ────────────────────────────────────────────────────────────
     async function startWebRTC() {
       const lane = laneSelect.value;
       setStatus("connecting", "Connecting (WebRTC)…");
-      toggleBtn.disabled = true;
+      toggleBtn.disabled  = true;
       laneSelect.disabled = true;
 
       try {
@@ -289,12 +257,11 @@
       } catch (_) {
         setStatus("error", "Camera denied");
         toggleBtn.textContent = "Start Streaming";
-        toggleBtn.disabled = false;
+        toggleBtn.disabled  = false;
         laneSelect.disabled = false;
         return;
       }
 
-      // Fetch ICE config (STUN + TURN credentials) from server
       let iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
       try {
         const r = await fetch("/api/webrtc/ice-config");
@@ -314,7 +281,6 @@
       const offer = await rtcPc.createOffer();
       await rtcPc.setLocalDescription(offer);
 
-      // Wait for ICE gathering to complete (max 5 s) so TURN relay candidates are included
       await new Promise(resolve => {
         if (rtcPc.iceGatheringState === "complete") { resolve(); return; }
         const check = () => {
@@ -354,7 +320,7 @@
       preview.srcObject = null;
       if (screen.orientation?.unlock) screen.orientation.unlock();
       toggleBtn.textContent = "Start Streaming";
-      toggleBtn.disabled = false;
+      toggleBtn.disabled  = false;
       laneSelect.disabled = false;
     }
 
@@ -367,14 +333,8 @@
       }
     });
 
-    document.getElementById("logout-button").addEventListener("click", async () => {
-      await fetch("/api/auth/logout", { method: "POST" });
-      window.location.href = "/login";
-    });
-
     window.addEventListener("beforeunload", () => {
       captureMode === "webrtc" ? stopWebRTC() : stopStreaming();
     });
-  </script>
-</body>
-</html>
+</script>
+{% endblock %}

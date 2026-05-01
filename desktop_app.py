@@ -1,4 +1,5 @@
 # desktop_app.py
+import logging
 import tkinter as tk
 from models.database import TrafficDB
 from views.main_window import MainWindow
@@ -16,18 +17,22 @@ from controllers.emergency_controller import EmergencyController
 from desktop_remote import (
     APIClientError,
     DesktopClientProfile,
+    HybridAccidentController,
+    HybridReportsController,
+    HybridViolationController,
     RemoteAPIClient,
-    RemoteAccidentController,
     RemoteAuthController,
-    RemoteMainController,
-    RemoteViolationController,
+    RemoteSettingsProvider,
+    ServerCameraManager,
 )
+from utils.public_url import get_public_base_url
 
 
 class AppManager:
     """Manage application flow and authentication"""
 
     def __init__(self, root):
+        self.logger = logging.getLogger(__name__)
         self.root = root
         self.root.withdraw()
         self.local_db = TrafficDB()
@@ -37,7 +42,6 @@ class AppManager:
         self.client_profile = DesktopClientProfile()
         self.remote_client = None
         self.remote_auth = None
-        self.remote_main_controller = None
         self.mode = "local"
         self.current_server_url = self._login_prefill_server_url()
         self.setup_window()
@@ -47,10 +51,13 @@ class AppManager:
     def _saved_server_url(self) -> str:
         return self.client_profile.last_server_url()
 
+    _DEFAULT_SERVER_URL = ""
+
     def _login_prefill_server_url(self) -> str:
         saved_url = self._saved_server_url()
-        should_prefill = self.client_profile.get("prefer_remote", bool(saved_url))
-        return saved_url if saved_url and should_prefill else ""
+        if saved_url:
+            return saved_url
+        return get_public_base_url() or self._DEFAULT_SERVER_URL
 
     def _persist_remote_server_url(self, server_url: str) -> None:
         normalized = (server_url or "").strip()
@@ -143,7 +150,7 @@ class AppManager:
     def _prepare_auth(self, server_url: str = ""):
         requested = (server_url or "").strip()
         if requested:
-            self.mode = "remote"
+            self.mode = "hybrid"
             self.current_server_url = requested
             if not self.remote_client or self.remote_client.base_url != RemoteAPIClient(requested).base_url:
                 self.remote_client = RemoteAPIClient(requested)
@@ -167,7 +174,7 @@ class AppManager:
             messagebox.showerror("Connection Error", str(exc))
             return
         if self.auth.login(username, password):
-            if self.mode == "remote" and self.remote_client:
+            if self.mode == "hybrid" and self.remote_client:
                 self._persist_remote_server_url(self.remote_client.base_url)
             user = self.auth.get_current_user()
             self.show_main_dashboard(user)
@@ -246,24 +253,32 @@ class AppManager:
         self.clear_window()
         container = tk.Frame(self.root, bg=Colors.BACKGROUND)
         container.pack(fill=tk.BOTH, expand=True)
-        if self.mode == "remote":
+        if self.mode == "hybrid":
+            cookies = dict(self.remote_client.session.cookies)
+            server_url = self.remote_client.base_url
+            settings_provider = RemoteSettingsProvider(self.remote_client)
+            cam_managers = {
+                direction: ServerCameraManager(server_url, direction, cookies)
+                for direction in ("north", "south", "east", "west")
+            }
             controllers = {
-                "violation": RemoteViolationController(self.remote_client),
-                "accident": RemoteAccidentController(self.remote_client),
+                "violation": HybridViolationController(self.remote_client),
+                "accident": HybridAccidentController(self.remote_client),
                 "emergency": None,
             }
-            main_controller = RemoteMainController(
+            main_controller = MainController(
                 root=container,
                 view=None,
-                client=self.remote_client,
+                db=HybridReportsController(self.remote_client),
                 current_user=current_user,
                 auth_controller=self.auth,
                 on_logout_callback=self.handle_logout,
                 violation_controller=controllers["violation"],
                 accident_controller=controllers["accident"],
                 connection_profile=self.client_profile,
+                camera_managers=cam_managers,
+                settings_provider=settings_provider,
             )
-            self.remote_main_controller = main_controller
         else:
             controllers = {
                 "violation": ViolationController(self.db),
