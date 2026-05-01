@@ -211,14 +211,16 @@ def create_app() -> FastAPI:
 
     db = TrafficDB()
     persistence = PersistenceService(db)
+    async_persistence = AsyncPersistenceService(persistence)
     auth_service = AuthService(db, persistence)
-    runtime = TrafficRuntime(persistence)
+    runtime = TrafficRuntime(async_persistence)
     settings_service = SettingsService()
     release_service = GitHubReleaseService()
     webrtc_tasks: set[asyncio.Task] = set()
 
     app.state.db = db
     app.state.persistence = persistence
+    app.state.async_persistence = async_persistence
     app.state.auth_service = auth_service
     app.state.runtime = runtime
     app.state.settings_service = settings_service

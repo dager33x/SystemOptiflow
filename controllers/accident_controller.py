@@ -3,7 +3,6 @@ from models.database import TrafficDB
 from utils.async_utils import run_in_background
 from webapp.persistence import PersistenceService
 
-
 class AccidentController:
     """Handle accident detection and reporting."""
 

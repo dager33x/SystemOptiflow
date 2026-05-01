@@ -4,7 +4,6 @@ from utils.async_utils import run_in_background
 from webapp.evidence import safe_local_evidence_path
 from webapp.persistence import PersistenceService
 
-
 class ViolationController:
     """Handle traffic violation reports."""
 

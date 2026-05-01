@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from .yolo_detector import YOLODetector
+from .red_light_detector import RedLightViolationDetector
 from .deep_q_learning import (
     TrafficLightDQN, TrafficStateBuilder,
     NUM_LANES, PHASE_NS, PHASE_EW, PHASE_LANES,
@@ -31,9 +32,17 @@ from .deep_q_learning import (
 from .dqn_rule_controller import DQNRuleController, ACTION_KEEP, ACTION_SWITCH
 from .sb3_dqn_adapter import SB3DQNAdapter
 
-YELLOW_TIME       = 3
-ALL_RED_TIME      = 2
-SECONDARY_SECS    = 15   # secondary turning lane GREEN window
+# ── Traffic Light Timing (in seconds) ──────────────────────────────────────
+YELLOW_TIME           = 5    # Yellow phase: 5s (was 3s, per requirements)
+ALL_RED_TIME          = 2    # All red clearance: 2s
+SECONDARY_SECS        = 15   # secondary turning lane GREEN window
+YELLOW_REDUCTION      = 5    # Green time reduced by yellow duration for fair cycle
+
+# ── Constants for adaptive green time ──────────────────────────────────────
+BASE_GREEN_TIME_NS    = 15   # North-South base: adjusted down to compensate for yellow
+BASE_GREEN_TIME_EW    = 15   # East-West base: adjusted down to compensate for yellow
+VEHICLE_TIME_FACTOR   = 2    # Each weighted vehicle adds ~2 seconds to green
+MAX_GREEN_CYCLE       = 55   # Max green (55s + 5s yellow = 60s cycle)
 
 SB3_MODEL_PATH = 'smart_traffic_dqn'
 CSV_LOG_PATH   = 'logs/traffic_log.csv'
@@ -47,6 +56,7 @@ class TrafficLightController:
         self.num_lanes = num_lanes
 
         self.yolo = YOLODetector() if load_detector else None
+        self.red_light_detector = RedLightViolationDetector(num_lanes=num_lanes)
         self.sb3_model = SB3DQNAdapter.load(SB3_MODEL_PATH)
         self.dqn = TrafficLightDQN(state_size=10, action_size=2, hidden_size=128)
 
@@ -98,6 +108,7 @@ class TrafficLightController:
         self.decisions_made        = 0
         self._frame_number         = 0
         self.last_rule_audit: Dict = {}
+        self._emergency_extensions = 0
 
         self._csv_file   = None
         self._csv_writer = None
@@ -188,6 +199,36 @@ class TrafficLightController:
     def set_screenshot_callback(self, cb):
         self.rule_controller.screenshot_callback = cb
 
+    def detect_red_light_violations(
+        self, frame, lane_id: int, detections, annotate: bool = True
+    ):
+        """Detect red light violations using stop line detection."""
+        light_states = self.get_traffic_light_states()
+        signal_state = light_states.get(lane_id, 'RED')
+        result = self.red_light_detector.detect(
+            frame=frame, detections=detections,
+            signal_state=signal_state, lane_id=lane_id,
+            draw_annotations=annotate,
+        )
+        # Overlay colored crossing lines/bands showing current light states
+        try:
+            ann = result.get('annotated_frame', frame)
+            annotated_with_lights = self.red_light_detector.draw_crossing_zones_with_lights(
+                ann, light_states=light_states
+            )
+            result['annotated_frame'] = annotated_with_lights
+        except Exception:
+            # non-fatal: fall back to original annotated frame
+            pass
+        if result['violation_detected']:
+            if self.red_light_detector.should_log_violation(lane_id):
+                v_count = len(result['violating_vehicles'])
+                self.logger.warning(
+                    f"[RedLight] Lane {self.LANE_NAMES[lane_id]} - "
+                    f"{v_count} vehicle(s) crossed during {signal_state}"
+                )
+        return result
+
     # ------------------------------------------------------------------
     # Secondary lane helpers
     # ------------------------------------------------------------------
@@ -265,6 +306,7 @@ class TrafficLightController:
             elapsed_green=self.elapsed_green,
             buffer_locked=False,
             is_green_phase=False,
+            wait_times=[self.lane_stats[i].get('wait_time', 0.0) for i in range(self.num_lanes)],
         )
         self.last_rule_audit = audit
 
@@ -296,6 +338,8 @@ class TrafficLightController:
             self._secondary_green_end  = 0.0
             self._secondary_yellow_end = 0.0
             self._log_csv(is_override=True)
+            # reset extension counter when entering emergency
+            self._emergency_extensions = 0
 
         else:
             # ── Strict NS <-> EW alternation ──────────────────────────
@@ -404,7 +448,7 @@ class TrafficLightController:
                 self._secondary_yellow_end = current_time + YELLOW_TIME
                 self.logger.info(
                     f'[Secondary] {self.LANE_NAMES[self._secondary_lane]} '
-                    f'-> YELLOW (3s clearance)'
+                    f'-> YELLOW ({YELLOW_TIME}s clearance)'
                 )
             elif self._secondary_state == 'YELLOW' and current_time >= self._secondary_yellow_end:
                 self._secondary_state = 'OFF'
@@ -419,12 +463,14 @@ class TrafficLightController:
                 self.lane_stats[i].get('detections', [])
                 for i in range(self.num_lanes)
             ]
+            wait_times = [self.lane_stats[i].get('wait_time', 0.0) for i in range(self.num_lanes)]
             rule_action, audit = self.rule_controller.step(
                 lane_detections=lane_detections,
                 active_phase=self.active_phase,
                 elapsed_green=elapsed,
                 buffer_locked=self.buffer_locked,
                 is_green_phase=True,
+                wait_times=wait_times,
             )
             self.last_rule_audit = audit
             self.rule_controller.update_phase_wait(self.active_phase)
@@ -451,8 +497,14 @@ class TrafficLightController:
                     if not self.buffer_locked:
                         self.phase_duration = elapsed
                 elif audit.get('rule_fired') == 'emergency_keep_green':
-                    self.phase_duration  = elapsed + float(MAX_GREEN_EMERGENCY)
-                    self._emergency_mode = True
+                    # Allow one extension of emergency green (user request: +10s)
+                    if self._emergency_extensions < 1:
+                        self.phase_duration  = elapsed + float(MAX_GREEN_EMERGENCY)
+                        self._emergency_extensions += 1
+                        self._emergency_mode = True
+                    else:
+                        # Extension already used — clear emergency mode and continue flow
+                        self._emergency_mode = False
             else:
                 self.is_emergency_active = False
                 if self._emergency_mode:

@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from utils.performance_monitor import timed_stage
 
 
 class PersistenceService:
@@ -277,6 +278,7 @@ class PersistenceService:
         return self._append_local("reports.json", record)
 
     def save_violation(self, lane: int, violation_type: str, image_bytes: Optional[bytes]) -> Dict[str, Any]:
+        timestamp = datetime.now(timezone.utc).isoformat()
         image_url = self.persist_evidence_image("violations", lane, image_bytes)
         record = {
             "violation_id": str(uuid.uuid4()),
@@ -284,6 +286,7 @@ class PersistenceService:
             "violation_type": violation_type,
             "lane": lane,
             "source": "SYSTEM",
+            "timestamp": timestamp,
             "image_url": image_url,
         }
         if self.is_connected():
@@ -301,6 +304,7 @@ class PersistenceService:
         description: str = "",
         image_bytes: Optional[bytes] = None,
     ) -> Dict[str, Any]:
+        timestamp = datetime.now(timezone.utc).isoformat()
         image_url = self.persist_evidence_image("accidents", lane, image_bytes)
         record = {
             "accident_id": str(uuid.uuid4()),
@@ -309,6 +313,7 @@ class PersistenceService:
             "detection_type": "SYSTEM",
             "description": description,
             "reported_by": None,
+            "timestamp": timestamp,
             "resolved": False,
             "image_url": image_url,
         }
@@ -321,20 +326,21 @@ class PersistenceService:
         return self._append_local("accidents.json", record)
 
     def log_emergency_event(self, lane: int, vehicle_type: str, action_taken: str) -> Dict[str, Any]:
-        record = {
-            "event_id": str(uuid.uuid4()),
-            "vehicle_type": vehicle_type,
-            "lane": lane,
-            "action_taken": action_taken,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        if self.is_connected():
-            try:
-                response = self.db.supabase.table("emergency_events").insert(record).execute()
-                return (response.data or [record])[0]
-            except Exception as exc:
-                self.logger.warning("Failed to persist emergency event to Supabase: %s", exc)
-        return self._append_local("emergency_events.json", record)
+        with timed_stage("persistence_write", lane=lane, operation="log_emergency_event"):
+            record = {
+                "event_id": str(uuid.uuid4()),
+                "vehicle_type": vehicle_type,
+                "lane": lane,
+                "action_taken": action_taken,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            if self.is_connected():
+                try:
+                    response = self.db.supabase.table("emergency_events").insert(record).execute()
+                    return (response.data or [record])[0]
+                except Exception as exc:
+                    self.logger.warning("Failed to persist emergency event to Supabase: %s", exc)
+            return self._append_local("emergency_events.json", record)
 
     def store_verification_code(
         self,

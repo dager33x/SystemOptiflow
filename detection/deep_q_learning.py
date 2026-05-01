@@ -114,8 +114,10 @@ MIN_BUFFER_TIME      = 10   # hard minimum green — no switch before this
 EW_MIN_GREEN         = 15   # East-West always gets at least 15 s (turning traffic)
 NS_MIN_GREEN         = 20   # North-South baseline
 MAX_GREEN_NORMAL     = 60
-MAX_GREEN_EMERGENCY  = 60
-STARVATION_THRESHOLD = 60
+# Emergency green default shortened to match new requirement (10s)
+MAX_GREEN_EMERGENCY  = 10
+# Increased starvation threshold: max red wait per-lane triggers rotation
+STARVATION_THRESHOLD = 199
 NORMAL_MIN_GREEN     = NS_MIN_GREEN   # backward-compat alias
 
 
@@ -200,16 +202,31 @@ class TrafficStateBuilder:
     @staticmethod
     def calculate_green_time(vehicle_count: float, is_ew: bool = False) -> int:
         """
-        Green-time formula (per requirements):
-          if count == 0 → 0
-          else          → min(60, 20 + count * 2)
-        EW phase always gets at least EW_MIN_GREEN (15 s).
+        Adaptive green-time formula (v2.1) - Vehicle-responsive timing
+        
+        Requirements:
+          - Base time (15s) reduced by 5s to accommodate fixed 5s yellow
+          - Each vehicle adds ~2s to green time
+          - Max 55s green (55s + 5s yellow = 60s total cycle)
+          - EW always gets minimum 15s for turning traffic
+        
+        Formula:
+          if count == 0:   -> 10s (minimum green)
+          else:            -> min(55, 10 + count * 2)
+          EW phase floor   -> max(15, calculated)
+          NS phase floor   -> max(10, calculated)
         """
         if vehicle_count <= 0:
-            base = 0
+            base = 10  # Minimum green time even with no vehicles
         else:
-            base = min(MAX_GREEN_NORMAL, 20 + int(vehicle_count) * 2)
-        return max(EW_MIN_GREEN, base) if is_ew else max(0, base)
+            # Base (10s) + 2s per vehicle, capped at 55s
+            base = min(55, 10 + int(vehicle_count * 2))
+        
+        # Phase-specific minimum
+        if is_ew:
+            return max(15, base)  # EW needs at least 15s for turns
+        else:
+            return max(10, base)  # NS minimum 10s
 
     @staticmethod
     def relative_pressure(lane_w: float, all_w: List[float]) -> float:
@@ -308,7 +325,8 @@ class TrafficLightDQN:
         self.normal_min_green    = NS_MIN_GREEN
         self.max_green_normal    = MAX_GREEN_NORMAL
         self.max_green_emergency = MAX_GREEN_EMERGENCY
-        self.yellow_time         = 3
+        # Controller uses 5s yellow as system-wide constant, but keep a copy
+        self.yellow_time         = 5
         self.all_red_time        = 2
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

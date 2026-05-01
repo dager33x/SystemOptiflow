@@ -9,6 +9,7 @@ from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
 from utils.app_config import SETTINGS
+from utils.performance_monitor import timed_stage
 
 
 LANES = ["north", "south", "east", "west"]
@@ -109,7 +110,8 @@ class CameraRuntime:
     def get_frame(self, lane: str):
         manager = self.managers.get(lane)
         if manager:
-            return manager.get_frame()
+            with timed_stage("camera_get_frame", lane=lane):
+                return manager.get_frame()
         return None
 
     def status(self, lane: str) -> str:
@@ -117,7 +119,7 @@ class CameraRuntime:
         if source == "Simulated":
             return "simulated"
         if source == "Browser":
-            return "waiting"
+            return "browser"
         manager = self.managers.get(lane)
         if manager and manager.is_running:
             return "active"
@@ -132,10 +134,72 @@ class CameraRuntime:
 class DetectionRuntime:
     """Runs YOLO inference at a throttled cadence and caches detections."""
 
-    def __init__(self):
+    DETECTION_COLORS = {
+        "car": (0, 255, 0),
+        "motorcycle": (0, 255, 255),
+        "bus": (255, 255, 0),
+        "truck": (0, 165, 255),
+        "bicycle": (255, 0, 255),
+        "emergency_vehicle": (0, 0, 255),
+        "jeepney": (128, 0, 128),
+        "z_accident": (0, 0, 200),
+        "z_jaywalker": (0, 140, 255),
+        "z_non-jaywalker": (180, 180, 180),
+    }
+
+    def __init__(self, remote_yolo_client=None):
+        self.logger = logging.getLogger(__name__)
         self.detector = None
+        self.detector_lock = threading.RLock()
+        self.remote_yolo_client = remote_yolo_client
+        self.lock = threading.RLock()
+        self.running = False
+        self.worker_threads: Dict[str, threading.Thread] = {}
+        self.latest_frames: Dict[str, Any] = {lane: None for lane in LANES}
+        self.latest_frame_versions: Dict[str, int] = {lane: 0 for lane in LANES}
+        self.processed_frame_versions: Dict[str, int] = {lane: 0 for lane in LANES}
+        self.throttle_seconds: Dict[str, float] = {lane: 0.2 for lane in LANES}
         self.last_run: Dict[str, float] = {lane: 0.0 for lane in LANES}
+        self.remote_request_in_flight = False
+        self.remote_last_started_at = 0.0
+        self.remote_next_lane_index = 0
+        self.remote_min_interval_seconds = self._read_float_env(
+            "YOLO_REMOTE_MIN_INTERVAL_SECONDS",
+            0.45,
+        )
         self.cache: Dict[str, List[Dict[str, Any]]] = {lane: [] for lane in LANES}
+
+    @staticmethod
+    def _read_float_env(name: str, default: float) -> float:
+        import os
+
+        try:
+            return max(0.0, float(os.getenv(name, str(default))))
+        except ValueError:
+            return default
+
+    def start(self, lanes: Optional[List[str]] = None):
+        if self.running:
+            return
+        self.running = True
+        for lane in lanes or LANES:
+            if lane in self.worker_threads and self.worker_threads[lane].is_alive():
+                continue
+            thread = threading.Thread(
+                target=self._worker_loop,
+                args=(lane,),
+                daemon=True,
+                name=f"optiflow-detection-{lane}",
+            )
+            self.worker_threads[lane] = thread
+            thread.start()
+
+    def stop(self):
+        self.running = False
+        for thread in list(self.worker_threads.values()):
+            if thread.is_alive():
+                thread.join(timeout=1.0)
+        self.worker_threads.clear()
 
     def _load_detector(self):
         if self.detector is None:
@@ -144,21 +208,185 @@ class DetectionRuntime:
             self.detector = YOLODetector("best.pt")
         return self.detector
 
-    def process(self, lane: str, frame, throttle_seconds: float):
-        now = time.time()
-        cached_detections = self.cache[lane]
-        if now - self.last_run[lane] < throttle_seconds:
-            if cached_detections and self.detector is not None:
-                return cached_detections, self.detector.draw_detections(frame, cached_detections)
-            return cached_detections, frame
+    def _load_remote_yolo_client(self):
+        if self.remote_yolo_client is None:
+            from detection.remote_yolo_client import RemoteYoloClient
 
+            self.remote_yolo_client = RemoteYoloClient.from_environment()
+        return self.remote_yolo_client
+
+    def _draw_detections(self, frame, detections: List[Dict[str, Any]], lane: str):
+        import cv2
+
+        with timed_stage("draw_annotations", lane=lane, detections=len(detections), source="runtime"):
+            annotated = frame.copy()
+            for detection in detections:
+                bbox = detection.get("bbox")
+                if not bbox or len(bbox) != 4:
+                    continue
+
+                try:
+                    x1, y1, x2, y2 = [int(value) for value in bbox]
+                except (TypeError, ValueError):
+                    continue
+
+                class_name = detection.get("class_name", "object")
+                confidence = float(detection.get("confidence", 1.0) or 1.0)
+                color = self.DETECTION_COLORS.get(class_name, (0, 255, 0))
+                thickness = 3 if class_name in ("emergency_vehicle", "z_accident") else 2
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), color, thickness)
+
+                label = f"{class_name} {confidence:.2f}"
+                (text_width, text_height), _ = cv2.getTextSize(
+                    label,
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    2,
+                )
+                label_top = max(0, y1 - text_height - 8)
+                cv2.rectangle(
+                    annotated,
+                    (x1, label_top),
+                    (x1 + text_width + 4, y1),
+                    color,
+                    -1,
+                )
+                cv2.putText(
+                    annotated,
+                    label,
+                    (x1 + 2, max(12, y1 - 5)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 0, 0),
+                    2,
+                )
+            return annotated
+
+    def _detect_remotely(self, lane: str, frame):
+        remote_client = self._load_remote_yolo_client()
+        if not remote_client.is_enabled_for_lane(lane):
+            return None
+
+        try:
+            result = remote_client.detect(frame, lane_id=lane)
+        except Exception as exc:
+            self.logger.warning("[RemoteYOLO] Unexpected failure for lane=%s: %s", lane, exc)
+            return None
+
+        if not result or not result.get("success"):
+            return None
+
+        return result.get("detections", [])
+
+    def _enabled_remote_lanes(self, remote_client) -> List[str]:
+        return [lane for lane in LANES if remote_client.is_enabled_for_lane(lane)]
+
+    def _cached_detections(self, lane: str) -> List[Dict[str, Any]]:
+        with self.lock:
+            return list(self.cache[lane])
+
+    def _try_acquire_remote_request_slot(self, lane: str, enabled_lanes: List[str]) -> bool:
+        if lane not in enabled_lanes:
+            return False
+
+        with self.lock:
+            while LANES[self.remote_next_lane_index % len(LANES)] not in enabled_lanes:
+                self.remote_next_lane_index = (self.remote_next_lane_index + 1) % len(LANES)
+
+            scheduled_lane = LANES[self.remote_next_lane_index % len(LANES)]
+            if lane != scheduled_lane:
+                return False
+
+            now = time.time()
+            if self.remote_request_in_flight:
+                return False
+            if now - self.remote_last_started_at < self.remote_min_interval_seconds:
+                return False
+
+            self.remote_request_in_flight = True
+            self.remote_last_started_at = now
+            return True
+
+    def _release_remote_request_slot(self, enabled_lanes: List[str]) -> None:
+        with self.lock:
+            self.remote_request_in_flight = False
+            if not enabled_lanes:
+                return
+            for _ in LANES:
+                self.remote_next_lane_index = (self.remote_next_lane_index + 1) % len(LANES)
+                if LANES[self.remote_next_lane_index % len(LANES)] in enabled_lanes:
+                    return
+
+    def _detect_locally(self, lane: str, frame) -> List[Dict[str, Any]]:
         detector = self._load_detector()
-        result = detector.detect(frame)
-        detections = result.get("detections", [])
-        annotated_frame = result.get("annotated_frame", frame)
-        self.last_run[lane] = now
-        self.cache[lane] = detections
-        return detections, annotated_frame
+        with self.detector_lock:
+            with timed_stage("yolo_detection_total", lane=lane):
+                result = detector.detect(frame, lane_id=lane)
+        return result.get("detections", [])
+
+    def _detect_frame(self, lane: str, frame) -> List[Dict[str, Any]]:
+        remote_client = self._load_remote_yolo_client()
+        if remote_client.is_enabled_for_lane(lane):
+            enabled_lanes = self._enabled_remote_lanes(remote_client)
+            if not self._try_acquire_remote_request_slot(lane, enabled_lanes):
+                return self._cached_detections(lane)
+
+            try:
+                remote_result = self._detect_remotely(lane, frame)
+            finally:
+                self._release_remote_request_slot(enabled_lanes)
+
+            if remote_result is not None:
+                return remote_result
+
+        return self._detect_locally(lane, frame)
+
+    def submit_frame(self, lane: str, frame, throttle_seconds: Optional[float] = None):
+        if lane not in self.latest_frames:
+            return
+        with self.lock:
+            self.latest_frames[lane] = frame.copy()
+            self.latest_frame_versions[lane] += 1
+            if throttle_seconds is not None:
+                self.throttle_seconds[lane] = max(0.0, float(throttle_seconds))
+
+    def render_cached(self, lane: str, frame):
+        with self.lock:
+            detections = list(self.cache[lane])
+        if detections:
+            return detections, self._draw_detections(frame, detections, lane)
+        return detections, frame
+
+    def process(self, lane: str, frame, throttle_seconds: float):
+        self.submit_frame(lane, frame, throttle_seconds=throttle_seconds)
+        return self.render_cached(lane, frame)
+
+    def _worker_loop(self, lane: str):
+        while self.running:
+            frame = None
+            frame_version = 0
+            throttle_seconds = 0.2
+            now = time.time()
+            with self.lock:
+                latest_version = self.latest_frame_versions[lane]
+                if latest_version != self.processed_frame_versions[lane]:
+                    elapsed = now - self.last_run[lane]
+                    throttle_seconds = self.throttle_seconds[lane]
+                    if elapsed >= throttle_seconds:
+                        source_frame = self.latest_frames[lane]
+                        if source_frame is not None:
+                            frame = source_frame.copy()
+                            frame_version = latest_version
+
+            if frame is None:
+                time.sleep(0.01)
+                continue
+
+            detections = self._detect_frame(lane, frame)
+            with self.lock:
+                self.cache[lane] = detections
+                self.last_run[lane] = time.time()
+                self.processed_frame_versions[lane] = frame_version
 
 
 class TrafficRuntime:
@@ -215,6 +443,8 @@ class TrafficRuntime:
         self.running = False
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=3.0)
+        if self.detection_runtime:
+            self.detection_runtime.stop()
         if self.camera_runtime:
             self.camera_runtime.stop()
 
@@ -233,6 +463,7 @@ class TrafficRuntime:
 
         self.camera_runtime = CameraRuntime()
         self.detection_runtime = DetectionRuntime()
+        self.detection_runtime.start()
         self.traffic_controller = TrafficLightController(
             num_lanes=4,
             model_path="Optiflow_Dqn.pth",
@@ -339,10 +570,11 @@ class TrafficRuntime:
         cv2.putText(frame, f"Vehicles: {state['sim_count']}", (20, 455), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (120, 255, 120), 2)
         return frame, detections
 
-    def _encode_jpeg(self, frame) -> Optional[bytes]:
+    def _encode_jpeg(self, frame, lane: Optional[str] = None) -> Optional[bytes]:
         import cv2
 
-        ok, encoded = cv2.imencode(".jpg", frame)
+        with timed_stage("jpeg_encode", lane=lane):
+            ok, encoded = cv2.imencode(".jpg", frame)
         if not ok:
             return None
         return encoded.tobytes()
@@ -394,7 +626,7 @@ class TrafficRuntime:
 
         label = f"{lane.upper()} | {source} | {vehicle_count} vehicles"
         cv2.putText(annotated, label, (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
-        jpeg_bytes = self._encode_jpeg(annotated)
+        jpeg_bytes = self._encode_jpeg(annotated, lane=lane)
 
         self._handle_events(lane, detections, annotated, current_time, frame_bytes=jpeg_bytes)
 
@@ -421,7 +653,7 @@ class TrafficRuntime:
     def _handle_events(self, lane: str, detections: List[Dict[str, Any]], frame, current_time: float, frame_bytes: Optional[bytes] = None) -> None:
         lane_id = LANE_INDEX[lane]
         state = self.states[lane]
-        evidence = frame_bytes if frame_bytes is not None else self._encode_jpeg(frame)
+        evidence = frame_bytes if frame_bytes is not None else self._encode_jpeg(frame, lane=lane)
         if any(d.get("class_name") == "z_jaywalker" for d in detections) and self._throttled(state, "jaywalker", current_time):
             self.persistence.save_violation(lane_id, "Pedestrian Violation (Jaywalker)", evidence)
             self._append_alert("warning", lane, "Pedestrian violation detected.")

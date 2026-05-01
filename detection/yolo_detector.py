@@ -29,6 +29,14 @@ Improvements in v2
    noise that inflates vehicle counts.
 7. PRETRAINED_CONF lowered 0.30→0.25 so distant / partially occluded
    vehicles are not silently dropped.
+
+Improvements in v2.1 (Car/Bus Classification Fix)
+--------------------------------------------------
+8. Car/Bus validation guard to fix custom model misclassification:
+   a) Reject cars/buses with confidence < threshold (CAR: 0.50, BUS: 0.55)
+   b) Validate aspect ratios — cars ≈0.8-1.5, buses ≈0.6-2.5
+   c) Pretrained model veto: Trust yolov8n "car" detection over custom "bus"
+   d) Prevents false positives where cars get flagged as buses.
 """
 
 import logging
@@ -36,18 +44,30 @@ import cv2
 import numpy as np
 from collections import deque
 from typing import List, Dict, Optional, Tuple
+from utils.performance_monitor import timed_stage
 
 # ── Confidence thresholds ─────────────────────────────────────────────────────
 PRETRAINED_CONF        = 0.25   # yolov8n.pt — lowered to catch distant/small vehicles
 CUSTOM_CONF            = 0.35   # best.pt general threshold
-CUSTOM_EMERGENCY_CONF  = 0.50   # higher bar specifically for emergency_vehicle
+CUSTOM_EMERGENCY_CONF  = 0.60   # higher bar specifically for emergency_vehicle (stricter)
 
 # Cross-veto guard
 VETO_PRETRAINED_CONF   = 0.45   # pretrained bus/truck conf needed to trigger veto
-VETO_CUSTOM_CONF       = 0.75   # custom emergency conf needed to RESIST the veto
+VETO_CUSTOM_CONF       = 0.80   # custom emergency conf needed to RESIST the veto (stricter)
 VETO_SIZE_RATIO        = 1.6    # if emergency box area > this × median bus/truck area → veto
 VETO_ASPECT_MIN        = 1.2    # emergency vehicles should be wider than tall (w/h)
 VETO_ASPECT_MAX        = 5.0    # …but not extremely long (likely a train/bus misread)
+
+# ── Car/Bus classification guard ──────────────────────────────────────────────
+# Problem: custom model misclassifies cars as buses. Solution: validate with
+# size and aspect ratio + trust pretrained yolov8n for car detection
+CAR_MIN_CONFIDENCE      = 0.50   # higher threshold for custom model cars (vs 0.35)
+BUS_MIN_CONFIDENCE      = 0.55   # even higher for buses (susceptible to misclass)
+BUS_SIZE_RATIO          = 2.0    # buses typically 2× wider/larger than cars
+BUS_ASPECT_MIN          = 0.6    # bus width/height ratio (wider than tall)
+BUS_ASPECT_MAX          = 2.5    # realistic bus proportions
+CAR_ASPECT_MIN          = 0.8    # cars are more square-ish
+CAR_ASPECT_MAX          = 1.5    # cars typical aspect ratios
 
 # IoU suppression (custom wins over pretrained in same region)
 IOU_SUPPRESS_THRESH    = 0.30
@@ -218,6 +238,7 @@ class YOLODetector:
         )
         self._prev_gray: Optional[np.ndarray] = None
         self._smoother = DetectionSmoother(window=SMOOTH_WINDOW)
+        self._lane_smoothers: Dict[object, DetectionSmoother] = {}
         self.load_models()
 
     # ── Model loading ─────────────────────────────────────────────────────────
@@ -388,9 +409,150 @@ class YOLODetector:
 
         return surviving
 
+    # ── Car/Bus classification guard ──────────────────────────────────────────
+    def _validate_car_bus(
+        self,
+        custom_dets: List[Dict],
+        pretrained_dets: List[Dict],
+    ) -> List[Dict]:
+        """
+        Validate car/bus classifications to fix misclassification in custom model.
+
+        Problem: custom model (best.pt) often misclassifies cars as buses.
+        Solution: Apply size, aspect-ratio, and confidence filters.
+        
+        Rules:
+        1. HIGH CONFIDENCE (≥0.75): Accept as-is (trust strong model signals)
+        2. MEDIUM-HIGH CONFIDENCE (0.55-0.75): Validate by aspect ratio + size
+        3. LOW-MEDIUM CONFIDENCE (<0.55): Reject (too unreliable)
+        4. Trust pretrained model: If yolov8n says "car" with conf ≥0.40, 
+           suppress conflicting custom "bus" predictions
+        """
+        if not custom_dets:
+            return custom_dets
+
+        # Build map of pretrained car/bus detections for overlap checking
+        pretrained_vehicles = {
+            'car': [],
+            'bus': [],
+            'truck': [],
+        }
+        for pd in pretrained_dets:
+            if pd['class_name'] in pretrained_vehicles:
+                pretrained_vehicles[pd['class_name']].append(pd)
+
+        surviving = []
+        for det in custom_dets:
+            cls = det['class_name']
+            
+            # Only validate car/bus/truck from custom model
+            if cls not in ('car', 'bus', 'truck'):
+                surviving.append(det)
+                continue
+
+            conf = det['confidence']
+            x1, y1, x2, y2 = det['bbox']
+            w = max(1, x2 - x1)
+            h = max(1, y2 - y1)
+            aspect = w / h
+            area = w * h
+
+            # Rule 1: Very high confidence — accept without question
+            if conf >= 0.75:
+                surviving.append(det)
+                continue
+
+            # Rule 2: Very low confidence — reject outright
+            if conf < 0.35:
+                self.logger.debug(
+                    f"[CarBusGuard] {cls} (conf={conf:.2f}) rejected — too low confidence"
+                )
+                continue
+
+            # Rule 3: Check for pretrained model conflict (strongest guard)
+            # If pretrained yolov8n detected a car with decent confidence,
+            # do NOT accept custom "bus" in the same region
+            if cls == 'bus':
+                for pretrained_car in pretrained_vehicles['car']:
+                    if (self._iou(det['bbox'], pretrained_car['bbox']) >= 0.4 and
+                        pretrained_car['confidence'] >= 0.40):
+                        self.logger.debug(
+                            f"[CarBusGuard] Bus (conf={conf:.2f}) suppressed by "
+                            f"pretrained car (conf={pretrained_car['confidence']:.2f}) overlap"
+                        )
+                        conf = -1  # Mark for rejection
+                        break
+
+            if conf < 0:
+                continue
+
+            # Rule 4: Aspect ratio validation
+            if cls == 'bus':
+                if aspect < BUS_ASPECT_MIN or aspect > BUS_ASPECT_MAX:
+                    self.logger.debug(
+                        f"[CarBusGuard] Bus (conf={conf:.2f}) rejected — aspect "
+                        f"{aspect:.2f} outside [{BUS_ASPECT_MIN}, {BUS_ASPECT_MAX}]"
+                    )
+                    continue
+                # Bus confidence floor
+                if conf < BUS_MIN_CONFIDENCE:
+                    self.logger.debug(
+                        f"[CarBusGuard] Bus (conf={conf:.2f}) rejected — below "
+                        f"threshold {BUS_MIN_CONFIDENCE}"
+                    )
+                    continue
+
+            elif cls == 'car':
+                if aspect < CAR_ASPECT_MIN or aspect > CAR_ASPECT_MAX:
+                    self.logger.debug(
+                        f"[CarBusGuard] Car (conf={conf:.2f}) rejected — aspect "
+                        f"{aspect:.2f} outside [{CAR_ASPECT_MIN}, {CAR_ASPECT_MAX}]"
+                    )
+                    continue
+                # Car confidence floor (slightly lower than bus)
+                if conf < CAR_MIN_CONFIDENCE:
+                    self.logger.debug(
+                        f"[CarBusGuard] Car (conf={conf:.2f}) rejected — below "
+                        f"threshold {CAR_MIN_CONFIDENCE}"
+                    )
+                    continue
+
+            elif cls == 'truck':
+                # Trucks similar to buses but can be longer
+                if aspect < BUS_ASPECT_MIN or aspect > 4.0:
+                    self.logger.debug(
+                        f"[CarBusGuard] Truck (conf={conf:.2f}) rejected — aspect "
+                        f"{aspect:.2f} outside [{BUS_ASPECT_MIN}, 4.0]"
+                    )
+                    continue
+                if conf < BUS_MIN_CONFIDENCE:
+                    self.logger.debug(
+                        f"[CarBusGuard] Truck (conf={conf:.2f}) rejected — below "
+                        f"threshold {BUS_MIN_CONFIDENCE}"
+                    )
+                    continue
+
+            # Passed all checks
+            surviving.append(det)
+
+        return surviving
+
     # ── Core detection ────────────────────────────────────────────────────────
-    def detect(self, frame: np.ndarray) -> Dict:
-        """Run both models, merge and smooth detections."""
+    def _get_smoother(self, lane_id: Optional[object] = None) -> DetectionSmoother:
+        """Return the temporal smoother for one lane, preserving legacy default behavior."""
+        if lane_id is None:
+            if not hasattr(self, "_smoother"):
+                self._smoother = DetectionSmoother(window=SMOOTH_WINDOW)
+            return self._smoother
+
+        if not hasattr(self, "_lane_smoothers"):
+            self._lane_smoothers = {}
+        if lane_id not in self._lane_smoothers:
+            self._lane_smoothers[lane_id] = DetectionSmoother(window=SMOOTH_WINDOW)
+        return self._lane_smoothers[lane_id]
+
+    def detect(self, frame: np.ndarray, lane_id: Optional[object] = None) -> Dict:
+        """Run both models, merge and smooth detections for one lane."""
         if self.pretrained_model is None or self.custom_model is None:
             self.logger.warning("[YOLODetector] Models not loaded.")
             return {"detections": [], "annotated_frame": frame, "success": False}
@@ -421,9 +583,10 @@ class YOLODetector:
 
             # 3. Pretrained model (general vehicles)
             pretrained_raw: List[Dict] = []
-            results_pre = self.pretrained_model(
-                infer_frame, verbose=False, imgsz=INFER_SIZE
-            )
+            with timed_stage("yolo_inference", lane=lane_id, model=self.pretrained_model_name):
+                results_pre = self.pretrained_model(
+                    infer_frame, verbose=False, imgsz=INFER_SIZE
+                )
             if results_pre and len(results_pre) > 0:
                 for box in results_pre[0].boxes:
                     conf = float(box.conf[0])
@@ -449,9 +612,10 @@ class YOLODetector:
 
             # 4. Custom model (specialist classes)
             custom_raw: List[Dict] = []
-            results_custom = self.custom_model(
-                infer_frame, verbose=False, imgsz=INFER_SIZE
-            )
+            with timed_stage("yolo_inference", lane=lane_id, model=self.custom_model_name):
+                results_custom = self.custom_model(
+                    infer_frame, verbose=False, imgsz=INFER_SIZE
+                )
             if results_custom and len(results_custom) > 0:
                 for box in results_custom[0].boxes:
                     cls_id = int(box.cls[0])
@@ -482,6 +646,9 @@ class YOLODetector:
             # 5. Cross-veto (emergency misclassification guard)
             custom_filtered = self._apply_cross_veto(custom_raw, pretrained_raw)
 
+            # 5.5. Car/Bus validation guard (fixes custom model car→bus misclass)
+            custom_filtered = self._validate_car_bus(custom_filtered, pretrained_raw)
+
             # 6. Spatial suppression — drop pretrained boxes covered by custom
             pretrained_filtered: List[Dict] = []
             for p_det in pretrained_raw:
@@ -495,12 +662,13 @@ class YOLODetector:
             raw_merged = custom_filtered + pretrained_filtered
 
             # 7. Temporal smoother
-            self._smoother.push_frame(raw_merged)
-            final_detections = self._smoother.confirmed_detections()
+            smoother = self._get_smoother(lane_id)
+            smoother.push_frame(raw_merged)
+            final_detections = smoother.confirmed_detections()
 
             return {
                 "detections": final_detections,
-                "annotated_frame": self.draw_detections(frame, final_detections),
+                "annotated_frame": self.draw_detections(frame, final_detections, lane_id=lane_id),
                 "success": True,
             }
 
@@ -509,21 +677,27 @@ class YOLODetector:
             return {"detections": [], "annotated_frame": frame, "success": False}
 
     # ── Drawing ───────────────────────────────────────────────────────────────
-    def draw_detections(self, frame: np.ndarray, detections: List[Dict]) -> np.ndarray:
-        out = frame.copy()
-        for det in detections:
-            x1, y1, x2, y2 = det['bbox']
-            cls  = det['class_name']
-            conf = det.get('confidence', 1.0)
-            color = self.color_map.get(cls, (0, 255, 0))
-            thickness = 3 if cls in ('emergency_vehicle', 'z_accident') else 2
-            cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness)
-            label = f"{cls} {conf:.2f}"
-            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
-            cv2.rectangle(out, (x1, y1 - 20), (x1 + tw, y1), color, -1)
-            cv2.putText(out, label, (x1, y1 - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-        return out
+    def draw_detections(
+        self,
+        frame: np.ndarray,
+        detections: List[Dict],
+        lane_id: Optional[object] = None,
+    ) -> np.ndarray:
+        with timed_stage("draw_annotations", lane=lane_id, detections=len(detections)):
+            out = frame.copy()
+            for det in detections:
+                x1, y1, x2, y2 = det['bbox']
+                cls  = det['class_name']
+                conf = det.get('confidence', 1.0)
+                color = self.color_map.get(cls, (0, 255, 0))
+                thickness = 3 if cls in ('emergency_vehicle', 'z_accident') else 2
+                cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness)
+                label = f"{cls} {conf:.2f}"
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+                cv2.rectangle(out, (x1, y1 - 20), (x1 + tw, y1), color, -1)
+                cv2.putText(out, label, (x1, y1 - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+            return out
 
     # ── Public API ────────────────────────────────────────────────────────────
     VEHICLE_CLASSES = {

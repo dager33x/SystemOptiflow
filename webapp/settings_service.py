@@ -10,6 +10,8 @@ ALLOWED_SETTINGS = {
     "show_bounding_boxes",
     "show_confidence",
     "ai_throttle_seconds",
+    "enable_performance_timing",
+    "performance_log_min_ms",
     "enable_video_enhancement",
     "browser_capture_fps",
     "stream_output_fps",
@@ -31,6 +33,7 @@ ALLOWED_SETTINGS = {
 
 FLOAT_RANGES = {
     "ai_throttle_seconds": (0.05, 5.0, 0.2),
+    "performance_log_min_ms": (0.0, 10000.0, 0.0),
     "browser_capture_fps": (5.0, 30.0, 20.0),
     "stream_output_fps": (5.0, 30.0, 20.0),
     "browser_stream_jpeg_quality": (0.3, 0.9, 0.85),
