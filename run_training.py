@@ -6,7 +6,7 @@ Usage:
 
 Defaults:
     --episodes  3000     (enough for convergence with ε-decay = 0.9985)
-    --save-dir  models/dqn
+    --save-dir  checkpoints/dqn
 """
 
 import os
@@ -17,13 +17,13 @@ import argparse
 # Ensure the root directory is in the Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from detection.dqn_trainer import train_dqn_model
+from dashboard.models.detection.dqn_trainer import train_dqn_model
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train the Traffic Light DQN Agent")
     parser.add_argument("--episodes",  type=int, default=3000,      help="Number of training episodes")
-    parser.add_argument("--save-dir",  type=str, default="models/dqn", help="Directory to save models")
+    parser.add_argument("--save-dir",  type=str, default="checkpoints/dqn", help="Directory to save models")
     return parser.parse_args()
 
 

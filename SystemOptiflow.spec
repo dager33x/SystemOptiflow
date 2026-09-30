@@ -8,7 +8,7 @@ def add_data(source, destination):
     if os.path.exists(source):
         datas.append((source, destination))
 
-for folder in ('assets', 'views', 'controllers', 'utils', 'detection', 'models'):
+for folder in ('assets', 'dashboard', 'checkpoints'):
     add_data(folder, folder)
 
 for file_name in (
@@ -26,8 +26,12 @@ add_data('.env', '.')
 add_data(os.path.join('..', '.env'), '.')
 binaries = []
 hiddenimports = [
-    'utils.paths', 
-    'customtkinter', 
+    'dashboard.utils.paths',
+    'PySide6.QtCore',
+    'PySide6.QtGui',
+    'PySide6.QtWidgets',
+    'PySide6.QtPrintSupport',
+    'PySide6.QtMultimedia',
     'ultralytics', 
     'torch', 
     'postgrest', 
@@ -38,8 +42,6 @@ hiddenimports = [
     'fastapi'
 ]
 
-tmp_ret = collect_all('customtkinter')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 try:
     tmp_ret = collect_all('ultralytics')
     datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
@@ -55,7 +57,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['tkinter', 'customtkinter', 'PyQt5', 'PyQt6'],
     noarchive=False,
     optimize=0,
 )

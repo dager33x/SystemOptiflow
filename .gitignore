@@ -23,6 +23,7 @@ MANIFEST
 
 # Virtual Environment
 .venv/
+.venv-pyside6/
 venv/
 ENV/
 env/

@@ -13,6 +13,12 @@ CREATE TABLE IF NOT EXISTS public.users (
     last_name TEXT,
     password_hash TEXT NOT NULL,
     role TEXT DEFAULT 'operator', -- 'admin' or 'operator'
+    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+    approval_status TEXT NOT NULL DEFAULT 'pending'
+        CONSTRAINT users_approval_status_check CHECK (approval_status IN ('pending', 'approved', 'rejected')),
+    reviewed_by UUID,
+    reviewed_at TIMESTAMPTZ,
+    rejection_reason TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     last_login TIMESTAMPTZ
 );
@@ -46,7 +52,24 @@ CREATE TABLE IF NOT EXISTS public.accidents (
     description TEXT,
     reported_by TEXT, -- User ID or Name
     timestamp TIMESTAMPTZ DEFAULT NOW(),
-    resolved BOOLEAN DEFAULT FALSE
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    status TEXT DEFAULT 'pending', -- Legacy field; workflow uses response_status below
+    image_url TEXT,
+    resolved BOOLEAN DEFAULT FALSE,
+    review_status TEXT NOT NULL DEFAULT 'unreviewed'
+        CHECK (review_status IN ('unreviewed', 'confirmed', 'false_detection', 'needs_investigation')),
+    response_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (response_status IN ('pending', 'acknowledged', 'responding', 'resolved')),
+    reviewed_by UUID,
+    reviewed_by_name TEXT,
+    reviewed_at TIMESTAMPTZ,
+    review_note TEXT,
+    response_by UUID,
+    response_by_name TEXT,
+    response_at TIMESTAMPTZ,
+    response_note TEXT,
+    workflow_version INTEGER NOT NULL DEFAULT 0,
+    workflow_history JSONB NOT NULL DEFAULT '[]'::jsonb
 );
 
 -- 5. EMERGENCY EVENTS TABLE (Ambulance/Fire)

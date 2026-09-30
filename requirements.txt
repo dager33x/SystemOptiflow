@@ -1,13 +1,10 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-websockets>=13,<16
-supabase==1.1.1
-python-dotenv==1.0.0
-httpx==0.25.0
-postgrest-py==0.10.6
-realtime-py==1.0.3
-gotrue==0.2.0
-requests==2.31.0
-python-dotenv==1.0.0
-smtplib-plus==1.1.0
-stable-baselines3>=2.0.0
+# Complete desktop runtime; local best.pt and yolov8n.pt are required.
+PySide6==6.10.2
+ultralytics==8.3.236
+numpy>=1.26,<3
+opencv-python>=4.8,<5
+torch>=2.6,<3
+torchvision>=0.21,<1
+supabase>=2,<3
+python-dotenv>=1,<2
+stable-baselines3>=2,<3
