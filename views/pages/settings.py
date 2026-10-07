@@ -1,5 +1,6 @@
 # views/pages/settings.py
 import tkinter as tk
+from tkinter import filedialog
 import customtkinter as ctk
 from ..styles import Colors, Fonts
 from utils.app_config import SETTINGS
@@ -175,9 +176,35 @@ class SettingsPage:
                      text_color=Colors.TEXT_LIGHT).pack(side=tk.LEFT)
         
         # Combobox (Right)
+        direction = config_key.removeprefix("camera_source_")
+        video_key = f"simulation_video_{direction}"
         current_val = SETTINGS.get(config_key, "Simulated")
+        if current_val == "Simulated" and SETTINGS.get(video_key):
+            current_val = "Simulated (Video)"
         
         def on_combo_change(new_val):
+            if new_val == "Simulated (Video)":
+                video_path = filedialog.askopenfilename(
+                    title=f"Choose {label_text} Simulation Video",
+                    filetypes=[
+                        ("Video files", "*.mp4 *.avi *.mov *.mkv *.wmv"),
+                        ("All files", "*.*"),
+                    ],
+                )
+                if video_path:
+                    SETTINGS[video_key] = video_path
+                    SETTINGS[config_key] = "Simulated"
+                    combo.set(new_val)
+                    print(f"Simulation video for {direction} set to {video_path}")
+                else:
+                    combo.set(
+                        "Simulated (Video)" if SETTINGS.get(video_key) else
+                        SETTINGS.get(config_key, "Simulated")
+                    )
+                return
+
+            if new_val == "Simulated":
+                SETTINGS[video_key] = ""
             SETTINGS[config_key] = new_val
             print(f"Setting '{config_key}' changed to {new_val}")
 
@@ -185,6 +212,7 @@ class SettingsPage:
             container,
             values=[
                 "Simulated",
+                "Simulated (Video)",
                 "Camera 0",
                 "Camera 1",
                 "Camera 2",

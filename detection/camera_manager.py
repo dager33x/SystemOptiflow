@@ -3,6 +3,7 @@ import logging
 import cv2
 import numpy as np
 import threading
+import time
 from typing import Optional
 
 # ── RTSP stream mapping for cameras 5–8 (MediaMTX via Tailscale) ────────────
@@ -42,6 +43,8 @@ class CameraManager:
         self._latest_frame: Optional[np.ndarray] = None
         self._frame_lock = threading.Lock()
         self._capture_thread: Optional[threading.Thread] = None
+        self._loop_video = False
+        self._video_frame_interval = 1 / 30
     
     def initialize_camera(self, camera_index: int = 0) -> bool:
         """
@@ -50,6 +53,7 @@ class CameraManager:
         - Indices 5–8  : RTSP streams from MediaMTX (phone cameras via Tailscale)
         """
         try:
+            self._loop_video = False
             if camera_index in RTSP_CAMERA_SOURCES:
                 # ── RTSP / remote camera (5–8) ───────────────────────────────
                 rtsp_url = RTSP_CAMERA_SOURCES[camera_index]
@@ -77,21 +81,50 @@ class CameraManager:
                 self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
             if self.camera.isOpened():
-                self.is_running = True
-                # Start background capture thread
-                self._capture_thread = threading.Thread(
-                    target=self._capture_loop, daemon=True, name=f"cam-{camera_index}"
-                )
-                self._capture_thread.start()
-                self.logger.info(f"Camera {camera_index} initialized with background capture thread")
-                return True
+                return self._start_capture(f"cam-{camera_index}")
             else:
                 self.logger.error(f"Camera {camera_index} failed to open")
+                self.camera.release()
+                self.camera = None
                 return False
 
         except Exception as e:
             self.logger.error(f"Failed to initialize camera {camera_index}: {e}")
             return False
+
+    def initialize_video(self, video_path: str) -> bool:
+        """Open a video file and play it continuously as a camera source."""
+        try:
+            self.camera = cv2.VideoCapture(video_path)
+            if not self.camera.isOpened():
+                self.logger.error(f"Video file failed to open: {video_path}")
+                self.camera.release()
+                self.camera = None
+                return False
+
+            fps = self.camera.get(cv2.CAP_PROP_FPS)
+            if not np.isfinite(fps) or fps <= 0:
+                self.logger.warning(f"Invalid video frame rate for {video_path}; using 30 FPS")
+                fps = 30
+            self._video_frame_interval = 1 / fps
+            self._loop_video = True
+            return self._start_capture("simulation-video")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize video {video_path}: {e}")
+            if self.camera:
+                self.camera.release()
+                self.camera = None
+            return False
+
+    def _start_capture(self, thread_name: str) -> bool:
+        self.is_running = True
+        self._latest_frame = None
+        self._capture_thread = threading.Thread(
+            target=self._capture_loop, daemon=True, name=thread_name
+        )
+        self._capture_thread.start()
+        self.logger.info(f"Camera source initialized with background capture thread: {thread_name}")
+        return True
 
     def _capture_loop(self):
         """
@@ -100,11 +133,20 @@ class CameraManager:
         avoid lag, and makes get_frame() a near-instantaneous operation.
         """
         while self.is_running and self.camera and self.camera.isOpened():
+            frame_started = time.monotonic()
             ret, frame = self.camera.read()
             if ret and frame is not None:
                 with self._frame_lock:
                     self._latest_frame = frame
-            # No sleep here — we want to drain the buffer as fast as possible
+                if self._loop_video:
+                    remaining = self._video_frame_interval - (time.monotonic() - frame_started)
+                    if remaining > 0:
+                        time.sleep(remaining)
+            elif self._loop_video:
+                if not self.camera.set(cv2.CAP_PROP_POS_FRAMES, 0):
+                    self.logger.error("Could not rewind simulation video; stopping playback")
+                    self.is_running = False
+                    break
 
     def get_frame(self) -> Optional[np.ndarray]:
         """

@@ -201,6 +201,9 @@ class MainController:
                 status = "active"
                 # Make it dynamic: show hardware/source name
                 display_name = f"{base_name} ({current_source.replace('Camera', 'Cam')})"
+            elif current_source == "Simulated" and state.get("current_video_path") and manager and manager.is_running:
+                status = "active"
+                display_name = f"{base_name} (Sim Video)"
             elif current_source != "Simulated" and manager and manager.is_running:
                 status = "active"
                 # If it's a video file, clip the name or just show 'Video'
@@ -259,13 +262,17 @@ class MainController:
         # Initialize all cameras based on SETTINGS
         for i, direction in enumerate(self.directions):
             source = SETTINGS.get(f"camera_source_{direction}", "Simulated")
+            video_path = SETTINGS.get(f"simulation_video_{direction}", "")
             self.states[direction]["current_source"] = source
+            self.states[direction]["current_video_path"] = video_path
             if source.startswith("Camera"):
                 try:
                     cam_idx = int(source.split(" ")[1])
                     self.camera_managers[direction].initialize_camera(cam_idx)
                 except ValueError:
-                    pass
+                    self.logger.error(f"Invalid camera source for {direction}: {source}")
+            elif source == "Simulated" and video_path:
+                self.camera_managers[direction].initialize_video(video_path)
             
         self.camera_thread = threading.Thread(target=self.camera_loop, daemon=True)
         self.camera_thread.start()
@@ -345,21 +352,30 @@ class MainController:
                     show_sim_text = SETTINGS.get("show_simulation_text", True)
                     dark_mode_cam = SETTINGS.get("dark_mode_cam", False)
                     camera_source = SETTINGS.get(f"camera_source_{direction}", "Simulated")
+                    video_path = SETTINGS.get(f"simulation_video_{direction}", "")
                     
                     # Check if source changed
-                    if camera_source != state.get("current_source", "Simulated"):
+                    if (
+                        camera_source != state.get("current_source", "Simulated")
+                        or video_path != state.get("current_video_path", "")
+                    ):
                         self.camera_managers[direction].release()
                         if camera_source.startswith("Camera"):
                             try:
                                 cam_idx = int(camera_source.split(" ")[1])
                                 self.camera_managers[direction].initialize_camera(cam_idx)
                             except ValueError:
-                                pass
+                                self.logger.error(f"Invalid camera source for {direction}: {camera_source}")
+                        elif camera_source == "Simulated" and video_path:
+                            self.camera_managers[direction].initialize_video(video_path)
                         state["current_source"] = camera_source
+                        state["current_video_path"] = video_path
                     
                     # Get Frame
                     frame = None
-                    if camera_source.startswith("Camera"):
+                    if camera_source.startswith("Camera") or (
+                        camera_source == "Simulated" and video_path
+                    ):
                         frame = self.camera_managers[direction].get_frame()
                     
                     if frame is None:
@@ -370,7 +386,7 @@ class MainController:
                         # A real USB/RTSP source with no frame must report no detections
                         # so camera dropouts do not disturb the signal controller.
                         detections = []
-                        if camera_source == "Simulated":
+                        if camera_source == "Simulated" and not video_path:
                             # DYNAMIC SIMULATION: Smoothly rise and fall over time to test DQN
                             import random
                             
@@ -1320,4 +1336,3 @@ class MainController:
         self.stop_camera()
         if self.on_logout_callback:
             self.on_logout_callback()
-

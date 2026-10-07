@@ -25,4 +25,8 @@ SETTINGS = {
     "camera_source_south": "Simulated",
     "camera_source_east": "Simulated",
     "camera_source_west": "Simulated",
+    "simulation_video_north": "",
+    "simulation_video_south": "",
+    "simulation_video_east": "",
+    "simulation_video_west": "",
 }
