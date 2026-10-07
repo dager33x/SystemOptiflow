@@ -275,24 +275,36 @@ class TrafficDB:
             return None
     
     # Issue Reporting
-    def create_report(self, title: str, description: str, priority: str, 
-                     author_id: str = None, author_name: str = "Anonymous") -> bool:
-        """Create a new issue report"""
+    def create_report(self, title: str, description: str, priority: str,
+                     author_id: str = None, author_name: str = "Anonymous",
+                     attachment_path: str = None) -> bool:
+        """Create a new issue report, optionally with a local PDF attachment path."""
+        data = {
+            "title": title,
+            "description": description,
+            "priority": priority,
+            "status": "Open",
+            "author_id": author_id,
+            "author_name": author_name,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        if attachment_path:
+            data["attachment_path"] = attachment_path
         try:
-            data = {
-                "title": title,
-                "description": description,
-                "priority": priority,
-                "status": "Open",
-                "author_id": author_id,
-                "author_name": author_name,
-                "created_at": datetime.utcnow().isoformat()
-            }
-            # Attempt to insert, might fail if table doesn't exist yet
             self.supabase.table("reports").insert(data).execute()
             self.save_system_log("REPORT_CREATED", f"New report: {title}")
             return True
         except Exception as e:
+            # If the column doesn't exist yet in Supabase, retry without it.
+            if attachment_path and "attachment_path" in str(e):
+                try:
+                    data.pop("attachment_path", None)
+                    self.supabase.table("reports").insert(data).execute()
+                    self.save_system_log("REPORT_CREATED", f"New report: {title}")
+                    return True
+                except Exception as e2:
+                    self.logger.error(f"Error creating report (fallback): {e2}")
+                    return False
             self.logger.error(f"Error creating report: {e}")
             return False
 
