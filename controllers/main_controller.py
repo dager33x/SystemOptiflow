@@ -203,7 +203,7 @@ class MainController:
                 display_name = f"{base_name} ({current_source.replace('Camera', 'Cam')})"
             elif current_source == "Simulated" and state.get("current_video_path") and manager and manager.is_running:
                 status = "active"
-                display_name = f"{base_name} (Sim Video)"
+                display_name = base_name
             elif current_source != "Simulated" and manager and manager.is_running:
                 status = "active"
                 # If it's a video file, clip the name or just show 'Video'
