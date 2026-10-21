@@ -36,6 +36,15 @@ class TrafficTimerLogicTests(unittest.TestCase):
             {0: "RED", 1: "RED", 2: "GREEN", 3: "GREEN"},
         )
 
+    def test_controller_uses_injected_yolo_detector(self):
+        detector = _DummyYOLO()
+        controller = tc.TrafficLightController(
+            use_pretrained=False,
+            yolo_detector=detector,
+        )
+
+        self.assertIs(controller.yolo, detector)
+
     def test_green_minimum_and_red_display_cap(self):
         self.assertGreaterEqual(
             self.controller._phase_green_duration(tc.PHASE_NS),
@@ -68,7 +77,30 @@ class TrafficTimerLogicTests(unittest.TestCase):
             self.controller.update_phase([0, 0, 13, 0])
             remaining = self.controller.get_lane_time_remaining(0)
 
-        self.assertAlmostEqual(remaining, 47.5)
+        self.assertAlmostEqual(remaining, 45.0)
+        self.assertEqual(self.controller.phase_duration, 60.0)
+
+    def test_heavy_red_queue_stops_speeding_up_at_green_buffer(self):
+        start_time = 100.0
+        self.controller._commit_green_phase(tc.PHASE_NS, start_time, green_time=60.0)
+        self.controller.update_lane_detections(
+            2,
+            [{"class_name": "car"} for _ in range(13)],
+        )
+        self.controller.phase_start_time = start_time + 1.0 - 49.8
+        self.controller._last_phase_timer_update = start_time
+
+        with patch.object(tc.time, "time", return_value=start_time + 1.0):
+            self.controller.update_phase([0, 0, 13, 0])
+            remaining_at_buffer = self.controller.get_lane_time_remaining(0)
+
+        self.assertAlmostEqual(remaining_at_buffer, tc.MIN_BUFFER_TIME)
+
+        with patch.object(tc.time, "time", return_value=start_time + 2.0):
+            self.controller.update_phase([0, 0, 13, 0])
+            remaining_after_buffer = self.controller.get_lane_time_remaining(0)
+
+        self.assertAlmostEqual(remaining_after_buffer, tc.MIN_BUFFER_TIME - 1.0)
         self.assertEqual(self.controller.phase_duration, 60.0)
 
     def test_emergency_requires_two_second_observation(self):

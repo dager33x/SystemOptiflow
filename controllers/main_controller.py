@@ -78,7 +78,8 @@ class MainController:
         self.traffic_controller = TrafficLightController(
             num_lanes=4,
             model_path=_selected_model,
-            use_pretrained=(_selected_model is not None)
+            use_pretrained=(_selected_model is not None),
+            yolo_detector=self.yolo_detector,
         )
         if _selected_model:
             self.logger.info(f"[Main] Loaded trained DQN model: {_selected_model}")
@@ -647,7 +648,7 @@ class MainController:
                                                 
                                     # Check if any car crosses the line while RED
                                     for det in detections:
-                                        if det['class_name'] in ['car', 'truck', 'bus', 'motorcycle']:
+                                        if det['class_name'] in ['car', 'truck', 'bus', 'motorcycle', 'tricycle']:
                                             v_x1, v_y1, v_x2, v_y2 = det['bbox']
                                             
                                             # Check if vehicle box intersects the stop line segment
@@ -698,7 +699,7 @@ class MainController:
                                 GAP_PX         = 25  # pixel gap tolerance for touching boxes
                                 SIZE_RATIO_MIN = 0.10  # min(area1,area2)/max(area1,area2)
 
-                                vehicle_classes = ['car', 'truck', 'bus', 'motorcycle', 'jeepney']
+                                vehicle_classes = ['car', 'truck', 'bus', 'motorcycle', 'jeepney', 'tricycle']
                                 vehicle_dets = [d for d in detections if d['class_name'] in vehicle_classes]
 
                                 accident_candidate = False
@@ -1096,7 +1097,7 @@ class MainController:
         line_y  = int(h * 0.80)
         line_x1 = int(w * 0.25)
         line_x2 = int(w * 0.75)
-        vehicle_classes = {'car', 'truck', 'bus', 'motorcycle', 'jeepney'}
+        vehicle_classes = {'car', 'truck', 'bus', 'motorcycle', 'jeepney', 'tricycle'}
         tracker = self._blocking_intersection_tracker[direction]
         occupied_now: set = set()
         for det in detections:
@@ -1143,7 +1144,7 @@ class MainController:
         h, w = frame.shape[:2]
         zone_x1, zone_x2 = int(w * 0.15), int(w * 0.85)
         zone_y1, zone_y2 = int(h * 0.25), int(h * 0.85)
-        vehicle_classes = {'car', 'truck', 'bus', 'motorcycle', 'jeepney'}
+        vehicle_classes = {'car', 'truck', 'bus', 'motorcycle', 'jeepney', 'tricycle'}
         tracker = self._prohibited_stop_tracker[direction]
 
         occupied_now: set = set()
@@ -1206,7 +1207,7 @@ class MainController:
                 'east':  ('x', -1), 'west':  ('x', +1)}
         axis, expected_sign = flow[direction]
 
-        vehicle_classes = {'car', 'truck', 'bus', 'motorcycle', 'jeepney'}
+        vehicle_classes = {'car', 'truck', 'bus', 'motorcycle', 'jeepney', 'tricycle'}
         tracker   = self._wrong_way_tracker[direction]
         MATCH_PX  = 120
         MIN_SAMP  = 8

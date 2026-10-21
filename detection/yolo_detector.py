@@ -14,7 +14,7 @@ class YOLODetector:
         self.pretrained_model_name = "yolov8n.pt"
         self.custom_model_name = model_name
         self.confidence_threshold = 0.25  # Lowered to 0.25 for blurry/small vehicle detection (like bicycles)
-        self.emergency_confidence_threshold = 0.60
+        self.emergency_confidence_threshold = 0.90
         
         # Check for CUDA availability
         try:
@@ -30,6 +30,7 @@ class YOLODetector:
         }
         
         self.custom_class_names = {}
+        self.custom_wanted = {'emergency_vehicle', 'jeepney', 'tricycle'}
         
         self.color_map = {
             "car": (0, 255, 0),            # Green
@@ -40,7 +41,8 @@ class YOLODetector:
             "person": (255, 255, 255),     # White
             "traffic light": (0, 0, 255),  # Red (default)
             "emergency_vehicle": (255, 0, 0), # Blue
-            "jeepney": (128, 0, 128)       # Purple
+            "jeepney": (128, 0, 128),      # Purple
+            "tricycle": (0, 200, 255)       # Amber
         }
         self.load_models()
     
@@ -64,12 +66,20 @@ class YOLODetector:
             
             self.custom_model = YOLO(cus_path)
             self.custom_model.to(self.device)
+            class_aliases = {"z_tricycle": "tricycle"}
             self.custom_class_names = {
-                int(class_id): str(class_name).strip().lower().replace(" ", "_")
+                int(class_id): class_aliases.get(
+                    str(class_name).strip().lower().replace(" ", "_"),
+                    str(class_name).strip().lower().replace(" ", "_"),
+                )
                 for class_id, class_name in self.custom_model.names.items()
             }
             self.logger.info(f"YOLO custom model {self.custom_model_name} loaded successfully on {self.device}")
             self.logger.info(f"YOLO custom model classes: {self.custom_class_names}")
+            self.logger.info(
+                "Emergency vehicle confidence threshold: %.2f",
+                self.emergency_confidence_threshold,
+            )
             return True
         except Exception as e:
             self.logger.error(f"Failed to load YOLO models: {e}")
@@ -149,7 +159,7 @@ class YOLODetector:
                     class_name = self.custom_class_names.get(cls_id)
                     # We specifically want the custom model for these classes:
                     # (best.pt only has 6 classes; no z_accident/z_jaywalker in this model)
-                    if class_name not in ['emergency_vehicle', 'jeepney']:
+                    if class_name not in self.custom_wanted:
                         continue
 
                     threshold = self.confidence_threshold
@@ -243,7 +253,7 @@ class YOLODetector:
     def detect_vehicles(self, frame: np.ndarray) -> List[Dict]:
         """Detect vehicles specifically"""
         result = self.detect(frame)
-        vehicles = [d for d in result["detections"] if d["class_name"] in ["car", "bus", "truck", "motorcycle", "bicycle", "emergency_vehicle", "jeepney"]]
+        vehicles = [d for d in result["detections"] if d["class_name"] in ["car", "bus", "truck", "motorcycle", "bicycle", "emergency_vehicle", "jeepney", "tricycle"]]
         return vehicles
     
     def detect_traffic_lights(self, frame: np.ndarray) -> List[Dict]:

@@ -56,6 +56,7 @@ VEHICLE_WEIGHTS = {
     'car':              2.0,
     'bus':              3.0,
     'truck':            3.0,
+    'tricycle':         2.0,
     'emergency_vehicle':0.0,
     'accident':         0.0,
     'pedestrian_violation': 0.0

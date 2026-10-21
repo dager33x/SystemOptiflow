@@ -148,9 +148,16 @@ class AppManager:
             self.show_main_dashboard(user)
         # Error message is shown by auth controller
     
-    def handle_signup(self, username, email, password):
+    def handle_signup(self, first_name, last_name, username, email, password):
         """Handle signup - send verification email"""
-        if self.auth.register_user(username, email, password, role="operator"):
+        if self.auth.register_user(
+            first_name,
+            last_name,
+            username,
+            email,
+            password,
+            role="operator",
+        ):
             # Show email verification page
             self.show_email_verification_page(email, username)
         # Error message is shown by auth controller

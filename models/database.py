@@ -23,6 +23,10 @@ if workspace_dir not in sys.path:
 from utils.paths import get_resource_path
 
 
+class DatabaseAuthenticationError(RuntimeError):
+    """Raised when the account database cannot verify login credentials."""
+
+
 def _load_environment():
     """Load .env from packaged, project, or parent workspace locations."""
     candidates = [
@@ -392,7 +396,7 @@ class TrafficDB:
     def authenticate_user(self, username: str, password_hash: str) -> Optional[Dict]:
         """Authenticate user and return user data"""
         if not self.is_connected():
-            return None
+            raise DatabaseAuthenticationError("Account database is not configured")
             
         try:
             response = self.supabase.table("users")\
@@ -418,7 +422,7 @@ class TrafficDB:
             return user
         except Exception as e:
             self.logger.error(f"Error authenticating user: {e}")
-            return None
+            raise DatabaseAuthenticationError("Account database authentication failed") from e
     
     def get_user_by_username(self, username: str) -> Optional[Dict]:
         """Get user by username"""

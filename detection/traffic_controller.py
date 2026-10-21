@@ -44,7 +44,7 @@ PHASE_MAIN_LANES = {
 }
 MAX_RED_DISPLAY_SECONDS = 199.0
 RED_QUEUE_ACCELERATION_THRESHOLD = 25.0
-RED_QUEUE_ACCELERATION_RATE = 0.25
+RED_QUEUE_ACCELERATION_RATE = 0.5
 EMERGENCY_ATTEMPTS = 2
 EMERGENCY_ATTEMPT_SECONDS = 10.0
 EMERGENCY_PRIORITY_SECONDS = EMERGENCY_ATTEMPTS * EMERGENCY_ATTEMPT_SECONDS
@@ -63,11 +63,12 @@ class TrafficLightController:
         num_lanes: int = NUM_LANES,
         model_path: Optional[str] = None,
         use_pretrained: bool = True,
+        yolo_detector: Optional[YOLODetector] = None,
     ):
         self.logger = logging.getLogger(__name__)
         self.num_lanes = num_lanes
 
-        self.yolo = YOLODetector()
+        self.yolo = yolo_detector if yolo_detector is not None else YOLODetector()
         self.dqn = TrafficLightDQN(state_size=22, action_size=5, hidden_size=256)
         if use_pretrained and model_path:
             try:
@@ -634,7 +635,11 @@ class TrafficLightController:
                 for lane in PHASE_MAIN_LANES[red_phase]
             )
             if red_queue >= RED_QUEUE_ACCELERATION_THRESHOLD:
-                acceleration = timer_interval * RED_QUEUE_ACCELERATION_RATE
+                remaining = self.phase_duration - elapsed
+                acceleration = min(
+                    timer_interval * RED_QUEUE_ACCELERATION_RATE,
+                    max(0.0, remaining - float(MIN_BUFFER_TIME)),
+                )
                 self.phase_start_time -= acceleration
                 elapsed += acceleration
 

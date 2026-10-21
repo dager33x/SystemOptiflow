@@ -1,6 +1,6 @@
 # controllers/auth_controller.py
 from models.user import User
-from models.database import TrafficDB
+from models.database import DatabaseAuthenticationError, TrafficDB
 from utils.email_service import EmailService
 from views.components.message_box import MessageBox
 
@@ -113,7 +113,15 @@ class AuthController:
         password_hash = User.hash_password(password)
         
         # Authenticate user
-        user = self.db.authenticate_user(username, password_hash)
+        try:
+            user = self.db.authenticate_user(username, password_hash)
+        except DatabaseAuthenticationError:
+            MessageBox.showerror(
+                "Login unavailable",
+                "Cannot access the account database. Check the internet connection "
+                "and release configuration, then try again.",
+            )
+            return False
         
         if user:
             self.current_user = user
