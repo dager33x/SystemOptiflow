@@ -1,5 +1,36 @@
 import sys
 import os
+from pathlib import Path
+
+
+def get_data_path(*parts):
+    """Keep installed-app logs and records in a writable per-user directory."""
+    override = os.environ.get('OPTIFLOW_DATA_DIR')
+    if override:
+        root = Path(override).expanduser().resolve()
+    elif getattr(sys, 'frozen', False):
+        base = os.environ.get('LOCALAPPDATA') or str(Path.home() / 'AppData/Local')
+        root = Path(base) / 'SystemOptiflow'
+    else:
+        root = Path(__file__).resolve().parents[2]
+    root.mkdir(parents=True, exist_ok=True)
+    return str(root.joinpath(*parts))
+
+
+def get_config_paths():
+    if getattr(sys, 'frozen', False):
+        return (Path(sys.executable).resolve().parent / '.env', Path(get_data_path('.env')))
+    root = Path(__file__).resolve().parents[2]
+    return (root / '.env', root.parent / '.env', Path.cwd() / '.env')
+
+
+def load_environment():
+    from dotenv import load_dotenv
+    for path in get_config_paths():
+        if path.is_file():
+            load_dotenv(path, override=False)
+            return str(path)
+    return None
 
 def get_resource_path(relative_path):
     """

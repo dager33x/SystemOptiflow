@@ -2,6 +2,10 @@
 import multiprocessing
 
 def main():
+    import sys
+    if '--self-test' in sys.argv:
+        from dashboard.release_check import run
+        return run(sys.argv[sys.argv.index('--self-test') + 1])
     from dashboard.application import main as run
     return run()
 

@@ -13,7 +13,7 @@ import ssl
 import string
 
 from dotenv import load_dotenv
-from dashboard.utils.paths import get_resource_path
+from dashboard.utils.paths import load_environment
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +21,7 @@ logger = logging.getLogger(__name__)
 class EmailService:
     def __init__(self):
         # Resolve configuration from the app, regardless of the launch directory.
-        for path in (Path(get_resource_path('.env')), Path(__file__).resolve().parents[3] / '.env'):
-            if path.is_file():
-                load_dotenv(path, override=False)
+        load_environment()
         self.smtp_server = os.environ.get('SMTP_SERVER', 'smtp.gmail.com').strip()
         try:
             self.smtp_port = int(os.environ.get('SMTP_PORT', '587'))

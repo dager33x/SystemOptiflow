@@ -26,9 +26,8 @@ class AccidentController:
         return self.db.update_incident_workflow(incident_id, expected_version, actor['user_id'], action, value, note)
 
     def _app_path(self, *parts):
-        import os
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        return os.path.join(base_dir, *parts)
+        from dashboard.utils.paths import get_data_path
+        return get_data_path(*parts)
     
     def report_accident(self, lane: int, severity: str = "Moderate", description: str = "Detected by AI", frame=None):
         """Persist evidence locally before scheduling a potentially slow upload."""

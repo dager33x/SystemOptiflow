@@ -13,6 +13,7 @@ import cv2
 from dashboard.models.dashboard import FramePacket, DetectionPacket, active_detections, event_detections
 from dashboard.services.simulation import render_scene
 from dashboard.services.video_sources import is_video_source
+from dashboard.utils.paths import get_data_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ def inference_process(requests, responses, profile='all'):
     """Independent local models in a child process; no Qt/database imports."""
     try:
         logging.basicConfig(level=logging.WARNING,
-            filename=Path(__file__).resolve().parents[2] / 'dashboard.log',
+            filename=get_data_path('dashboard.log'),
             format='%(asctime)s %(levelname)s %(name)s: %(message)s')
         logging.getLogger('dashboard.models.detection.yolo_detector').setLevel(logging.INFO)
         import torch

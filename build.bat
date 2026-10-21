@@ -1,14 +1,19 @@
 @echo off
+setlocal
 cd /d "%~dp0"
-if exist ".venv-pyside6\Scripts\activate.bat" call ".venv-pyside6\Scripts\activate.bat"
-set "PYTHON_EXE=python"
-where python >nul 2>nul
-if errorlevel 1 if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" set "PYTHON_EXE=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
-if errorlevel 1 if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" set "PYTHON_EXE=%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
-if errorlevel 1 if exist "%LOCALAPPDATA%\Programs\Python\Python310\python.exe" set "PYTHON_EXE=%LOCALAPPDATA%\Programs\Python\Python310\python.exe"
-"%PYTHON_EXE%" -m pip install -r requirements.txt pyinstaller pywin32-ctypes
-if errorlevel 1 exit /b 1
-echo Building SystemOptiflow using PyInstaller...
-"%PYTHON_EXE%" -m PyInstaller --clean --noconfirm SystemOptiflow.spec
-if errorlevel 1 exit /b 1
-echo Build complete! Executable is located in dist\SystemOptiflow_Release\SystemOptiflow.exe
+if defined OPTIFLOW_BUILD_PYTHON goto check
+set "OPTIFLOW_BUILD_PYTHON=%~dp0..\.runtime\python312\python.exe"
+if exist "%OPTIFLOW_BUILD_PYTHON%" goto check
+set "OPTIFLOW_BUILD_PYTHON=%~dp0.venv-pyside6\Scripts\python.exe"
+if exist "%OPTIFLOW_BUILD_PYTHON%" goto check
+set "OPTIFLOW_BUILD_PYTHON=python"
+:check
+set "PYTHONUTF8=1"
+"%OPTIFLOW_BUILD_PYTHON%" -c "import PyInstaller, PySide6, cv2, torch, ultralytics, supabase"
+if errorlevel 1 (
+    echo Install requirements-build.txt with a working Python 3.12 interpreter first.
+    echo Set OPTIFLOW_BUILD_PYTHON to that interpreter if needed.
+    exit /b 1
+)
+"%OPTIFLOW_BUILD_PYTHON%" packaging\build_release.py
+exit /b %ERRORLEVEL%

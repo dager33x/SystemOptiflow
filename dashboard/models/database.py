@@ -18,23 +18,12 @@ import sys
 # Project root for configuration lookup.
 workspace_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dashboard.utils.paths import get_resource_path
+from dashboard.utils.paths import load_environment
 
 
 def _load_environment():
-    """Load .env from packaged, project, or parent workspace locations."""
-    candidates = [
-        get_resource_path('.env'),
-        os.path.join(workspace_dir, '.env'),
-        os.path.join(os.path.dirname(workspace_dir), '.env'),
-        os.path.join(os.getcwd(), '.env'),
-    ]
-
-    for env_path in candidates:
-        if os.path.exists(env_path):
-            load_dotenv(dotenv_path=env_path, override=True)
-            return env_path
-    return None
+    """Load operator configuration without bundling credentials in releases."""
+    return load_environment()
 
 
 _load_environment()

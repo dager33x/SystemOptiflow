@@ -13,9 +13,8 @@ class ViolationController:
         return LocalViolations(self._app_path('violation_logs_local.json'))
 
     def _app_path(self, *parts):
-        import os
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        return os.path.join(base_dir, *parts)
+        from dashboard.utils.paths import get_data_path
+        return get_data_path(*parts)
     
     def save_violation(self, lane, violation_type="Red Light Violation", frame=None):
         """Save locally now; a database outage must not delay the event log."""

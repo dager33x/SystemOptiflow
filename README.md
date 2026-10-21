@@ -6,6 +6,14 @@ Optiflow brings four camera feeds, vehicle detection, traffic-signal visualizati
 
 Built with Python, PySide6, OpenCV, YOLO, PyTorch, and Supabase.
 
+## Windows download and release build
+
+Windows builds are published from the `new-update` branch in [GitHub Releases](https://github.com/dager33x/SystemOptiflow/releases). Extract the whole download and run `SystemOptiflow.exe`, keeping its `_internal` folder beside it. Python is included. `Preview.cmd` opens the simulated dashboard without signing in.
+
+Configure database and email access locally using the included `.env.example`; private credentials and incident records are excluded from the download. Packaged app logs and records are saved under `%LOCALAPPDATA%\SystemOptiflow`. See [Windows setup](packaging/README-WINDOWS.txt).
+
+To rebuild on Windows with Python 3.12 and the application dependencies installed, install `requirements-build.txt` and run `build.bat`. Set `OPTIFLOW_BUILD_PYTHON` if your Python interpreter is elsewhere. The build performs an offline executable check, then writes `dist/SystemOptiflow-Windows-x64.zip` and `dist/SHA256SUMS.txt`. The executable uses CPU inference and is unsigned.
+
 ## Key features
 
 - **Four-camera monitoring** — Use webcams, video files, network streams, or simulated traffic sources.
