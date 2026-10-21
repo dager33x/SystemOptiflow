@@ -43,6 +43,8 @@ PHASE_MAIN_LANES = {
     PHASE_EW: [2, 3],
 }
 MAX_RED_DISPLAY_SECONDS = 199.0
+RED_QUEUE_ACCELERATION_THRESHOLD = 25.0
+RED_QUEUE_ACCELERATION_RATE = 0.25
 EMERGENCY_ATTEMPTS = 2
 EMERGENCY_ATTEMPT_SECONDS = 10.0
 EMERGENCY_PRIORITY_SECONDS = EMERGENCY_ATTEMPTS * EMERGENCY_ATTEMPT_SECONDS
@@ -89,6 +91,7 @@ class TrafficLightController:
         self.secondary_state = "OFF"
         self.current_phase = "green"
         self.phase_start_time = time.time()
+        self._last_phase_timer_update = self.phase_start_time
         self.phase_duration = float(NORMAL_MIN_GREEN)
         self.elapsed_green = 0.0
         self.last_obs_elapsed = 0.0
@@ -364,6 +367,7 @@ class TrafficLightController:
 
         self.current_phase = "green"
         self.phase_start_time = current_time
+        self._last_phase_timer_update = current_time
         self.phase_duration = duration
         self.elapsed_green = 0.0
         self.last_obs_elapsed = 0.0
@@ -408,6 +412,7 @@ class TrafficLightController:
         self.emergency_lane = None
         self.current_phase = "emergency_warning"
         self.phase_start_time = current_time
+        self._last_phase_timer_update = current_time
         self.phase_duration = float(YELLOW_TIME)
         self.buffer_locked = False
 
@@ -615,6 +620,24 @@ class TrafficLightController:
     def update_phase(self, all_lane_counts: Optional[List[int]] = None) -> Optional[Dict]:
         current_time = time.time()
         elapsed = current_time - self.phase_start_time
+        timer_interval = max(0.0, current_time - self._last_phase_timer_update)
+        self._last_phase_timer_update = current_time
+
+        if (
+            self.current_phase == "green"
+            and not self.is_emergency_active
+            and elapsed >= float(MIN_BUFFER_TIME)
+        ):
+            red_phase = self._opposite_phase(self.active_phase)
+            red_queue = sum(
+                self.lane_stats[lane].get("weighted_count", 0.0)
+                for lane in PHASE_MAIN_LANES[red_phase]
+            )
+            if red_queue >= RED_QUEUE_ACCELERATION_THRESHOLD:
+                acceleration = timer_interval * RED_QUEUE_ACCELERATION_RATE
+                self.phase_start_time -= acceleration
+                elapsed += acceleration
+
         self.elapsed_green = elapsed
         self.buffer_locked = self.current_phase == "green" and elapsed < float(MIN_BUFFER_TIME)
         self.secondary_state = "OFF"

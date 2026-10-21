@@ -14,6 +14,7 @@ class YOLODetector:
         self.pretrained_model_name = "yolov8n.pt"
         self.custom_model_name = model_name
         self.confidence_threshold = 0.25  # Lowered to 0.25 for blurry/small vehicle detection (like bicycles)
+        self.emergency_confidence_threshold = 0.60
         
         # Check for CUDA availability
         try:
@@ -28,16 +29,7 @@ class YOLODetector:
             10: "fire hydrant", 11: "stop sign", 12: "parking meter"
         }
         
-        # Class names reflect the actual best.pt model (6 classes only).
-        # z_accident / z_jaywalker / z_non-jaywalker are NOT present in this model.
-        self.custom_class_names = {
-            0: 'bus',
-            1: 'car',
-            2: 'emergency_vehicle',
-            3: 'jeepney',
-            4: 'motorcycle',
-            5: 'truck'
-        }
+        self.custom_class_names = {}
         
         self.color_map = {
             "car": (0, 255, 0),            # Green
@@ -72,7 +64,12 @@ class YOLODetector:
             
             self.custom_model = YOLO(cus_path)
             self.custom_model.to(self.device)
+            self.custom_class_names = {
+                int(class_id): str(class_name).strip().lower().replace(" ", "_")
+                for class_id, class_name in self.custom_model.names.items()
+            }
             self.logger.info(f"YOLO custom model {self.custom_model_name} loaded successfully on {self.device}")
+            self.logger.info(f"YOLO custom model classes: {self.custom_class_names}")
             return True
         except Exception as e:
             self.logger.error(f"Failed to load YOLO models: {e}")
@@ -141,30 +138,39 @@ class YOLODetector:
                             })
                             
             # --- Custom Model Inference ---
-            results_custom = self.custom_model(infer_frame, verbose=False, imgsz=416)
+            # Preserve the original pixels and aspect ratio for the custom model;
+            # emergency markings and equipment are easily lost at the 416px speed path.
+            results_custom = self.custom_model(eval_frame, verbose=False, imgsz=640)
             if results_custom and len(results_custom) > 0:
                 boxes = results_custom[0].boxes
                 for box in boxes:
                     conf = float(box.conf[0])
-                    if conf > self.confidence_threshold:
-                        cls_id = int(box.cls[0])
-                        class_name = self.custom_class_names.get(cls_id)
-                        # We specifically want the custom model for these classes:
-                        # (best.pt only has 6 classes; no z_accident/z_jaywalker in this model)
-                        if class_name in ['emergency_vehicle', 'jeepney']:
-                            # Scale coordinates back to original frame size
-                            x1 = int(box.xyxy[0][0] * x_scale)
-                            y1 = int(box.xyxy[0][1] * y_scale)
-                            x2 = int(box.xyxy[0][2] * x_scale)
-                            y2 = int(box.xyxy[0][3] * y_scale)
-                            detections.append({
-                                "class_id": cls_id,
-                                "class_name": class_name,
-                                "confidence": conf,
-                                "bbox": (x1, y1, x2, y2),
-                                "center": ((x1 + x2) // 2, (y1 + y2) // 2),
-                                "source": "custom"
-                            })
+                    cls_id = int(box.cls[0])
+                    class_name = self.custom_class_names.get(cls_id)
+                    # We specifically want the custom model for these classes:
+                    # (best.pt only has 6 classes; no z_accident/z_jaywalker in this model)
+                    if class_name not in ['emergency_vehicle', 'jeepney']:
+                        continue
+
+                    threshold = self.confidence_threshold
+                    if class_name == 'emergency_vehicle':
+                        threshold = max(threshold, self.emergency_confidence_threshold)
+                    if conf <= threshold:
+                        continue
+
+                    # YOLO maps boxes back to the source frame dimensions.
+                    x1 = int(box.xyxy[0][0])
+                    y1 = int(box.xyxy[0][1])
+                    x2 = int(box.xyxy[0][2])
+                    y2 = int(box.xyxy[0][3])
+                    detections.append({
+                        "class_id": cls_id,
+                        "class_name": class_name,
+                        "confidence": conf,
+                        "bbox": (x1, y1, x2, y2),
+                        "center": ((x1 + x2) // 2, (y1 + y2) // 2),
+                        "source": "custom"
+                    })
                             
             # --- Non-Maximum Suppression (Deduplication) ---
             # Remove pretrained detections (like car/truck) that heavily overlap with custom detections (e.g. emergency vehicle)

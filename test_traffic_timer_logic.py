@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
@@ -53,7 +54,22 @@ class TrafficTimerLogicTests(unittest.TestCase):
 
         self.controller.update_phase([80, 80, 0, 0])
         self.assertEqual(self.controller.phase_duration, 60.0)
-        self.assertLessEqual(self.controller.get_lane_time_remaining(0), 40.0)
+        self.assertAlmostEqual(self.controller.get_lane_time_remaining(0), 40.0, delta=0.2)
+
+    def test_heavy_red_queue_speeds_up_normal_green_countdown(self):
+        start_time = 100.0
+        self.controller._commit_green_phase(tc.PHASE_NS, start_time, green_time=60.0)
+        self.controller.update_lane_detections(
+            2,
+            [{"class_name": "car"} for _ in range(13)],
+        )
+
+        with patch.object(tc.time, "time", return_value=start_time + 10.0):
+            self.controller.update_phase([0, 0, 13, 0])
+            remaining = self.controller.get_lane_time_remaining(0)
+
+        self.assertAlmostEqual(remaining, 47.5)
+        self.assertEqual(self.controller.phase_duration, 60.0)
 
     def test_emergency_requires_two_second_observation(self):
         self.controller._commit_green_phase(tc.PHASE_NS, time.time(), green_time=90.0)
