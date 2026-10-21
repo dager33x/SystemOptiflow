@@ -21,7 +21,8 @@ class DashboardController:
             from dashboard.utils.app_config import SETTINGS
             saved = QSettings('Optiflow', 'Dashboard')
             for i, direction in enumerate(('north', 'south', 'east', 'west')):
-                source = saved.value(f'source/{direction}', SETTINGS[f'camera_source_{direction}'])
+                # Start disconnected on every launch; saved simulation/videos are opt-in.
+                source = 'off'
                 if source in ('Simulated', 'simulation'):
                     source = 'simulation'
                 elif str(source).startswith('Camera '):
@@ -34,7 +35,7 @@ class DashboardController:
                         saved.value(f'stop_line/{i}/height', .8, type=float),
                         saved.value(f'stop_line/{i}/left', .25, type=float),
                         saved.value(f'stop_line/{i}/right', .75, type=float),
-                        saved.value(f'stop_line/{i}/direction', 'down')))
+                        saved.value(f'stop_line/{i}/direction', 'both')))
                 except (ValueError, TypeError):
                     self.store.set_stop_line(i, StopLine())
             self.store.set_ai(saved.value('ai_enabled', True, type=bool))

@@ -5,8 +5,7 @@ QWidget { color: #e8eef9; font-family: "Segoe UI"; font-size: 13px; }
 QWidget#authRoot { background: #0b1019; }
 QWidget#formPanel { background: #101725; }
 QWidget#formContent, QLabel, QCheckBox { background: transparent; }
-QLabel#eyebrow { color: #93a5bb; font-size: 11px; font-weight: 600; }
-QLabel#heroTitle { font-size: 52px; font-weight: 700; }
+QLabel#heroTitle { font-size: 40px; font-weight: 600; }
 QLabel#heroDescription { color: #a9bdd8; font-size: 15px; }
 QLabel#formTitle { font-size: 28px; font-weight: 600; }
 QLabel#formSubtitle { color: #93a5bb; font-size: 13px; }

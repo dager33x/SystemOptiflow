@@ -3,11 +3,13 @@ import time
 from datetime import datetime
 from PySide6.QtCore import Qt, QTimer, Signal, QSettings
 from PySide6.QtWidgets import (QMainWindow, QWidget, QFrame, QLabel, QPushButton,
-    QCheckBox, QVBoxLayout, QHBoxLayout, QGridLayout, QStackedWidget, QScrollArea, QSlider)
+    QCheckBox, QVBoxLayout, QHBoxLayout, QGridLayout, QStackedWidget, QScrollArea, QSlider, QDialog, QLayout, QMessageBox)
 from dashboard.views.widgets import CameraCard, VideoCanvas, SignalLamp, LANE_NAMES, STYLE
 from dashboard.views.icons import navigation_icon
 from dashboard.views.notifications import NotificationCenter
 from dashboard.utils.app_config import SETTINGS
+from dashboard.services.tasks import TaskRunner
+from dashboard.views.video_upload import VideoUploadDialog
 
 STYLE += '''
 QWidget { background: #0b1019; color: #e8eef9; }
@@ -33,6 +35,7 @@ class DashboardWindow(QMainWindow):
     def __init__(self, controller, autostart=True, db=None, auth=None, current_user=None, runner=None):
         super().__init__()
         self.controller, self.db, self.auth = controller, db, auth
+        self.video_runner = runner if runner is not None else TaskRunner(self)
         self.current_user = current_user or {'username': 'Local preview', 'role': 'viewer'}
         self.setWindowTitle('SystemOptiflow — Traffic Management')
         self.resize(1600, 940)
@@ -97,6 +100,13 @@ class DashboardWindow(QMainWindow):
         dashboard = QWidget()
         layout = QVBoxLayout(dashboard)
         layout.setContentsMargins(24, 24, 24, 10)
+        upload_row = QHBoxLayout()
+        upload_row.addWidget(QLabel('Four-camera monitoring'))
+        upload_row.addStretch()
+        self.upload_videos_button = QPushButton('Upload videos for four cameras…')
+        self.upload_videos_button.clicked.connect(lambda: self._upload_videos())
+        upload_row.addWidget(self.upload_videos_button)
+        layout.addLayout(upload_row)
         grid = QGridLayout()
         grid.setSpacing(20)
         self.cards = []
@@ -104,12 +114,10 @@ class DashboardWindow(QMainWindow):
             card = CameraCard(i, lane.density)
             card.set_stop_line(lane.stop_line)
             card.stop_line_changed.connect(self._stop_line_changed)
-            index = card.source.findData(lane.source)
-            if index < 0:
-                card.source.addItem(str(lane.source), lane.source)
-                index = card.source.count()-1
-            card.source.setCurrentIndex(index)
+            card.select_source(lane.source)
             card.source_changed.connect(self._source_changed)
+            card.video_upload_requested.connect(lambda lane: self._upload_videos((lane,)))
+            card.settings_requested.connect(self._camera_settings)
             card.simulation_changed.connect(controller.set_simulation)
             card.events_changed.connect(controller.set_simulation_events)
             grid.addWidget(card, i//2, i%2)
@@ -120,12 +128,18 @@ class DashboardWindow(QMainWindow):
         layout.addLayout(grid, 1)
         self.phase = QLabel('Initializing traffic controller')
         self.phase.setObjectName('muted')
-        layout.addWidget(self.phase)
+        layout.insertWidget(1, self.phase)
         self.status = QLabel('Starting workers…')
         self.status.setObjectName('muted')
         self.status.setWordWrap(True)
-        layout.addWidget(self.status)
-        self._add_page('dashboard', '▥  Traffic Live Camera', dashboard, side)
+        layout.insertWidget(2, self.status)
+        self.status.hide()
+        # Keep the signal lamps and new upload controls readable on small screens.
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        dashboard_scroll = QScrollArea()
+        dashboard_scroll.setWidgetResizable(True)
+        dashboard_scroll.setWidget(dashboard)
+        self._add_page('dashboard', '▥  Traffic Live Camera', dashboard_scroll, side)
         if db is not None:
             from dashboard.views.pages import RecordsPage, TrafficPage, UsersPage
             from dashboard.views.incidents import IncidentPage
@@ -252,6 +266,18 @@ class DashboardWindow(QMainWindow):
         if self.persist:
             self.saved.setValue('source/' + ('north', 'south', 'east', 'west')[lane], source)
 
+    def _camera_settings(self, lane):
+        self.navigate('settings')
+        self.pages['settings'].ensureWidgetVisible(self.cards[lane].settings_widget)
+
+    def _upload_videos(self, lanes=range(4)):
+        dialog = VideoUploadDialog(self.video_runner, self, lanes)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            for lane, path in dialog.selected_sources.items():
+                self.cards[lane].select_source(path)
+        # Validation may still be running after Cancel; its callback checks _closed.
+        dialog.deleteLater()
+
     def _stop_line_changed(self, lane, line):
         self.controller.store.set_stop_line(lane, line)
         if self.persist:
@@ -282,7 +308,13 @@ class DashboardWindow(QMainWindow):
 
     def refresh(self):
         now = time.monotonic()
-        self.notifications.receive(self.controller.store.drain_notifications())
+        notifications = self.controller.store.drain_notifications()
+        self.notifications.receive(notifications)
+        # Local persistence finishes before the event is announced. Refresh an
+        # already-open log page so the operator need not leave and reopen it.
+        current_page = self.stack.currentWidget()
+        if notifications and hasattr(current_page, 'refresh_local'):
+            current_page.refresh_local()
         lanes = self.controller.store.snapshot()
         if self.stack.currentWidget() is self.pages['dashboard']:
             for card, lane in zip(self.cards, lanes):
@@ -293,19 +325,28 @@ class DashboardWindow(QMainWindow):
         self.clock.setText(datetime.now().strftime('%H:%M:%S'))
         for label, name, lane in zip(self.camera_labels, LANE_NAMES, lanes):
             fresh = lane.frame is not None and now-lane.frame.captured_at < 1
-            source = 'Sim' if lane.source == 'simulation' else f'Cam {lane.source}' if isinstance(lane.source, int) else 'Video / stream'
+            source = 'Off' if lane.source == 'off' else 'Sim' if lane.source == 'simulation' else f'Cam {lane.source}' if isinstance(lane.source, int) else 'Video / stream'
             label.setText(f'●  {name} ({source})\n    {lane.status if fresh else "Waiting for signal"}')
             label.setStyleSheet('color: #14c997;' if fresh else 'color: #94a8c4;')
         _, ai, engine, phase = self.controller.store.summary()
         self.phase.setText(phase)
-        self.status.setText(f'{engine}  |  {ai}  |  {self.controller.workers.dqn_status}')
+        self.status.setText(f'{engine}  |  {ai}  |  {self.controller.store.accident_status}')
         page = self.stack.currentWidget()
         if hasattr(page, 'update_live'):
             page.update_live(lanes)
 
     def _logout(self):
         if self.auth:
-            self.logout_requested.emit()
+            dialog = QMessageBox(self)
+            dialog.setWindowTitle('Log out')
+            dialog.setText('Are you sure you want to log out?')
+            logout = dialog.addButton('Log out', QMessageBox.ButtonRole.AcceptRole)
+            cancel = dialog.addButton('Cancel', QMessageBox.ButtonRole.RejectRole)
+            dialog.setDefaultButton(cancel)
+            dialog.setEscapeButton(cancel)
+            dialog.exec()
+            if dialog.clickedButton() is logout:
+                self.logout_requested.emit()
         else:
             self.close()
 

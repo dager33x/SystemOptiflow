@@ -1,16 +1,19 @@
 """Qt widgets only. Workers never access these objects."""
 import math
 import time
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QRectF, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QFrame, QLabel, QPushButton, QComboBox,
-    QSpinBox, QCheckBox, QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, QInputDialog,
+    QSpinBox, QCheckBox, QVBoxLayout, QHBoxLayout, QGridLayout, QInputDialog, QSizePolicy,
 )
 
-from dashboard.models.dashboard import DIRECTIONS, active_detections
+from dashboard.models.dashboard import DIRECTIONS, active_detections, accident_detections, live_detections
 from dashboard.models.stop_line import StopLine
+from dashboard.models.detection.vehicle_classes import count_queue_vehicles
+from dashboard.services.video_sources import is_video_source
 
 COLORS = {'RED': '#ff3238', 'YELLOW': '#ffcf33', 'GREEN': '#00d084'}
 LANE_NAMES = ('North Gate', 'South Junction', 'East Portal', 'West Avenue')
@@ -39,21 +42,52 @@ class VideoCanvas(QWidget):
         self.image = QImage()
         self.token = None
         self.detections = ()
-        self.message = 'Starting…'
+        self.message = 'Off'
         self.frame_updates = 0
         self.stop_line = None
         self.signal = 'RED'
+        self.evidence_age = None
+        self.evidence_image = QImage()
+        self.live_detections = self.evidence_detections = ()
+        self.evidence_token = None
+        self._evidence_frame = QImage()
 
     def present(self, lane, now, show_boxes):
         self.stop_line = lane.stop_line if lane.source != 'simulation' else None
         self.signal = lane.signal
         packet = lane.frame
+        self.evidence_age = None
+        self.evidence_image = QImage()
+        self.live_detections = self.evidence_detections = ()
         if packet is None or now - packet.captured_at > 1:
             self.image = QImage()
             self.token = None
             self.message = lane.status if packet is None else 'No fresh frames'
             self.detections = ()
         else:
+            learned = accident_detections(lane, now) if show_boxes else ()
+            traffic = ()
+            if show_boxes and lane.source != 'simulation':
+                traffic = live_detections(lane, now)
+                if lane.live_result is None and lane.result is not None and now-lane.result.captured_at <= .5:
+                    traffic = tuple(d for d in active_detections(lane, now)
+                                    if d.get('class_name') not in ('possible_accident', 'possible_jaywalking'))
+            self.live_detections = traffic
+            evidence_packet = None
+            if learned:
+                evidence_packet = lane.accident_result or lane.result
+                self.evidence_detections = learned
+            if evidence_packet is not None and self.evidence_detections and evidence_packet.frame is not None:
+                # Preserve continuous live video. Delayed boxes belong to an
+                # evidence inset, never a replacement for the camera frame.
+                evidence_token = (evidence_packet.generation, evidence_packet.sequence, id(evidence_packet))
+                if evidence_token != self.evidence_token:
+                    evidence = evidence_packet.frame
+                    h, w = evidence.shape[:2]
+                    self._evidence_frame = QImage(evidence.data, w, h, evidence.strides[0], QImage.Format.Format_BGR888).copy()
+                    self.evidence_token = evidence_token
+                self.evidence_image = self._evidence_frame
+                self.evidence_age = now-evidence_packet.captured_at
             token = (packet.generation, packet.sequence)
             if token != self.token:
                 frame = packet.frame
@@ -62,39 +96,52 @@ class VideoCanvas(QWidget):
                 self.image = QImage(frame.data, w, h, frame.strides[0], QImage.Format.Format_BGR888).copy()
                 self.token = token
                 self.frame_updates += 1
-            self.detections = active_detections(lane, now) if show_boxes and lane.source != 'simulation' else ()
+            self.detections = self.live_detections + self.evidence_detections
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        painter.fillRect(self.rect(), QColor('#070d15'))
+        painter.fillRect(self.rect(), QColor('#000000'))
         if self.image.isNull():
             painter.setPen(QColor('#93a5bb'))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.message)
             return
         # Fill the viewport without stretching vehicles. Center-crop excess
         # image edges and use the same transform for every camera overlay.
-        scale = max(self.width() / self.image.width(), self.height() / self.image.height())
+        # Portrait clips must retain the full road scene: filling a landscape
+        # card would otherwise cut off vehicles near the top of the image.
+        scale_fn = min if self.image.height() > self.image.width() else max
+        scale = scale_fn(self.width() / self.image.width(), self.height() / self.image.height())
         width, height = self.image.width() * scale, self.image.height() * scale
         x, y = (self.width() - width) / 2, (self.height() - height) / 2
         painter.drawImage(QRectF(x, y, width, height), self.image)
         if self.stop_line is not None:
             line = self.stop_line
-            lx, rx = x + width*line.left, x + width*line.right
-            ly = y + height*line.height
+            first, second = line.endpoints((self.image.height(), self.image.width()))
+            lx, ly = x + first[0]*scale, y + first[1]*scale
+            rx, ry = x + second[0]*scale, y + second[1]*scale
             color = QColor(COLORS.get(self.signal, '#ff3238'))
             painter.setPen(QPen(QColor('#070d15'), 6))
-            painter.drawLine(int(lx), int(ly), int(rx), int(ly))
+            painter.drawLine(int(lx), int(ly), int(rx), int(ry))
             painter.setPen(QPen(color, 3, Qt.PenStyle.DashLine))
-            painter.drawLine(int(lx), int(ly), int(rx), int(ly))
+            painter.drawLine(int(lx), int(ly), int(rx), int(ry))
             # Arrow points from the approach side into the restricted side.
-            cx = (lx+rx)/2
-            delta = 16 if line.direction == 'down' else -16
-            painter.drawLine(int(cx), int(ly-delta), int(cx), int(ly+delta))
-            for dx in (-5, 5):
-                painter.drawLine(int(cx), int(ly+delta), int(cx+dx), int(ly+delta*.6))
-            label = 'STOP LINE / ' + self.signal
+            cx, cy = (lx+rx)/2, (ly+ry)/2
+            delta = 16 if line.direction in ('down', 'right') else -16
+            if line.vertical:
+                painter.drawLine(int(cx-delta), int(cy), int(cx+delta), int(cy))
+                for offset in (-5, 5):
+                    painter.drawLine(int(cx+delta), int(cy), int(cx+delta*.6), int(cy+offset))
+                    if line.direction == 'both_vertical':
+                        painter.drawLine(int(cx-delta), int(cy), int(cx-delta*.6), int(cy+offset))
+            else:
+                painter.drawLine(int(cx), int(cy-delta), int(cx), int(cy+delta))
+                for offset in (-5, 5):
+                    painter.drawLine(int(cx), int(cy+delta), int(cx+offset), int(cy+delta*.6))
+                    if line.direction == 'both':
+                        painter.drawLine(int(cx), int(cy-delta), int(cx+offset), int(cy-delta*.6))
+            label = 'STOP LINE / APP ' + self.signal
             metrics = painter.fontMetrics()
             label_width = metrics.horizontalAdvance(label) + 12
             if 0 <= ly <= self.height():
@@ -103,12 +150,46 @@ class VideoCanvas(QWidget):
                 painter.fillRect(QRectF(label_x, label_y, label_width, metrics.height()+6), QColor('#070d15'))
                 painter.setPen(color)
                 painter.drawText(int(label_x+6), int(label_y+metrics.ascent()+3), label)
-        painter.setPen(QPen(QColor('#34d399'), 2))
-        for det in self.detections:
+        painter.save()
+        self._draw_boxes(painter, self.live_detections, x, y, scale)
+        if not self.evidence_image.isNull():
+            scale = min(min(240, self.width()*.4)/self.evidence_image.width(),
+                        self.height()*.4/self.evidence_image.height())
+            width, height = self.evidence_image.width()*scale, self.evidence_image.height()*scale
+            x, y = self.width()-width-8, self.height()-height-32
+            inset = QRectF(x, y, width, height)
+            painter.fillRect(inset.adjusted(-2, -2, 2, 2), QColor('#ffb347'))
+            painter.drawImage(inset, self.evidence_image)
+            painter.setClipRect(inset)
+            self._draw_boxes(painter, self.evidence_detections, x, y, scale)
+        painter.restore()
+        if self.evidence_age is not None:
+            label = f'Possible accident • {self.evidence_age:.1f}s ago'
+            metrics = painter.fontMetrics()
+            painter.fillRect(QRectF(4, self.height()-metrics.height()-12,
+                                    metrics.horizontalAdvance(label)+12, metrics.height()+8), QColor('#070d15'))
+            painter.setPen(QColor('#ffb347'))
+            painter.drawText(10, self.height()-8, label)
+
+    def _draw_boxes(self, painter, detections, x, y, scale):
+        for det in detections:
+            accident = det['class_name'] == 'possible_accident'
+            emergency = det['class_name'] == 'emergency_vehicle'
+            violation = det['class_name'] == 'possible_jaywalking'
+            painter.setPen(QPen(QColor('#ffb347' if accident else '#ff555b' if violation else
+                                      '#5daaff' if emergency else '#34d399'), 2))
             x1, y1, x2, y2 = det['bbox']
             painter.drawRect(QRectF(x + x1 * scale, y + y1 * scale, (x2-x1)*scale, (y2-y1)*scale))
-            painter.drawText(int(x + x1 * scale), max(int(y + y1 * scale - 5), 15),
-                             f'{det["class_name"]} {det.get("confidence", 0):.0%}')
+            name = ('Possible accident' if accident else 'Possible jaywalking' if violation else
+                    'Emergency vehicle' if emergency else det['class_name'])
+            label = f'{name} {det.get("confidence", 0):.0%}'
+            metrics = painter.fontMetrics()
+            label = metrics.elidedText(label, Qt.TextElideMode.ElideRight, max(1, self.width()-12))
+            label_width = metrics.horizontalAdvance(label)+8
+            label_x = max(2, min(x+x1*scale, self.width()-label_width-2))
+            label_y = max(2, min(y+y1*scale-metrics.height()-6, self.height()-metrics.height()-6))
+            painter.fillRect(QRectF(label_x, label_y, label_width, metrics.height()+4), QColor('#070d15'))
+            painter.drawText(int(label_x+4), int(label_y+metrics.ascent()+2), label)
 
 
 class SignalLamp(QWidget):
@@ -129,6 +210,8 @@ class SignalLamp(QWidget):
 
 
 class CameraCard(QFrame):
+    video_upload_requested = Signal(int)
+    settings_requested = Signal(int)
     stop_line_changed = Signal(int, object)
     source_changed = Signal(int, object)
     simulation_changed = Signal(int, int, bool)
@@ -151,14 +234,16 @@ class CameraCard(QFrame):
         layout.addLayout(title_row)
         source_row = QHBoxLayout()
         self.source = QComboBox()
+        self.source.addItem('Off', 'off')
         self.source.addItem('Simulated road', 'simulation')
         for index in range(5):
-            self.source.addItem(f'USB camera {index}', index)
+            self.source.addItem(f'PC / USB camera {index}', index)
+        self.source.setToolTip('Built-in PC webcams and USB cameras use numbers 0–4. The first camera is usually 0.')
         for index in range(5, 9):
             self.source.addItem(f'Remote camera {index}', index)
         self.source.currentIndexChanged.connect(self._select_source)
         source_row.addWidget(self.source, 1)
-        self.video_button = QPushButton('Video file…')
+        self.video_button = QPushButton('Upload video…')
         self.video_button.clicked.connect(self._choose_video)
         source_row.addWidget(self.video_button)
         stream_button = QPushButton('Stream URL…')
@@ -207,6 +292,21 @@ class CameraCard(QFrame):
         signal_column.addStretch()
         body.addWidget(signal_panel)
         layout.addLayout(body, 1)
+        video_row = QHBoxLayout()
+        self.source_label = QLabel('Off')
+        self.source_label.setObjectName('muted')
+        self.source_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        video_row.addWidget(self.source_label, 1)
+        self.calibrate_button = QPushButton('Stop line…')
+        self.calibrate_button.setToolTip('Set the road boundary and vehicle travel direction for red-light detection')
+        self.calibrate_button.clicked.connect(lambda: self.settings_requested.emit(self.lane_id))
+        video_row.addWidget(self.calibrate_button)
+        self.upload_button = QPushButton('Upload video…')
+        self.upload_button.setToolTip(f'Play a local video in {LANE_NAMES[lane_id]}')
+        self.upload_button.clicked.connect(self._choose_video)
+        video_row.addWidget(self.upload_button)
+        self.upload_button.hide()
+        layout.addLayout(video_row)
         controls = QHBoxLayout()
         self.density_label = QLabel('Simulated vehicles')
         controls.addWidget(self.density_label)
@@ -233,9 +333,9 @@ class CameraCard(QFrame):
         line_layout.setContentsMargins(0, 0, 0, 0)
         self.line_height, self.line_left, self.line_right = QSpinBox(), QSpinBox(), QSpinBox()
         for caption, spin, minimum, maximum, value in (
-                ('Stop line height', self.line_height, 5, 95, 80),
-                ('Left', self.line_left, 0, 99, 25),
-                ('Right', self.line_right, 1, 100, 75)):
+                ('Line position', self.line_height, 5, 95, 80),
+                ('Start', self.line_left, 0, 99, 25),
+                ('End', self.line_right, 1, 100, 75)):
             line_layout.addWidget(QLabel(caption))
             spin.setRange(minimum, maximum)
             spin.setSuffix('%')
@@ -243,23 +343,34 @@ class CameraCard(QFrame):
             line_layout.addWidget(spin)
             spin.valueChanged.connect(self._change_stop_line)
         self.line_direction = QComboBox()
+        self.line_direction.addItem('Horizontal: either direction', 'both')
+        self.line_direction.addItem('Vertical: either direction', 'both_vertical')
         self.line_direction.addItem('Travel down', 'down')
         self.line_direction.addItem('Travel up', 'up')
+        self.line_direction.addItem('Travel right', 'right')
+        self.line_direction.addItem('Travel left', 'left')
         self.line_direction.currentIndexChanged.connect(self._change_stop_line)
         line_layout.addWidget(self.line_direction)
-        self.line_controls.setToolTip('Place the line on the road stop boundary. Direction is the vehicle travel direction in the image. A vehicle bottom-center must cross it during red.')
+        self.line_controls.setToolTip('Place the line on the road stop boundary. Left/right travel uses a vertical line. A tracked vehicle must cross in the selected direction while Optiflow\'s application signal is red; the light in the footage is not read.')
         self.line_controls.setEnabled(False)
         settings_layout.addWidget(self.line_controls)
         self.telemetry = QLabel('Starting…')
         self.telemetry.setObjectName('muted')
-        settings_layout.addWidget(self.telemetry)
+        layout.addWidget(self.telemetry)
+        self.telemetry.hide()
         self.settings_widget.hide()
         self._fps_start, self._fps_frames, self.fps = time.monotonic(), 0, 0.0
+        self._ai_token, self._ai_captured_at, self.ai_interval = None, None, 0.
 
     def _select_source(self):
         source = self.source.currentData()
         simulation = source == 'simulation'
-        self.line_controls.setEnabled(not simulation)
+        self.source_label.setText(self.source.currentText())
+        self.source_label.setToolTip(str(source))
+        self.reconnect_button.setText('Restart video' if is_video_source(source) else 'Reconnect')
+        self.reconnect_button.setToolTip('Play this video from the beginning' if is_video_source(source)
+                                        else 'Reopen this camera or stream')
+        self.line_controls.setEnabled(source not in ('off', 'simulation'))
         for widget in (self.density_label, self.density, self.emergency, self.accident, self.violation):
             widget.setEnabled(simulation)
         self.source_changed.emit(self.lane_id, source)
@@ -282,10 +393,19 @@ class CameraCard(QFrame):
         self.stop_line_changed.emit(self.lane_id, line)
 
     def _choose_video(self):
-        path, _ = QFileDialog.getOpenFileName(self, 'Choose traffic video', '', 'Videos (*.mp4 *.avi *.mkv *.mov);;All files (*)')
-        if path:
-            self.source.addItem(f'Video: {path.replace(chr(92), "/").rsplit("/", 1)[-1]}', path)
-            self.source.setCurrentIndex(self.source.count() - 1)
+        self.video_upload_requested.emit(self.lane_id)
+
+    def select_source(self, source):
+        """Select a validated/restored source; reselecting a video restarts it."""
+        blocked = self.source.blockSignals(True)
+        index = self.source.findData(source)
+        if index < 0:
+            label = f'Video: {Path(source).name}' if is_video_source(source) else 'Network stream'
+            self.source.addItem(label, source)
+            index = self.source.count() - 1
+        self.source.setCurrentIndex(index)
+        self.source.blockSignals(blocked)
+        self._select_source()
 
     def _choose_stream(self):
         source, accepted = QInputDialog.getText(self, 'Network camera', 'RTSP or HTTP stream URL')
@@ -303,7 +423,7 @@ class CameraCard(QFrame):
         self.lamp.signal = lane.signal
         self.lamp.update()
         self.timer.setText(f'{max(0, math.ceil(lane.remaining))}s')
-        self.count.setText(str(lane.vehicles))
+        self.count.setText(str(count_queue_vehicles(active_detections(lane, now))))
         self.count.setStyleSheet('font-size: 24px; font-weight: 700;')
         self.timer.setStyleSheet(f'color: {COLORS[lane.signal]}; font: 700 22px "Consolas";')
         self.signal_text.setText(lane.signal)
@@ -318,5 +438,14 @@ class CameraCard(QFrame):
             detail = 'Waiting for detection'
         else:
             age = now - lane.result.captured_at
-            detail = f'AI age {age:.1f}s' if age <= 2 else 'AI stale — counts cleared'
+            token = (lane.result.generation, lane.result.sequence)
+            if token != self._ai_token:
+                if self._ai_token and self._ai_token[0] == token[0]:
+                    self.ai_interval = lane.result.captured_at-self._ai_captured_at
+                self._ai_token, self._ai_captured_at = token, lane.result.captured_at
+            rate = f' • {1/self.ai_interval:.1f} AI updates/s' if self.ai_interval > 0 else ''
+            live = bool(live_detections(lane, now))
+            detail = (f'Live boxes • model {age:.1f}s ago{rate}' if live else
+                      f'AI {age:.1f}s ago{rate}' if now-lane.result.completed_at <= 2 else
+                      'Waiting for a fresh vehicle detection')
         self.telemetry.setText(f'{lane.status}  •  {self.fps:.0f} display FPS  •  {detail}')

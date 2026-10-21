@@ -40,7 +40,7 @@ class Track:
 
     def velocity(self):
         end_time, end_box = self.history[-1]
-        samples = [sample for sample in self.history if .5 <= end_time-sample[0] <= 1.2]
+        samples = [sample for sample in self.history if .5 <= end_time-sample[0] <= 2.5]
         if not samples:
             return None
         start_time, start_box = samples[-1]
@@ -50,7 +50,7 @@ class Track:
 
 
 class IncidentDetector:
-    def __init__(self, min_confidence=.65, hold_seconds=2., max_gap=1.):
+    def __init__(self, min_confidence=.65, hold_seconds=2., max_gap=2.5):
         self.min_confidence = min_confidence
         self.hold_seconds = hold_seconds
         self.max_gap = max_gap
@@ -85,7 +85,9 @@ class IncidentDetector:
         return boxes
 
     def observe(self, detections, shape, timestamp, generation, signal, signal_epoch):
-        context = (generation, shape[:2], signal, signal_epoch)
+        # A signal transition does not invalidate observed vehicle motion.
+        # Queue rejection comes from distinct approaching paths, not lamp color.
+        context = (generation, shape[:2])
         if self.context != context or (self.timestamp is not None and
                                       (timestamp < self.timestamp or timestamp-self.timestamp > self.max_gap)):
             self.reset()
@@ -93,12 +95,11 @@ class IncidentDetector:
         if timestamp == self.timestamp:
             return []
         self.timestamp = timestamp
-        if signal != 'GREEN':
-            self.tracks.clear()
-            self.pending.clear()
-            return []  # Braking/queueing at red or yellow is not crash evidence.
         boxes = self._boxes(detections, shape)
-        previous = self.tracks
+        # Retain identities briefly through occlusion, but never count an
+        # unobserved vehicle toward contact or the sustained-stop timer.
+        previous = {identity: track for identity, track in self.tracks.items()
+                    if timestamp-track.history[-1][0] <= self.max_gap}
         possible = []
         for i, box in enumerate(boxes):
             for identity, track in previous.items():
@@ -123,14 +124,21 @@ class IncidentDetector:
             if i in matched:
                 track = previous[matched[i]]
             else:
-                track = Track(self.next_id, deque(maxlen=60))
+                track = Track(self.next_id, deque(maxlen=600))
                 self.next_id += 1
             track.history.append((timestamp, box))
+            while len(track.history) > 2 and timestamp-track.history[0][0] > 3.:
+                track.history.popleft()
             current[track.identity] = track
-        self.tracks = current
-        live = set(current)
+        retained = {identity: track for identity, track in previous.items()
+                    if identity not in current and timestamp-track.history[-1][0] <= .75}
+        self.tracks = {**retained, **current}
+        live = set(self.tracks)
         self.reported = {pair for pair in self.reported if set(pair) <= live}
         self.pending = {pair: state for pair, state in self.pending.items() if set(pair) <= live}
+        for pair, state in self.pending.items():
+            if not set(pair) <= set(current):
+                state['stop_since'], state['samples'] = None, 0
         candidates = []
         for a, b in combinations(sorted(current.values(), key=lambda track: track.identity), 2):
             pair = tuple(sorted((a.identity, b.identity)))
@@ -164,8 +172,8 @@ class IncidentDetector:
                 self.pending[pair] = {'start': timestamp, 'positions': (center(a.box), center(b.box)),
                                       'samples': 0, 'stop_since': None}
                 continue
-            if timestamp-state['start'] > 6 or any(
-                    distance(position, center(track.box)) > scale*.2
+            if timestamp-state['start'] > max(6., self.hold_seconds + 4*self.max_gap) or any(
+                    distance(position, center(track.box)) > scale*.75
                     for position, track in zip(state['positions'], (a, b))):
                 self.pending.pop(pair, None)
                 continue
@@ -175,8 +183,15 @@ class IncidentDetector:
                 continue
             if state['stop_since'] is None:
                 state['stop_since'] = timestamp
+                state['stop_positions'] = (center(a.box), center(b.box))
+            elif any(distance(position, center(track.box)) > scale*.2
+                     for position, track in zip(state['stop_positions'], (a, b))):
+                state['stop_since'], state['samples'] = None, 0
+                continue
             state['samples'] += 1
-            if timestamp-state['stop_since'] >= self.hold_seconds and state['samples'] >= 6:
+            # Require elapsed time AND fresh observations, without demanding
+            # a frame rate that a four-camera CPU inference loop cannot supply.
+            if timestamp-state['stop_since'] >= self.hold_seconds and state['samples'] >= 3:
                 candidates.append((a.box, b.box))
                 self.reported.add(pair)
                 self.pending.pop(pair)

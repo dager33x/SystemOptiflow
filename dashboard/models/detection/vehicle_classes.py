@@ -1,7 +1,7 @@
 """Classes that contribute to traffic queues across detector and simulator."""
 
 QUEUE_VEHICLE_CLASSES = frozenset({
-    'car', 'bus', 'truck', 'motorcycle', 'bicycle', 'jeepney',
+    'car', 'bus', 'truck', 'motorcycle', 'bicycle', 'jeepney', 'tricycle',
 })
 VEHICLE_CLASSES = QUEUE_VEHICLE_CLASSES | {'emergency_vehicle'}
 

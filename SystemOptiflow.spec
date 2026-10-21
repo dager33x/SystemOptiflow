@@ -12,7 +12,7 @@ for folder in ('assets', 'dashboard', 'checkpoints'):
     add_data(folder, folder)
 
 for file_name in (
-    'best.pt',
+    'Model.pt',
     'yolov8n.pt',
     'Optiflow_Dqn.pth',
     'smart_traffic_dqn.zip',

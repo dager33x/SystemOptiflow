@@ -6,39 +6,110 @@ from queue import Empty, Full
 import sys
 import threading
 import time
+from dataclasses import replace
 
 import cv2
 
-from dashboard.models.dashboard import FramePacket, DetectionPacket, active_detections
+from dashboard.models.dashboard import FramePacket, DetectionPacket, active_detections, event_detections
 from dashboard.services.simulation import render_scene
+from dashboard.services.video_sources import is_video_source
 
 LOGGER = logging.getLogger(__name__)
 
 
-def inference_process(requests, responses):
-    """One model pair in a child process; never import Qt/database here."""
+def prepare_capture_frame(frame):
+    """Bound capture copies while preserving the original aspect ratio."""
+    h, w = frame.shape[:2]
+    if max(w, h) > 960:
+        scale = 960 / max(w, h)
+        return cv2.resize(frame, (round(w * scale), round(h * scale)))
+    return frame
+
+
+def inference_process(requests, responses, profile='all'):
+    """Independent local models in a child process; no Qt/database imports."""
     try:
+        logging.basicConfig(level=logging.WARNING,
+            filename=Path(__file__).resolve().parents[2] / 'dashboard.log',
+            format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+        logging.getLogger('dashboard.models.detection.yolo_detector').setLevel(logging.INFO)
         import torch
-        torch.set_num_threads(2)
+        threads = 1 if profile == 'accident' else 2
+        torch.set_num_threads(threads)
+        cv2.setNumThreads(1)
         from dashboard.models.detection.yolo_detector import YOLODetector
-        detector = YOLODetector()
-        if detector.pretrained_model is None and detector.custom_model is None:
-            responses.put(('error', 'Both local YOLO models failed to load'))
+        from dashboard.utils.app_config import SETTINGS
+        detector = (YOLODetector() if profile == 'all' else YOLODetector(
+            sources=('accident',) if profile == 'accident' else ('custom',),
+            image_size=SETTINGS.get('accident_image_size' if profile == 'accident' else 'traffic_image_size', 416),
+            include_violations=True))
+        specialist = None  # Model.pt returns traffic, emergency and incidents in one pass.
+        last_specialist = [float('-inf')] * 4
+        specialist_candidates = {}
+        traffic_since_specialist = 0
+        if all(network is None for network in
+               (detector.pretrained_model, detector.custom_model, detector.accident_model)):
+            responses.put(('error', 'All local YOLO models failed to load'))
             return
-        responses.put(('ready', detector.device))
+        responses.put(('ready', detector.device, detector.custom_model is not None or detector.accident_model is not None or
+                       (specialist is not None and specialist.accident_model is not None)))
         while True:
             task = requests.get()
             if task is None:
                 return
-            lane_id, generation, sequence, captured_at, frame = task
+            lane_id, generation, sequence, captured_at, frame = task[:5]
             started = time.monotonic()
-            result = detector.detect(frame)
+            result = detector.detect(frame, annotate=False,
+                                     vehicle_context=task[5] if profile == 'accident' and len(task) > 5 else None)
+            # Ultralytics resets CPU thread counts during lazy predictor setup.
+            # Restore the worker budget after warm-up to leave room for capture/Qt.
+            if detector.device == 'cpu' and torch.get_num_threads() != threads:
+                torch.set_num_threads(threads)
             responses.put(('result', lane_id, generation, sequence, captured_at,
-                           tuple(result['detections']), time.monotonic() - started,
-                           result['success'], result.get('degraded', False)))
+                           tuple(d for d in result['detections'] if profile != 'traffic' or d['source'] not in ('accident', 'violation')), time.monotonic() - started,
+                           result['success'], result.get('degraded', False),
+                           'accident' in result.get('models_used', [])))
+            if profile == 'traffic':
+                # The same frame and inference supply the incident channel.
+                # Even an empty result advances confirmation and clears old regions.
+                responses.put(('specialist', lane_id, generation, sequence, captured_at,
+                    tuple(d for d in result['detections'] if d['source'] in ('accident', 'violation')),
+                    time.monotonic()-started, result['success'], result.get('degraded', False), True,
+                    frame, task[5] if len(task) > 5 else None, task[6] if len(task) > 6 else 0))
+            # Publish vehicle boxes immediately. Less frequent specialist work
+            # shares this process to avoid another large Torch runtime on RAM-
+            # constrained PCs, and never replaces the fast result channel.
+            if specialist is not None and specialist.accident_model is not None:
+                specialist_candidates[lane_id] = (task, result['detections'], time.monotonic())
+                traffic_since_specialist += 1
+            candidates = {i: candidate for i, candidate in specialist_candidates.items()
+                          if candidate[2] > last_specialist[i] and time.monotonic()-candidate[0][3] <= 3.5}
+            # At most one expensive specialist scan per round of active cameras.
+            # The former per-lane timer became permanently due under load and
+            # unintentionally ran the large model after every vehicle frame.
+            if candidates and traffic_since_specialist >= max(1, len(specialist_candidates)):
+                specialist_lane = min(candidates, key=lambda i: last_specialist[i])
+                extra_task, context, _ = candidates[specialist_lane]
+                extra_lane, extra_generation, extra_sequence, extra_captured_at, extra_frame = extra_task[:5]
+                began = time.monotonic()
+                extra = specialist.detect(extra_frame, annotate=False, vehicle_context=context)
+                torch.set_num_threads(threads)
+                last_specialist[specialist_lane] = time.monotonic()
+                traffic_since_specialist = 0
+                responses.put(('specialist', extra_lane, extra_generation, extra_sequence, extra_captured_at,
+                    tuple(extra['detections']), time.monotonic()-began, extra['success'], extra['degraded'], True,
+                    extra_frame, extra_task[5] if len(extra_task) > 5 else None, extra_task[6] if len(extra_task) > 6 else 0))
     except Exception:
         LOGGER.exception('YOLO worker stopped')
         responses.put(('error', 'YOLO worker stopped; turn AI off/on to retry'))
+
+
+def traffic_inference_process(requests, responses):
+    inference_process(requests, responses, 'traffic')
+
+
+def accident_inference_process(requests, responses):
+    inference_process(requests, responses, 'accident')
 
 
 def open_capture(source):
@@ -68,16 +139,25 @@ def open_capture(source):
             cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 1500,
             cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000,
         ])
+    if is_video_source(source):
+        from dashboard.utils.app_config import SETTINGS
+        cap = cv2.VideoCapture(str(source), cv2.CAP_FFMPEG,
+                              [cv2.CAP_PROP_N_THREADS, SETTINGS.get('video_decode_threads', 2),
+                               cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY])
+        if cap.isOpened():
+            return cap
+        cap.release()
     return cv2.VideoCapture(str(source))
 
 
 class DashboardWorkers:
-    def __init__(self, store, inference_target=inference_process):
+    def __init__(self, store, inference_target=traffic_inference_process):
         self.store = store
         self.stop_event = threading.Event()
         self.threads = []
         self.inference_target = inference_target
         self.process = None
+        self.accident_process = None
         self.recorder = None
         self.dqn_status = 'DQN initializing'
 
@@ -86,6 +166,7 @@ class DashboardWorkers:
             return
         cv2.setNumThreads(1)
         targets = [(self._capture_loop, (lane,), f'qt-capture-{lane}') for lane in range(4)]
+        targets += [(self._tracking_loop, (lane,), f'qt-track-{lane}') for lane in range(4)]
         targets += [(self._traffic_loop, (), 'qt-traffic'), (self._inference_loop, (), 'qt-inference')]
         for target, args, name in targets:
             thread = threading.Thread(target=target, args=args, name=name, daemon=True)
@@ -129,6 +210,9 @@ class DashboardWorkers:
                     retry_at = 0.0
                     shared_token = None
                 dt, previous = min(now - previous, .1), now
+                if lane.source == 'off':
+                    self.stop_event.wait(.1)
+                    continue
                 if lane.source == 'simulation':
                     if lane.signal == 'GREEN':
                         motion += dt
@@ -140,7 +224,11 @@ class DashboardWorkers:
                     continue
                 # Open each physical source only once, even when four panels
                 # select the same webcam. Followers retain their own generation.
-                owner = next(i for i, peer in enumerate(peers) if peer.source == lane.source)
+                is_file = is_video_source(lane.source)
+                # Files have independent playback positions, even if the same
+                # clip is assigned to several cameras. Restarting one must not
+                # jump or restart the other panels.
+                owner = lane_id if is_file else next(i for i, peer in enumerate(peers) if peer.source == lane.source)
                 if owner != lane_id:
                     if cap is not None:
                         cap.release()
@@ -171,10 +259,25 @@ class DashboardWorkers:
                         cap, retry_at = None, time.monotonic() + 2
                         self.store.unavailable(lane_id, generation, 'No signal — retrying')
                         continue
+                fps, step = 30., 1
+                if is_file:
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+                    fps = fps if 1 <= fps <= 120 else 30
+                    step = max(1, round(fps / 30))
+                    # A 60 FPS file needs only 30 display frames/s. Grab the
+                    # intermediate frames without converting/copying full HD
+                    # pixels, preserving playback speed and CPU for detection.
+                    if sequence:
+                        for _ in range(step-1):
+                            if not cap.grab():
+                                break
                 ok, frame = cap.read()
-                is_file = isinstance(lane.source, str) and Path(lane.source).is_file()
                 if not ok and is_file:
                     # Loop video seamlessly; EOF is not a camera disconnection.
+                    new_generation = self.store.rewind_video(lane_id, generation)
+                    if new_generation is None:
+                        continue
+                    generation = new_generation
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     ok, frame = cap.read()
                 if not ok or frame is None:
@@ -183,16 +286,11 @@ class DashboardWorkers:
                     cap, retry_at = None, time.monotonic() + 2
                     continue
                 # Bound inference and preview copies, keeping the aspect ratio.
-                h, w = frame.shape[:2]
-                if max(w, h) > 960:
-                    scale = 960 / max(w, h)
-                    frame = cv2.resize(frame, (round(w * scale), round(h * scale)))
+                frame = prepare_capture_frame(frame)
                 sequence += 1
                 self.store.publish_frame(lane_id, FramePacket(generation, sequence, time.monotonic(), frame))
                 if is_file:
-                    fps = cap.get(cv2.CAP_PROP_FPS)
-                    fps = fps if 1 <= fps <= 120 else 30
-                    self.stop_event.wait(max(0, 1 / fps - (time.monotonic() - now)))
+                    self.stop_event.wait(max(0, step / fps - (time.monotonic() - now)))
         except Exception:
             LOGGER.exception('Capture interrupted for lane %d; retrying', lane_id)
             self.store.unavailable(lane_id, generation, 'Camera error - retrying')
@@ -200,8 +298,30 @@ class DashboardWorkers:
             if cap is not None:
                 cap.release()
 
+    def _tracking_loop(self, lane_id):
+        from dashboard.services.live_tracking import LiveVehicleTracker
+        tracker = LiveVehicleTracker()
+        while not self.stop_event.is_set():
+            started = time.monotonic()
+            lane = self.store.snapshot()[lane_id]
+            if not self.store.summary()[0] or lane.source == 'simulation' or lane.frame is None:
+                tracker.reset()
+            else:
+                try:
+                    packet = tracker.update(lane.frame, lane.result)
+                    if packet is not None:
+                        self.store.publish_live_detection(lane_id, packet)
+                except Exception:
+                    LOGGER.exception('Live tracking reset for lane %d', lane_id)
+                    tracker.reset()
+            self.stop_event.wait(max(.005, 1/15-(time.monotonic()-started)))
+
     def _traffic_loop(self):
         try:
+            # A tiny timing network must not reserve every CPU core while four
+            # video decoders and the two vision workers are active.
+            import torch
+            torch.set_num_threads(1)
             # Heavy imports happen away from Qt's event loop. No YOLO pair is
             # constructed here: the traffic controller consumes typed detections.
             from dashboard.models.detection.traffic_controller import TrafficLightController
@@ -229,9 +349,19 @@ class DashboardWorkers:
                 for i, lane in enumerate(lanes):
                     previous_wait = controller.lane_stats[i]['wait_time']
                     detections = list(active_detections(lane, now))
-                    controller.update_lane_detections(i, detections)
+                    observation = lane.frame if lane.source == 'simulation' else lane.result
+                    controller.update_lane_detections(i, detections,
+                        observed_at=time.time()-(now-observation.captured_at) if observation else None,
+                        observation_id=(lane.generation, observation.sequence) if observation else None)
                     if self.recorder:
-                        self.recorder.observe(i, lane, detections)
+                        event_lane = replace(lane, result=lane.live_result) if lane.live_result is not None else lane
+                        evidence = event_detections(event_lane, time.monotonic())
+                        try:
+                            self.recorder.observe(i, event_lane, evidence,
+                                learned_detections=tuple(d for d in evidence if d.get('source') == 'accident'))
+                            self.recorder.observe_accident(i, lane, time.monotonic())
+                        except Exception:
+                            LOGGER.exception('Could not record event for lane %d', i)
                     # The dashboard updates at 10 Hz. Express waits in seconds,
                     # not number of UI/capture updates, without changing core code.
                     controller.lane_stats[i]['wait_time'] = (0.0 if controller.get_lane_signal_state(i) == 'GREEN'
@@ -241,34 +371,43 @@ class DashboardWorkers:
                 self.store.publish_signals(controller.get_lane_signal_states(),
                     {i: controller.get_lane_time_remaining(i) for i in range(4)}, counts)
                 self.store.set_status(engine='Traffic controller online',
-                    phase=f'{controller.active_phase} / {controller.current_phase.replace("_", " ").upper()}')
+                    phase=f'{"EMERGENCY PRIORITY • " if controller.is_emergency_active else ""}'
+                          f'{controller.active_phase} / {controller.current_phase.replace("_", " ").upper()}')
                 self.stop_event.wait(max(0, .1 - (time.monotonic() - now)))
         except Exception:
             LOGGER.exception('Traffic controller stopped')
             self.store.publish_signals(dict.fromkeys(range(4), 'RED'), dict.fromkeys(range(4), 0), [0] * 4)
             self.store.set_status(engine='Traffic controller error — restart dashboard', phase='ALL RED')
 
-    def _inference_loop(self):
+    def _inference_loop(self, accident=False):
         context = mp.get_context('spawn')
         requests, responses = context.Queue(maxsize=1), context.Queue(maxsize=1)
+        process = None
+        target = accident_inference_process if accident else self.inference_target
+        process_attribute = 'accident_process' if accident else 'process'
+        label = 'Accident AI' if accident else 'Vehicle AI'
+        def status(message):
+            self.store.set_status(**{'accident' if accident else 'ai': message})
         ready, pending, failed = False, False, False
         last_sent = [None] * 4
         next_lane = 0
         started_at = 0.0
         pending_frame = None
+        next_request_at = 0.
         try:
             while not self.stop_event.is_set():
                 enabled, _, _, _ = self.store.summary()
                 lanes = self.store.snapshot()
-                needs_ai = enabled and any(lane.source != 'simulation' for lane in lanes)
+                needs_ai = enabled and any(lane.source not in ('off', 'simulation') for lane in lanes)
                 if not enabled:
                     failed = False
-                if needs_ai and self.process is None and not failed:
-                    self.process = context.Process(target=self.inference_target, args=(requests, responses), daemon=True)
-                    self.process.start()
+                if needs_ai and process is None and not failed:
+                    process = context.Process(target=target, args=(requests, responses), daemon=True)
+                    setattr(self, process_attribute, process)
+                    process.start()
                     started_at = time.monotonic()
-                    self.store.set_status(ai='Loading best.pt + yolov8n.pt…')
-                if self.process is not None:
+                    status(f'{label} loading…')
+                if process is not None:
                     try:
                         message = responses.get_nowait()
                     except Empty:
@@ -276,67 +415,88 @@ class DashboardWorkers:
                     if message:
                         if message[0] == 'ready':
                             ready = True
-                            self.store.set_status(ai=f'Dual YOLO ready • {message[1].upper()}')
+                            status(f'{label} ready • {message[1].upper()}')
+                            if not accident:
+                                self.store.set_status(accident='Accident / pedestrian model ready' if message[2]
+                                                      else 'Accident / pedestrian model unavailable')
                         elif message[0] == 'error':
                             failed, pending, ready = True, False, False
-                            self.store.set_status(ai=message[1])
+                            status(f'{label}: {message[1]}')
+                        elif message[0] == 'specialist':
+                            _, lane_id, generation, sequence, captured_at, detections, duration, success = message[:8]
+                            self.store.publish_detection(lane_id, DetectionPacket(generation, sequence,
+                                captured_at, time.monotonic(), detections if success else (), duration,
+                                message[10], message[11], message[12]), accident=True)
+                            self.store.set_status(accident=f'Accident / pedestrian AI • {duration*1000:.0f} ms'
+                                                  if success else 'Accident / pedestrian inference failed')
                         else:
-                            _, lane_id, generation, sequence, captured_at, detections, duration, success, degraded = message
+                            _, lane_id, generation, sequence, captured_at, detections, duration, success, degraded = message[:9]
                             pending = False
                             self.store.publish_detection(lane_id, DetectionPacket(generation, sequence,
                                 captured_at, time.monotonic(), detections if success else (), duration,
                                 pending_frame.frame if pending_frame else None,
                                 pending_frame.signal if pending_frame else None,
-                                pending_frame.signal_epoch if pending_frame else 0))
+                                pending_frame.signal_epoch if pending_frame else 0), accident=accident)
                             pending_frame = None
-                            self.store.set_status(ai=(f'{"Single model fallback" if degraded else "Dual YOLO"} • {duration * 1000:.0f} ms / frame'
-                                                      if success else 'Inference failed — check dashboard log'))
+                            status(f'{label}{" fallback" if degraded else ""} • {duration * 1000:.0f} ms / frame'
+                                   if success else f'{label} failed — check dashboard log')
                     timed_out = ((not ready and time.monotonic() - started_at > 90) or
                                  (pending and time.monotonic() - started_at > 30))
-                    if not self.process.is_alive() or timed_out:
+                    if not process.is_alive() or timed_out:
                         failed, ready, pending = True, False, False
-                        self.store.set_status(ai='AI worker unavailable — turn AI off/on to retry')
+                        status(f'{label} unavailable — turn AI off/on to retry')
                     if failed:
-                        if self.process.is_alive():
-                            self.process.terminate()
-                        self.process.join(timeout=.5)
-                        self.process = None
+                        if process.is_alive():
+                            process.terminate()
+                        process.join(timeout=.5)
+                        process = None
+                        setattr(self, process_attribute, None)
                         for queue in (requests, responses):
                             queue.cancel_join_thread()
                             queue.close()
                         requests, responses = context.Queue(maxsize=1), context.Queue(maxsize=1)
                         last_sent = [None] * 4
                 if not enabled:
-                    self.store.set_status(ai='AI paused • live video and signal timers continue')
+                    status(f'{label} paused • live video continues')
                 elif not needs_ai:
-                    self.store.set_status(ai='Simulation • known vehicle counts, no model inference')
-                if needs_ai and ready and not pending and self.process is not None:
+                    status('Standby — connect to a camera' if all(lane.source == 'off' for lane in lanes)
+                           else 'Simulation • known vehicle counts, no model inference')
+                if needs_ai and ready and not pending and process is not None and time.monotonic() >= next_request_at:
                     for offset in range(4):
                         lane_id = (next_lane + offset) % 4
                         lane = lanes[lane_id]
-                        packet = lane.frame
+                        # Accident boxes use the exact frame and vehicle context
+                        # already analyzed by the fast worker, never a later frame.
+                        packet = lane.result if accident else lane.frame
                         if lane.source == 'simulation' or packet is None or time.monotonic() - packet.captured_at > 1:
                             continue
                         token = (packet.generation, packet.sequence)
                         if token == last_sent[lane_id]:
                             continue
                         try:
-                            requests.put_nowait((lane_id, packet.generation, packet.sequence, packet.captured_at, packet.frame))
+                            task = (lane_id, packet.generation, packet.sequence, packet.captured_at, packet.frame)
+                            if accident:
+                                task += (packet.detections,)
+                            elif self.inference_target is traffic_inference_process:
+                                task += (packet.signal, packet.signal_epoch)
+                            requests.put_nowait(task)
                         except Full:
                             break
                         last_sent[lane_id], next_lane, pending = token, (lane_id + 1) % 4, True
                         pending_frame = packet
                         started_at = time.monotonic()
+                        next_request_at = started_at + (.25 if accident else 0.)
                         break
-                self.stop_event.wait(.02)
+                self.stop_event.wait(.01)
         except Exception:
             LOGGER.exception('Inference coordinator stopped')
-            self.store.set_status(ai='AI coordinator error — restart dashboard')
+            status(f'{label} coordinator error — restart dashboard')
         finally:
-            if self.process is not None:
-                if self.process.is_alive():
-                    self.process.terminate()
-                self.process.join(timeout=.5)
+            if process is not None:
+                if process.is_alive():
+                    process.terminate()
+                process.join(timeout=.5)
+            setattr(self, process_attribute, None)
             for queue in (requests, responses):
                 queue.cancel_join_thread()
                 queue.close()

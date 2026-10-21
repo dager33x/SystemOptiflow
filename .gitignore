@@ -48,3 +48,11 @@ Desktop.ini
 violation_logs_local.json
 screenshots/
 SystemOptiflow_Release.zip
+training/
+
+/data/
+/train/
+/valid/
+/models/
+/cleanup-recovery-*/
+/SystemOptiflow/training/

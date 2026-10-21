@@ -1,6 +1,6 @@
-# Complete desktop runtime; local best.pt and yolov8n.pt are required.
+# Complete desktop runtime; local best.pt, yolov8n.pt and bestw.pt are required.
 PySide6==6.10.2
-ultralytics==8.3.236
+ultralytics==8.4.19
 numpy>=1.26,<3
 opencv-python>=4.8,<5
 torch>=2.6,<3

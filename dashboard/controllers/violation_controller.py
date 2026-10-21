@@ -1,25 +1,29 @@
 # controllers/violation_controller.py
 from dashboard.models.database import TrafficDB
 from dashboard.utils.async_utils import run_in_background
+from dashboard.models.local_violations import LocalViolations
 
 class ViolationController:
     """Handle traffic violation reports"""
     def __init__(self, db: TrafficDB):
         self.db = db
 
+    @property
+    def local_records(self):
+        return LocalViolations(self._app_path('violation_logs_local.json'))
+
     def _app_path(self, *parts):
         import os
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         return os.path.join(base_dir, *parts)
     
-    @run_in_background
     def save_violation(self, lane, violation_type="Red Light Violation", frame=None):
-        """Save violation to database or local file fallback (Async)"""
+        """Save locally now; a database outage must not delay the event log."""
         import cv2
         import os
         from datetime import datetime
         
-        vehicle_id = "SYS-DETECTION"
+        vehicle_id = None  # UUID column: untracked vehicles have no database ID.
         image_url = None
         
         # Save screenshot locally if frame is provided
@@ -29,30 +33,33 @@ class ViolationController:
                 os.makedirs(screenshot_dir, exist_ok=True)
                 timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 filename = os.path.join(screenshot_dir, f"violation_lane{lane}_{timestamp_str}.jpg")
-                cv2.imwrite(filename, frame)
+                if not cv2.imwrite(filename, frame):
+                    raise OSError('Could not write violation evidence')
                 image_url = filename
             except Exception as e:
                 print(f"Error saving violation screenshot: {e}")
 
-        # Try database first
+        saved = self._save_to_local_fallback(lane, violation_type, vehicle_id, image_url)
+        self._upload_violation(saved['violation_id'], lane, violation_type, vehicle_id, image_url)
+        return saved['violation_id']
+
+    @run_in_background
+    def _upload_violation(self, local_id, lane, violation_type, vehicle_id, image_url):
         try:
             result = self.db.save_violation(vehicle_id, lane, violation_type, source="SYSTEM", image_url=image_url)
             if result:
                 if image_url:
                     self._save_image_mapping(result, image_url)
-                return
+                self.local_records.mark_uploaded(local_id, result)
         except Exception:
             pass # Fallback
             
-        # Fallback: Save to local CSV/JSON if DB fails
-        self._save_to_local_fallback(lane, violation_type, vehicle_id, image_url)
-
-
-    def get_logs(self):
+    def get_logs(self, include_database=True):
         """Get recent violation logs (from DB or local)"""
-        logs = self.db.get_recent_violations(limit=50)
-        if not logs:
-            return self._get_local_logs()
+        try:
+            logs = [dict(row) for row in self.db.get_recent_violations(limit=50)] if self.db and include_database else []
+        except Exception:
+            logs = []
             
         # Merge local images mapped by violation_id
         import os
@@ -71,7 +78,12 @@ class ViolationController:
             except Exception:
                 pass
                 
-        return logs
+        remote_ids = {row['violation_id'] for row in logs if row.get('violation_id')}
+        logs.extend(dict(row, _local_id=row.get('violation_id'),
+                         violation_id=row.get('_remote_id') or row.get('violation_id'))
+                    for row in self._get_local_logs() if row.get('_remote_id') not in remote_ids)
+        logs = [dict(row, timestamp=row.get('timestamp') or row.get('created_at') or '') for row in logs]
+        return sorted(logs, key=lambda row: row['timestamp'], reverse=True)
 
     def _save_image_mapping(self, vid, url):
         import os
@@ -95,7 +107,7 @@ class ViolationController:
         """Clear all violation logs"""
         import os
         # Clear local fallback file
-        file_path = "violation_logs_local.json"
+        file_path = self._app_path('violation_logs_local.json')
         if os.path.exists(file_path):
             try:
                 os.remove(file_path)
@@ -117,44 +129,18 @@ class ViolationController:
         return True
 
     def _save_to_local_fallback(self, lane, v_type, v_id, image_url=None):
-        import json
-        import os
-        from datetime import datetime
-        
-        file_path = "violation_logs_local.json"
+        from datetime import datetime, timezone
         
         new_log = {
             "lane": lane,
             "violation_type": v_type,
             "vehicle_id": v_id,
-            "timestamp": datetime.utcnow().isoformat(),
-            "status": "Localized (DB Offline)",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "Saved locally",
             "image_url": image_url
         }
         
-        try:
-            data = []
-            if os.path.exists(file_path):
-                with open(file_path, 'r') as f:
-                    data = json.load(f)
-            
-            data.insert(0, new_log)
-            # Keep only last 50
-            data = data[:50]
-            
-            with open(file_path, 'w') as f:
-                json.dump(data, f)
-        except Exception as e:
-            print(f"Local save error: {e}")
+        return self.local_records.append(new_log)
 
     def _get_local_logs(self):
-        import json
-        import os
-        file_path = "violation_logs_local.json"
-        if os.path.exists(file_path):
-            try:
-                with open(file_path, 'r') as f:
-                    return json.load(f)
-            except:
-                return []
-        return []
+        return self.local_records.read()

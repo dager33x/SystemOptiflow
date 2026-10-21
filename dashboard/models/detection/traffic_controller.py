@@ -110,6 +110,9 @@ class TrafficLightController:
                 "detections": [],
                 "emergency_flag": False,
                 "emergency_first_seen": None,
+                "emergency_last_seen": None,
+                "emergency_observations": 0,
+                "emergency_observation_id": None,
                 "accident_flag": False,
                 "congestion_pressure": 0.0,
                 "congestion_level": "low",
@@ -155,7 +158,9 @@ class TrafficLightController:
             if (
                 self.lane_stats[lane].get("emergency_flag", False)
                 and first_seen is not None
-                and current_time - first_seen >= EMERGENCY_OBSERVATION_SECONDS
+                and self.lane_stats[lane].get('emergency_observations', 0) >= 3
+                and self.lane_stats[lane].get('emergency_last_seen', first_seen) - first_seen >= EMERGENCY_OBSERVATION_SECONDS
+                and 0 <= current_time-self.lane_stats[lane]['emergency_last_seen'] <= 2.
                 and lane not in self.emergency_exhausted_lanes
             ):
                 return lane
@@ -332,7 +337,8 @@ class TrafficLightController:
     def set_screenshot_callback(self, callback):
         self.rule_controller.screenshot_callback = callback
 
-    def update_lane_detections(self, lane_id: int, detections: List[Dict]):
+    def update_lane_detections(self, lane_id: int, detections: List[Dict], *,
+                               observed_at=None, observation_id=None):
         stats = self.lane_stats[lane_id]
         stats["detections"] = detections
         stats["vehicle_count"] = count_queue_vehicles(detections)
@@ -340,10 +346,23 @@ class TrafficLightController:
         has_emergency = any(d.get("class_name") == "emergency_vehicle" for d in detections)
         stats["emergency_flag"] = has_emergency
         if has_emergency:
-            if stats.get("emergency_first_seen") is None:
-                stats["emergency_first_seen"] = time.time()
+            observed_at = time.time() if observed_at is None else observed_at
+            previous_id = stats.get('emergency_observation_id')
+            if observation_id is None or observation_id != previous_id:
+                last = stats.get('emergency_last_seen')
+                source_changed = (observation_id is not None and previous_id is not None
+                                  and observation_id[0] != previous_id[0])
+                if last is None or not 0 < observed_at-last <= 2. or source_changed:
+                    stats['emergency_first_seen'] = observed_at
+                    stats['emergency_observations'] = 0
+                stats['emergency_last_seen'] = observed_at
+                stats['emergency_observations'] += 1
+                stats['emergency_observation_id'] = observation_id
         else:
             stats["emergency_first_seen"] = None
+            stats['emergency_last_seen'] = None
+            stats['emergency_observations'] = 0
+            stats['emergency_observation_id'] = None
             self.emergency_exhausted_lanes.discard(lane_id)
         stats["accident_flag"] = any(d.get("class_name") == "z_accident" for d in detections)
         stats["last_detection"] = datetime.now()
@@ -375,7 +394,7 @@ class TrafficLightController:
         if elapsed is None:
             elapsed = self._phase_elapsed()
 
-        if self.current_phase == "all_red":
+        if self.current_phase in ("all_red", "emergency_all_red", "emergency_clear_all_red"):
             return "RED"
 
         if self.is_emergency_active:
@@ -384,8 +403,6 @@ class TrafficLightController:
             return "GREEN" if self.current_phase == "green" else "YELLOW"
 
         if self.current_phase == "emergency_warning":
-            if lane_id == self.pending_emergency_lane and lane_id in self.active_main_lanes:
-                return "GREEN"
             return "YELLOW" if lane_id in self.active_main_lanes else "RED"
 
         if self.current_phase == "emergency_clear_warning":
@@ -474,30 +491,17 @@ class TrafficLightController:
         )
         self.last_rule_audit = audit
 
-        rule_label = audit.get("rule_fired", "dqn")
-        is_emergency = rule_action is not None and rule_action != 4 and "emergency" in rule_label
-
-        if is_emergency:
-            next_lane = int(rule_action)
-            if next_lane in self.emergency_exhausted_lanes:
-                if hasattr(self.rule_controller, "release_emergency_lock"):
-                    self.rule_controller.release_emergency_lock(current_time)
-                is_emergency = False
-            else:
-                green_time = float(EMERGENCY_PRIORITY_SECONDS)
-                self._commit_emergency_phase(next_lane, current_time)
-                mode_info = f"EMERGENCY:{rule_label}"
-                lane_count = all_lane_counts[next_lane] if next_lane < len(all_lane_counts) else 0
-
-        if not is_emergency:
-            next_phase = self._opposite_phase(self.active_phase)
-            green_time = self._phase_green_duration(next_phase)
-            self._commit_green_phase(next_phase, current_time, False, None, green_time)
-            mode_info = "NS/EW alternating phase"
-            lane_count = sum(
-                all_lane_counts[lane] if lane < len(all_lane_counts) else 0
-                for lane in self.active_main_lanes
-            )
+        # Only the fresh-observation gate above can authorize emergency green.
+        # The legacy rule layer also sees cached detections at each timer tick.
+        is_emergency = False
+        next_phase = self._opposite_phase(self.active_phase)
+        green_time = self._phase_green_duration(next_phase)
+        self._commit_green_phase(next_phase, current_time, False, None, green_time)
+        mode_info = "NS/EW alternating phase"
+        lane_count = sum(
+            all_lane_counts[lane] if lane < len(all_lane_counts) else 0
+            for lane in self.active_main_lanes
+        )
 
         self.decisions_made += 1
         self.lanes_served_this_cycle = list(self.active_main_lanes)
@@ -619,8 +623,21 @@ class TrafficLightController:
             }
 
         if self.current_phase == "emergency_warning":
+            self.current_phase = 'emergency_all_red'
+            self.phase_start_time = current_time
+            self.phase_duration = float(ALL_RED_TIME)
+            return {'phase': self.current_phase, 'duration': self.phase_duration,
+                    'lane_signal_states': self.get_lane_signal_states()}
+
+        if self.current_phase == 'emergency_all_red':
             emergency_lane = self.pending_emergency_lane
-            if emergency_lane is None or emergency_lane in self.emergency_exhausted_lanes:
+            if (emergency_lane is None or emergency_lane in self.emergency_exhausted_lanes
+                    or not self.lane_stats[emergency_lane].get('emergency_flag', False)
+                    or self.lane_stats[emergency_lane].get('emergency_last_seen') is None
+                    or current_time-self.lane_stats[emergency_lane]['emergency_last_seen'] > 2.):
+                resumed = self._resume_paused_normal_phase(current_time)
+                if resumed is not None:
+                    return resumed
                 self.current_phase = "all_red"
                 self.phase_start_time = current_time
                 self.phase_duration = float(ALL_RED_TIME)
@@ -650,6 +667,13 @@ class TrafficLightController:
             }
 
         if self.current_phase == "emergency_clear_warning":
+            self.current_phase = 'emergency_clear_all_red'
+            self.phase_start_time = current_time
+            self.phase_duration = float(ALL_RED_TIME)
+            return {'phase': self.current_phase, 'duration': self.phase_duration,
+                    'lane_signal_states': self.get_lane_signal_states()}
+
+        if self.current_phase == 'emergency_clear_all_red':
             resumed = self._resume_paused_normal_phase(current_time)
             if resumed is not None:
                 return resumed

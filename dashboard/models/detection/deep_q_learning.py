@@ -66,7 +66,7 @@ DEFAULT_WEIGHT = 2.0
 
 # Timing (seconds)
 MIN_BUFFER_TIME      = 10    # hard minimum green — no switch allowed before this
-NORMAL_MIN_GREEN     = 60    # minimum green for each NS/EW phase
+NORMAL_MIN_GREEN     = 15    # minimum green for each NS/EW phase
 MAX_GREEN_NORMAL     = 120   # adaptive ceiling for heavy traffic
 MAX_GREEN_EMERGENCY  = 20    # emergency priority is two 10-second attempts
 YELLOW_TIME          = 5
@@ -163,13 +163,9 @@ class TrafficStateBuilder:
     @staticmethod
     def calculate_green_time(weighted_count: float, has_accident: bool, has_violation: bool) -> int:
         """Calculate green time extension based on proportional congestion count."""
-        if weighted_count >= 40:
-            base_time = 80.0 + ((weighted_count - 40.0) * 1.5)
-        elif weighted_count >= 25:
-            base_time = 60.0 + ((weighted_count - 25.0) / 15.0) * 20.0
-        else:
-            base_time = float(NORMAL_MIN_GREEN)
-        
+        # Continuous allocation: two cars get 21s; twenty cars get 79s.
+        base_time = float(NORMAL_MIN_GREEN) + 1.6 * max(0.0, weighted_count)
+
         # Accident restricted mode penalty -> reduce green extension
         if has_accident:
             base_time = int(base_time * 0.7)

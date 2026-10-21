@@ -155,6 +155,22 @@ class RecordsPage(TablePage):
         elif kind != 'incidents' and user.get('role') == 'admin':
             button('Clear records', self.clear_records, self.actions)
 
+    def refresh_local(self):
+        """Show newly saved events without waiting for a network request."""
+        if self.kind not in ('incidents', 'violations'):
+            return
+        loader, identity = ((self.controller.accidents.get_incidents, 'accident_id')
+                            if self.kind == 'incidents' else (self.controller.violations.get_logs, 'violation_id'))
+        merged = {}
+        local_rows = loader(include_database=False)
+        uploaded_ids = {row['_local_id'] for row in local_rows
+                        if row.get('_local_id') and row.get(identity) != row['_local_id']}
+        cached_rows = [row for row in self.rows if row.get(identity) not in uploaded_ids]
+        for row in local_rows + cached_rows:
+            key = row.get(identity) or (row.get('timestamp'), row.get('lane'), row.get('violation_type'))
+            merged[key] = row
+        self.display(sorted(merged.values(), key=lambda row: row.get('timestamp') or row.get('created_at') or '', reverse=True))
+
     def reload(self):
         loader = {'issues': self.db.get_all_reports, 'incidents': self.controller.accidents.get_incidents,
                   'violations': self.controller.violations.get_logs}[self.kind]

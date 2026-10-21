@@ -44,7 +44,18 @@ class LocalIncidents:
     def append(self, row):
         with _LOCK:
             rows = self._read()
-            rows.insert(0, normalize_incident(dict(row, accident_id='local-' + str(uuid4()))))
+            saved = normalize_incident(dict(row, accident_id='local-' + str(uuid4())))
+            rows.insert(0, saved)
+            self._write(rows)
+            return saved
+
+    def mark_uploaded(self, local_id, remote_id):
+        with _LOCK:
+            rows = self._read()
+            for row in rows:
+                if row['accident_id'] == local_id:
+                    row['_remote_id'] = remote_id
+                    break
             self._write(rows)
 
     def update(self, incident_id, expected_version, actor, action, value, note):

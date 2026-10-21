@@ -79,7 +79,7 @@ class IncidentPage(RecordsPage):
         pending = sum(row['review_status'] == 'unreviewed' for row in prepared)
         active = sum(row['response_status'] != 'resolved' for row in prepared)
         self.summary.setText(f'{pending} unreviewed  /  {active} open')
-        self.setup_notice.setVisible(any(not row.get('_workflow_ready', True) for row in prepared))
+        self.setup_notice.setVisible(any(not row.get('_workflow_ready', True) and not row.get('_cached') for row in prepared))
         TablePage.display(self, prepared)
         self.status.setText(f'{len(prepared)} records loaded • All action times are UTC • Local records stay on this computer')
 
@@ -121,6 +121,8 @@ class IncidentPage(RecordsPage):
             reason = 'Only administrators and operators can review or handle incidents.'
         elif row is None:
             reason = 'Select an incident row to review it or acknowledge the response.'
+        elif row.get('_cached'):
+            reason = 'Showing a saved copy. Refresh to load the uploaded incident before editing its workflow.'
         elif not row.get('_workflow_ready', True):
             reason = 'This incident needs database setup: run the incident-workflow SQL migration, then click Refresh.'
         elif response == 'resolved':

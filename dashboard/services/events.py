@@ -1,8 +1,14 @@
 """Temporal incident checks, independent of widgets and capture cadence."""
+import logging
+from dataclasses import replace
 from dashboard.models.stop_line import CrossingTracker
 from dashboard.models.incident_detection import IncidentDetector
 from dashboard.utils.app_config import SETTINGS
 from dashboard.models.notification import Notification
+from dashboard.models.accident_confirmation import AccidentConfirmation
+
+LOGGER = logging.getLogger(__name__)
+LOGGER.setLevel(logging.INFO)
 
 
 class EventRecorder:
@@ -14,12 +20,28 @@ class EventRecorder:
             min_confidence=SETTINGS.get('incident_min_confidence', .65),
             hold_seconds=SETTINGS.get('incident_stop_seconds', 2.)) for _ in range(4)]
         self.tokens = [None] * 4
+        self.accident_tokens = [None] * 4
+        self.jaywalkers = [AccidentConfirmation(SETTINGS.get('jaywalking_confidence', .65),
+                           max_gap=8., clear_seconds=10.,
+                           class_name='possible_jaywalking', source='violation') for _ in range(4)]
+        self.accident_models = [AccidentConfirmation(
+            SETTINGS.get('accident_model_confidence', .6),
+            SETTINGS.get('accident_model_hold_seconds', 2.5), max_gap=3., clear_seconds=30.,
+            min_frames=SETTINGS.get('accident_model_min_frames', 2),
+            immediate_confidence=None,
+            stationary_fraction=SETTINGS.get('accident_stationary_fraction', .35)) for _ in range(4)]
+        self.last_incident = [None] * 4
+        self.last_diagnostic = [float('-inf')] * 4
         self.violation_count = 0
 
-    def observe(self, lane_id, lane, detections):
-        if lane.source == 'simulation' or lane.result is None or not detections:
+    def observe(self, lane_id, lane, detections, learned_detections=None):
+        if (lane.source == 'simulation' or lane.result is None
+                or lane.result.generation != lane.generation):
             self.crossings[lane_id].reset()
             self.incidents[lane_id].reset()
+            self.accident_models[lane_id].reset()
+            self.last_incident[lane_id] = None
+            self.tokens[lane_id] = None
             return
         token = (lane.generation, lane.result.sequence)
         if token == self.tokens[lane_id]:
@@ -29,6 +51,7 @@ class EventRecorder:
         if frame is None:
             self.crossings[lane_id].reset()
             self.incidents[lane_id].reset()
+            self.accident_models[lane_id].reset()
             return
         h, w = frame.shape[:2]
         crossings = self.crossings[lane_id].observe(
@@ -38,8 +61,7 @@ class EventRecorder:
             import cv2
             evidence = frame.copy()
             line = lane.stop_line
-            cv2.line(evidence, (round(w*line.left), round(h*line.height)),
-                     (round(w*line.right), round(h*line.height)), (56, 50, 255), 3)
+            cv2.line(evidence, *line.endpoints(frame.shape), (56, 50, 255), 3)
             x1, y1, x2, y2 = map(int, detection['bbox'])
             cv2.rectangle(evidence, (x1, y1), (x2, y2), (56, 50, 255), 2)
             cv2.putText(evidence, 'RED LIGHT - STOP LINE CROSSED', (12, 28),
@@ -48,10 +70,82 @@ class EventRecorder:
             self.violation_count += 1
             self._notify('violation', lane_id, 'Red-light violation',
                          'A vehicle crossed the stop line during a red signal.')
-        candidates = self.incidents[lane_id].observe(
-            detections, frame.shape, lane.result.captured_at, lane.generation,
-            lane.result.signal, lane.result.signal_epoch)
-        for boxes in candidates:
+        # Vehicle overlap/motion is not an accident classification. Keep the
+        # legacy heuristic opt-in so it cannot bypass the trained model gate
+        # (including when the model is missing or returns no accident boxes).
+        candidates = []
+        if SETTINGS.get('enable_motion_incident_alerts', False):
+            candidates = self.incidents[lane_id].observe(
+                detections, frame.shape, lane.result.captured_at, lane.generation,
+                lane.result.signal, lane.result.signal_epoch)
+        else:
+            self.incidents[lane_id].reset()
+        learned = detections if learned_detections is None else learned_detections
+        # Fast vehicle observations must not advance the slower model's clock.
+        # The independent accident stream is consumed by observe_accident().
+        if candidates or any(d.get('source') == 'accident' for d in learned):
+            self._record_incidents(lane_id, lane, frame, learned, candidates)
+
+    def observe_accident(self, lane_id, lane, now):
+        result = lane.accident_result
+        if lane.source == 'simulation' or result is None or result.generation != lane.generation:
+            self.accident_tokens[lane_id] = None
+            self.jaywalkers[lane_id].reset()
+            return
+        token = (result.generation, result.sequence)
+        if (token == self.accident_tokens[lane_id] or result.frame is None
+                or not result.captured_at <= result.completed_at <= now
+                or now-result.completed_at > 2 or now-result.captured_at > 10):
+            return
+        self.accident_tokens[lane_id] = token
+        evidence_lane = replace(lane, result=result)
+        self._record_incidents(lane_id, evidence_lane, result.frame, result.detections, ())
+        for box, confidence in self.jaywalkers[lane_id].observe(
+                result.detections, result.frame.shape, result.captured_at, result.generation):
+            import cv2
+            evidence = result.frame.copy()
+            x1, y1, x2, y2 = map(round, box)
+            cv2.rectangle(evidence, (x1, y1), (x2, y2), (56, 50, 255), 3)
+            cv2.putText(evidence, 'POSSIBLE JAYWALKING - REVIEW REQUIRED', (12, 28),
+                        cv2.FONT_HERSHEY_SIMPLEX, .6, (56, 50, 255), 2)
+            self.violations.save_violation(lane_id, 'Possible Jaywalking', evidence)
+            self.violation_count += 1
+            self._notify('violation', lane_id, 'Possible jaywalking',
+                         'Repeated model predictions identified a pedestrian region. Review the evidence.')
+
+    def _record_incidents(self, lane_id, lane, frame, learned_detections, candidates):
+        h, w = frame.shape[:2]
+        previous = self.last_incident[lane_id]
+        recent = (previous is not None and previous[0] == lane.generation
+                  and 0 <= lane.result.captured_at-previous[1] < 30)
+        learned = self.accident_models[lane_id].observe(
+            learned_detections,
+            frame.shape, lane.result.captured_at, lane.generation,
+            allow_alert=True)
+        if lane.result.captured_at-self.last_diagnostic[lane_id] >= 5 or learned:
+            self.last_diagnostic[lane_id] = lane.result.captured_at
+            regions = self.accident_models[lane_id].regions
+            LOGGER.info('Accident gate lane=%d sequence=%s regions=%d observations=%d new_alerts=%d cooldown=%s',
+                        lane_id, lane.result.sequence, len(regions),
+                        max((r['count'] for r in regions), default=0), len(learned), recent)
+        if learned:
+            import cv2
+            evidence = frame.copy()
+            for box, confidence in learned:
+                x1, y1, x2, y2 = map(round, box)
+                cv2.rectangle(evidence, (x1, y1), (x2, y2), (0, 165, 255), 3)
+            cv2.putText(evidence, 'MODEL: POSSIBLE ACCIDENT - REVIEW REQUIRED', (12, 28),
+                        cv2.FONT_HERSHEY_SIMPLEX, .55, (0, 165, 255), 2)
+            self.accidents.report_accident(lane_id, 'Moderate',
+                'Possible accident - review required. Trained accident model Model.pt detected an accident region '
+                'with repeated high-confidence observations in a stable location. '
+                f'Latest model confidence: {max(c for _, c in learned):.1%}. '
+                'Crash and severity remain unconfirmed.', evidence)
+            self._notify('incident', lane_id, 'Possible accident',
+                         'The trained accident model detected a persistent accident region. Review the evidence.')
+            self.last_incident[lane_id] = (lane.generation, lane.result.captured_at)
+            recent = True
+        for boxes in ([] if recent else candidates):
             import cv2
             evidence = frame.copy()
             for x1, y1, x2, y2 in boxes:
@@ -65,6 +159,8 @@ class EventRecorder:
                 'Motion heuristic only; crash and severity are unconfirmed.', evidence)
             self._notify('incident', lane_id, 'Possible collision',
                          'Vehicles made apparent contact and stopped. Review the camera footage; this is not a confirmed crash.')
+            self.last_incident[lane_id] = (lane.generation, lane.result.captured_at)
+            break
 
     def rule_violation(self, lane_id, lane):
         if lane.source != 'simulation' and lane.frame is not None:

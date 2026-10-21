@@ -30,9 +30,8 @@ class AccidentController:
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         return os.path.join(base_dir, *parts)
     
-    @run_in_background
     def report_accident(self, lane: int, severity: str = "Moderate", description: str = "Detected by AI", frame=None):
-        """Report an accident to the database or local fallback (Async)."""
+        """Persist evidence locally before scheduling a potentially slow upload."""
         import cv2
         import os
         from datetime import datetime
@@ -45,11 +44,18 @@ class AccidentController:
                 os.makedirs(screenshot_dir, exist_ok=True)
                 timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 filename = os.path.join(screenshot_dir, f"accident_lane{lane}_{timestamp_str}.jpg")
-                cv2.imwrite(filename, frame)
+                if not cv2.imwrite(filename, frame):
+                    raise OSError('Could not write accident evidence')
                 image_url = filename
             except Exception as e:
                 print(f"Error saving accident screenshot: {e}")
 
+        saved = self._save_to_local_fallback(lane, severity, description, image_url)
+        self._upload_accident(saved['accident_id'], lane, severity, description, image_url)
+        return saved['accident_id']
+
+    @run_in_background
+    def _upload_accident(self, local_id, lane, severity, description, image_url):
         try:
             result = self.db.save_accident(
                 lane,
@@ -61,16 +67,18 @@ class AccidentController:
             if result:
                 if image_url:
                     self._save_image_mapping(result, image_url)
-                return
+                self.local_records.mark_uploaded(local_id, result)
         except Exception:
             pass
 
-        self._save_to_local_fallback(lane, severity, description, image_url)
-
-    def get_incidents(self):
+    def get_incidents(self, include_database=True):
         """Get recent incident history from DB or local fallback."""
+        try:
+            remote = self.db.get_recent_accidents(limit=200) if self.db and include_database else []
+        except Exception:
+            remote = []
         incidents = [dict(normalize_incident(row), _storage='database', _workflow_ready='workflow_version' in row)
-                     for row in self.db.get_recent_accidents(limit=200)]
+                     for row in remote]
 
         import json
         import os
@@ -88,7 +96,15 @@ class AccidentController:
             except Exception:
                 pass
 
-        incidents.extend(self._get_local_incidents())
+        remote_ids = {row['accident_id'] for row in incidents if row.get('accident_id')}
+        for row in self._get_local_incidents():
+            uploaded = row.get('_remote_id')
+            if uploaded in remote_ids:
+                continue
+            if uploaded:
+                row = dict(row, _local_id=row['accident_id'], accident_id=uploaded,
+                           _storage='database', _workflow_ready=False, _cached=True)
+            incidents.append(row)
         return sorted(incidents, key=lambda row: row.get('timestamp') or '', reverse=True)
 
     def clear_incidents(self):
@@ -143,14 +159,11 @@ class AccidentController:
             "detection_type": "SYSTEM",
             "description": description,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "status": "Localized (DB Offline)",
+            "status": "Saved locally",
             "image_url": image_url
         }
 
-        try:
-            self.local_records.append(new_log)
-        except Exception as e:
-            print(f"Local accident save error: {e}")
+        return self.local_records.append(new_log)
 
     def _get_local_incidents(self):
         return self.local_records.read()
