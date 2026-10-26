@@ -42,8 +42,8 @@ class YOLODetector:
         self.pretrained_model_name = 'yolov8n.pt'
         self.custom_model_name = model_name
         self.accident_model_name = SETTINGS.get('accident_model_file', 'Model.pt')
-        self.confidence_threshold = SETTINGS.get('vehicle_confidence', 0.20)
-        self.sources = sources or ('custom',)
+        self.confidence_threshold = SETTINGS.get('vehicle_confidence', 0.18)
+        self.sources = sources or ('pretrained', 'custom')
         self.image_size = image_size
         self.include_violations = include_violations
         self._inference_lock = Lock()
@@ -99,7 +99,7 @@ class YOLODetector:
         # original-image coordinates. Do not stretch or manually rescale it.
         # The vehicle slider must not discard accident evidence inside YOLO
         # before the independent accident threshold is applied below.
-        prediction_threshold = (SETTINGS.get('accident_model_confidence', .6)
+        prediction_threshold = (SETTINGS.get('accident_model_confidence', .3)
                                 if source == 'accident' else self.confidence_threshold)
         if source == 'custom' and getattr(self, 'include_violations', False):
             prediction_threshold = min(prediction_threshold, SETTINGS.get('accident_model_confidence', .3))
@@ -112,12 +112,11 @@ class YOLODetector:
         if not results or results[0].boxes is None:
             return detections
         height, width = frame.shape[:2]
-        allowed = ({'possible_accident'} if source == 'accident' else
-                   VEHICLE_CLASSES | {'traffic light', 'stop sign', 'fire hydrant', 'parking meter'})
-        if source == 'accident' and getattr(self, 'include_violations', False):
-            allowed = allowed | {'possible_jaywalking'}
-        if source == 'custom' and getattr(self, 'include_violations', False):
-            allowed = allowed | {'possible_accident', 'possible_jaywalking'}
+        # Model.pt must never label ordinary vehicles. Its training classes
+        # overlap COCO and previously produced false car boxes on pedestrians.
+        allowed = ({'emergency_vehicle', 'possible_accident'} if source == 'custom' else
+                   {'possible_accident'} if source == 'accident' else
+                   {'car', 'bus', 'truck', 'motorcycle', 'bicycle'})
         names = network.names
         for box in results[0].boxes:
             confidence = float(box.conf[0])
@@ -159,11 +158,12 @@ class YOLODetector:
                 'source': ('violation' if class_name == 'possible_jaywalking' else
                            'accident' if class_name == 'possible_accident' else source),
             })
-        if source == 'accident' and time.monotonic()-getattr(self, '_accident_log_at', 0) >= 5:
+        if (source == 'accident' or (source == 'custom' and self.include_violations)) and time.monotonic()-getattr(self, '_accident_log_at', 0) >= 5:
             self._accident_log_at = time.monotonic()
             self.logger.info('Accident inference: boxes_above_threshold=%d top_confidence=%.3f accepted=%d threshold=%.2f',
                              len(raw_accident_scores), max(raw_accident_scores, default=0),
-                             len(detections), SETTINGS.get('accident_model_confidence', .6))
+                             sum(d['class_name'] == 'possible_accident' for d in detections),
+                             SETTINGS.get('accident_model_confidence', .3))
         return detections
 
     def detect(self, frame: np.ndarray, *, annotate=True, vehicle_context=None) -> Dict:

@@ -35,71 +35,35 @@ def inference_process(requests, responses, profile='all'):
             format='%(asctime)s %(levelname)s %(name)s: %(message)s')
         logging.getLogger('dashboard.models.detection.yolo_detector').setLevel(logging.INFO)
         import torch
-        threads = 1 if profile == 'accident' else 2
+        threads = 1  # Two concurrent models plus four decoders must not oversubscribe the CPU.
         torch.set_num_threads(threads)
         cv2.setNumThreads(1)
         from dashboard.models.detection.yolo_detector import YOLODetector
         from dashboard.utils.app_config import SETTINGS
-        detector = (YOLODetector() if profile == 'all' else YOLODetector(
-            sources=('accident',) if profile == 'accident' else ('custom',),
-            image_size=SETTINGS.get('accident_image_size' if profile == 'accident' else 'traffic_image_size', 416),
-            include_violations=True))
-        specialist = None  # Model.pt returns traffic, emergency and incidents in one pass.
-        last_specialist = [float('-inf')] * 4
-        specialist_candidates = {}
-        traffic_since_specialist = 0
+        detector = YOLODetector(
+            sources=('custom',) if profile == 'accident' else
+                    ('pretrained',) if profile == 'traffic' else ('pretrained', 'custom'),
+            image_size=SETTINGS.get('specialist_image_size' if profile == 'accident' else 'traffic_image_size', 640),
+            include_violations=True)
         if all(network is None for network in
                (detector.pretrained_model, detector.custom_model, detector.accident_model)):
-            responses.put(('error', 'All local YOLO models failed to load'))
+            responses.put(('error', 'Requested local YOLO model failed to load'))
             return
-        responses.put(('ready', detector.device, detector.custom_model is not None or detector.accident_model is not None or
-                       (specialist is not None and specialist.accident_model is not None)))
+        responses.put(('ready', detector.device, detector.custom_model is not None))
         while True:
             task = requests.get()
             if task is None:
                 return
             lane_id, generation, sequence, captured_at, frame = task[:5]
             started = time.monotonic()
-            result = detector.detect(frame, annotate=False,
-                                     vehicle_context=task[5] if profile == 'accident' and len(task) > 5 else None)
-            # Ultralytics resets CPU thread counts during lazy predictor setup.
-            # Restore the worker budget after warm-up to leave room for capture/Qt.
+            result = detector.detect(frame, annotate=False)
             if detector.device == 'cpu' and torch.get_num_threads() != threads:
                 torch.set_num_threads(threads)
+            # Separate processes/queues keep slow Model.pt inference from
+            # delaying pretrained vehicle boxes or overwriting their stream.
             responses.put(('result', lane_id, generation, sequence, captured_at,
-                           tuple(d for d in result['detections'] if profile != 'traffic' or d['source'] not in ('accident', 'violation')), time.monotonic() - started,
-                           result['success'], result.get('degraded', False),
-                           'accident' in result.get('models_used', [])))
-            if profile == 'traffic':
-                # The same frame and inference supply the incident channel.
-                # Even an empty result advances confirmation and clears old regions.
-                responses.put(('specialist', lane_id, generation, sequence, captured_at,
-                    tuple(d for d in result['detections'] if d['source'] in ('accident', 'violation')),
-                    time.monotonic()-started, result['success'], result.get('degraded', False), True,
-                    frame, task[5] if len(task) > 5 else None, task[6] if len(task) > 6 else 0))
-            # Publish vehicle boxes immediately. Less frequent specialist work
-            # shares this process to avoid another large Torch runtime on RAM-
-            # constrained PCs, and never replaces the fast result channel.
-            if specialist is not None and specialist.accident_model is not None:
-                specialist_candidates[lane_id] = (task, result['detections'], time.monotonic())
-                traffic_since_specialist += 1
-            candidates = {i: candidate for i, candidate in specialist_candidates.items()
-                          if candidate[2] > last_specialist[i] and time.monotonic()-candidate[0][3] <= 3.5}
-            # At most one expensive specialist scan per round of active cameras.
-            # The former per-lane timer became permanently due under load and
-            # unintentionally ran the large model after every vehicle frame.
-            if candidates and traffic_since_specialist >= max(1, len(specialist_candidates)):
-                specialist_lane = min(candidates, key=lambda i: last_specialist[i])
-                extra_task, context, _ = candidates[specialist_lane]
-                extra_lane, extra_generation, extra_sequence, extra_captured_at, extra_frame = extra_task[:5]
-                began = time.monotonic()
-                extra = specialist.detect(extra_frame, annotate=False, vehicle_context=context)
-                torch.set_num_threads(threads)
-                last_specialist[specialist_lane] = time.monotonic()
-                traffic_since_specialist = 0
-                responses.put(('specialist', extra_lane, extra_generation, extra_sequence, extra_captured_at,
-                    tuple(extra['detections']), time.monotonic()-began, extra['success'], extra['degraded'], True,
-                    extra_frame, extra_task[5] if len(extra_task) > 5 else None, extra_task[6] if len(extra_task) > 6 else 0))
+                           tuple(result['detections']), time.monotonic()-started,
+                           result['success'], result.get('degraded', False)))
     except Exception:
         LOGGER.exception('YOLO worker stopped')
         responses.put(('error', 'YOLO worker stopped; turn AI off/on to retry'))
@@ -141,10 +105,13 @@ def open_capture(source):
             cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000,
         ])
     if is_video_source(source):
+        # Some valid screen recordings open with hardware decoding but fail
+        # every read (0x80070057). Use CPU decoding for local files, matching
+        # the successful upload validation path.
         from dashboard.utils.app_config import SETTINGS
         cap = cv2.VideoCapture(str(source), cv2.CAP_FFMPEG,
                               [cv2.CAP_PROP_N_THREADS, SETTINGS.get('video_decode_threads', 2),
-                               cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY])
+                               cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_NONE])
         if cap.isOpened():
             return cap
         cap.release()
@@ -168,7 +135,8 @@ class DashboardWorkers:
         cv2.setNumThreads(1)
         targets = [(self._capture_loop, (lane,), f'qt-capture-{lane}') for lane in range(4)]
         targets += [(self._tracking_loop, (lane,), f'qt-track-{lane}') for lane in range(4)]
-        targets += [(self._traffic_loop, (), 'qt-traffic'), (self._inference_loop, (), 'qt-inference')]
+        targets += [(self._traffic_loop, (), 'qt-traffic'), (self._inference_loop, (), 'qt-inference'),
+                    (self._inference_loop, (True,), 'qt-specialist')]
         for target, args, name in targets:
             thread = threading.Thread(target=target, args=args, name=name, daemon=True)
             self.threads.append(thread)
@@ -301,20 +269,28 @@ class DashboardWorkers:
 
     def _tracking_loop(self, lane_id):
         from dashboard.services.live_tracking import LiveVehicleTracker
-        tracker = LiveVehicleTracker()
+        tracker = LiveVehicleTracker(max_age=1.5)
+        specialist_tracker = LiveVehicleTracker(max_age=2.)
+        from dashboard.models.detection.detection_fusion import fuse_detections
         while not self.stop_event.is_set():
             started = time.monotonic()
             lane = self.store.snapshot()[lane_id]
             if not self.store.summary()[0] or lane.source == 'simulation' or lane.frame is None:
                 tracker.reset()
+                specialist_tracker.reset()
             else:
                 try:
                     packet = tracker.update(lane.frame, lane.result)
+                    specialist_packet = specialist_tracker.update(lane.frame, lane.accident_result)
                     if packet is not None:
+                        if specialist_packet is not None:
+                            packet = replace(packet, detections=tuple(fuse_detections(
+                                list(packet.detections) + list(specialist_packet.detections))))
                         self.store.publish_live_detection(lane_id, packet)
                 except Exception:
                     LOGGER.exception('Live tracking reset for lane %d', lane_id)
                     tracker.reset()
+                    specialist_tracker.reset()
             self.stop_event.wait(max(.005, 1/15-(time.monotonic()-started)))
 
     def _traffic_loop(self):
@@ -329,12 +305,13 @@ class DashboardWorkers:
             from dashboard.utils.paths import get_resource_path
             controller = TrafficLightController(use_pretrained=False, detector=object())
             self.dqn_status = 'DQN weights unavailable; rule timing active'
-            for name in ('smart_traffic_dqn.zip', 'Optiflow_Dqn.pth',
-                         'checkpoints/dqn/dqn_best.pth', 'checkpoints/dqn/dqn_final.pth'):
+            for name in ('checkpoints/dqn/dqn_best.pth', 'checkpoints/dqn/dqn_final.pth',
+                         'smart_traffic_dqn.zip', 'Optiflow_Dqn.pth'):
                 path = Path(get_resource_path(name))
                 if path.is_file():
                     try:
                         if controller.dqn.load_model(str(path)):
+                            controller.dqn_ready = True
                             self.dqn_status = f'DQN: {name}'
                             break
                     except Exception:
@@ -348,9 +325,13 @@ class DashboardWorkers:
                 dt, previous = now - previous, now
                 lanes = self.store.snapshot()
                 for i, lane in enumerate(lanes):
+                    available = (lane.source != 'off' and lane.frame is not None
+                                 and lane.frame.generation == lane.generation
+                                 and 0 <= now-lane.frame.captured_at <= 1.)
+                    controller.set_lane_available(i, available)
                     previous_wait = controller.lane_stats[i]['wait_time']
-                    detections = list(active_detections(lane, now))
-                    observation = lane.frame if lane.source == 'simulation' else lane.result
+                    detections = list(active_detections(lane, now)) if available else []
+                    observation = lane.frame if lane.source == 'simulation' else (lane.accident_result or lane.result)
                     controller.update_lane_detections(i, detections,
                         observed_at=time.time()-(now-observation.captured_at) if observation else None,
                         observation_id=(lane.generation, observation.sequence) if observation else None)
@@ -365,13 +346,13 @@ class DashboardWorkers:
                             LOGGER.exception('Could not record event for lane %d', i)
                     # The dashboard updates at 10 Hz. Express waits in seconds,
                     # not number of UI/capture updates, without changing core code.
-                    controller.lane_stats[i]['wait_time'] = (0.0 if controller.get_lane_signal_state(i) == 'GREEN'
+                    controller.lane_stats[i]['wait_time'] = (0.0 if not available or controller.get_lane_signal_state(i) == 'GREEN'
                                                             else previous_wait + dt)
                 counts = [controller.lane_stats[i]['vehicle_count'] for i in range(4)]
                 controller.update_phase(counts)
                 self.store.publish_signals(controller.get_lane_signal_states(),
                     {i: controller.get_lane_time_remaining(i) for i in range(4)}, counts)
-                self.store.set_status(engine='Traffic controller online',
+                self.store.set_status(engine=f'Traffic controller online • {self.dqn_status}',
                     phase=f'{"EMERGENCY PRIORITY • " if controller.is_emergency_active else ""}'
                           f'{controller.active_phase} / {controller.current_phase.replace("_", " ").upper()}')
                 self.stop_event.wait(max(0, .1 - (time.monotonic() - now)))
@@ -386,7 +367,7 @@ class DashboardWorkers:
         process = None
         target = accident_inference_process if accident else self.inference_target
         process_attribute = 'accident_process' if accident else 'process'
-        label = 'Accident AI' if accident else 'Vehicle AI'
+        label = 'Emergency / accident AI' if accident else 'Vehicle AI'
         def status(message):
             self.store.set_status(**{'accident' if accident else 'ai': message})
         ready, pending, failed = False, False, False
@@ -417,19 +398,9 @@ class DashboardWorkers:
                         if message[0] == 'ready':
                             ready = True
                             status(f'{label} ready • {message[1].upper()}')
-                            if not accident:
-                                self.store.set_status(accident='Accident / pedestrian model ready' if message[2]
-                                                      else 'Accident / pedestrian model unavailable')
                         elif message[0] == 'error':
                             failed, pending, ready = True, False, False
                             status(f'{label}: {message[1]}')
-                        elif message[0] == 'specialist':
-                            _, lane_id, generation, sequence, captured_at, detections, duration, success = message[:8]
-                            self.store.publish_detection(lane_id, DetectionPacket(generation, sequence,
-                                captured_at, time.monotonic(), detections if success else (), duration,
-                                message[10], message[11], message[12]), accident=True)
-                            self.store.set_status(accident=f'Accident / pedestrian AI • {duration*1000:.0f} ms'
-                                                  if success else 'Accident / pedestrian inference failed')
                         else:
                             _, lane_id, generation, sequence, captured_at, detections, duration, success, degraded = message[:9]
                             pending = False
@@ -466,9 +437,9 @@ class DashboardWorkers:
                     for offset in range(4):
                         lane_id = (next_lane + offset) % 4
                         lane = lanes[lane_id]
-                        # Accident boxes use the exact frame and vehicle context
-                        # already analyzed by the fast worker, never a later frame.
-                        packet = lane.result if accident else lane.frame
+                        # Each model takes its own latest frame and preserves
+                        # that frame's identity, timestamp and signal.
+                        packet = lane.frame
                         if lane.source == 'simulation' or packet is None or time.monotonic() - packet.captured_at > 1:
                             continue
                         token = (packet.generation, packet.sequence)
@@ -476,9 +447,7 @@ class DashboardWorkers:
                             continue
                         try:
                             task = (lane_id, packet.generation, packet.sequence, packet.captured_at, packet.frame)
-                            if accident:
-                                task += (packet.detections,)
-                            elif self.inference_target is traffic_inference_process:
+                            if accident or self.inference_target is traffic_inference_process:
                                 task += (packet.signal, packet.signal_epoch)
                             requests.put_nowait(task)
                         except Full:
@@ -486,7 +455,8 @@ class DashboardWorkers:
                         last_sent[lane_id], next_lane, pending = token, (lane_id + 1) % 4, True
                         pending_frame = packet
                         started_at = time.monotonic()
-                        next_request_at = started_at + (.25 if accident else 0.)
+                        from dashboard.utils.app_config import SETTINGS
+                        next_request_at = started_at + (SETTINGS.get('specialist_interval_seconds', .75) if accident else .10)
                         break
                 self.stop_event.wait(.01)
         except Exception:

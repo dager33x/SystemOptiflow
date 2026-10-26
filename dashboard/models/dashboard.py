@@ -4,6 +4,7 @@ from threading import Lock
 from collections import deque
 from dashboard.models.stop_line import StopLine
 from dashboard.models.detection.vehicle_classes import QUEUE_VEHICLE_CLASSES
+from dashboard.models.emergency_confirmation import EmergencyConfirmation
 
 
 DIRECTIONS = ('North', 'South', 'East', 'West')
@@ -57,16 +58,20 @@ class LaneState:
 
 
 def live_detections(lane, now):
-    """Feature-tracked boxes tied to a recent live frame, never old evidence."""
+    """Current tracked boxes, with bounded retention for slower camera rounds."""
     result = lane.live_result
     if (lane.source == 'simulation' or lane.frame is None or result is None
             or result.generation != lane.generation or lane.frame.generation != lane.generation
             or not 0 <= now-lane.frame.captured_at <= 1.
-            or not 0 <= now-result.captured_at <= .5):
+            or not 0 <= now-result.captured_at <= .75):
         return ()
-    return tuple(d for d in result.detections if
-                 0 <= now-d.get('detected_at', result.captured_at) <=
-                 (2. if d.get('class_name') == 'emergency_vehicle' else 3.5))
+    def fresh(detection):
+        observed = detection.get('detected_at', result.captured_at)
+        limit = 2. if detection.get('class_name') == 'emergency_vehicle' else 10.
+        expires = detection.get('tracking_expires_at', observed + min(limit, 3.5))
+        return 0 <= now-observed <= limit and now <= expires
+
+    return tuple(d for d in result.detections if fresh(d))
 
 
 def accident_detections(lane, now):
@@ -98,26 +103,25 @@ def active_detections(lane, now, max_frame_age=1.0, max_result_age=2.0, max_capt
         return ()
     if lane.source == 'simulation':
         return frame.simulated_detections
+    # Emergency evidence comes from the independent Model.pt stream. Its
+    # capture age never refreshes just because the fast YOLOv8 stream updates.
+    specialist = lane.accident_result or lane.result
+    urgent = ()
+    if (specialist is not None and specialist.generation == lane.generation
+            and specialist.captured_at <= specialist.completed_at <= now
+            and now-specialist.captured_at <= 2. and now-specialist.completed_at <= 2.):
+        urgent = tuple(d for d in specialist.detections if d.get('class_name') == 'emergency_vehicle')
     if lane.live_result is not None:
         vehicles = tuple(d for d in live_detections(lane, now) if d.get('class_name') in QUEUE_VEHICLE_CLASSES)
-        # Emergency confirmation must still use new classifier observations,
-        # never repeated optical-flow updates of a single emergency label.
-        result = lane.result
-        urgent = ()
-        if (result is not None and result.generation == lane.generation
-                and result.captured_at <= result.completed_at <= now
-                and now-result.captured_at <= 2. and now-result.completed_at <= 2.):
-            urgent = tuple(d for d in result.detections if d.get('class_name') == 'emergency_vehicle')
         return vehicles + urgent
     result = lane.result
     if (result is None or result.generation != lane.generation
             or not result.captured_at <= result.completed_at <= now
             or now - result.completed_at > max_result_age
             or now - result.captured_at > max_capture_age):
-        return ()
-    if now - result.captured_at > max_result_age:
-        return tuple(d for d in result.detections if d.get('class_name') in QUEUE_VEHICLE_CLASSES)
-    return result.detections
+        return urgent
+    vehicles = tuple(d for d in result.detections if d.get('class_name') in QUEUE_VEHICLE_CLASSES)
+    return vehicles + urgent
 
 
 def event_detections(lane, now):
@@ -132,13 +136,16 @@ def event_detections(lane, now):
             or not result.captured_at <= result.completed_at <= now
             or now-result.completed_at > 2. or now-result.captured_at > 10.):
         return ()
-    return result.detections
+    # A short display hold during an occlusion is not observed motion and must
+    # never create a stop-line crossing or strengthen accident evidence.
+    return tuple(d for d in result.detections if d.get('tracking_verified', True))
 
 
 class DashboardStore:
     def __init__(self):
         self._lock = Lock()
         self._lanes = [LaneState(density=n) for n in (8, 5, 12, 6)]
+        self._emergency_gates = [EmergencyConfirmation() for _ in self._lanes]
         self._notifications = deque(maxlen=200)
         self.ai_enabled = True
         self.ai_status = 'Standby — connect to a camera'
@@ -208,6 +215,8 @@ class DashboardStore:
             previous = getattr(old, field)
             if (self.ai_enabled and packet.generation == old.generation and
                     (previous is None or packet.sequence > previous.sequence)):
+                if accident:
+                    packet = replace(packet, detections=self._emergency_gates[lane].filter(packet))
                 self._lanes[lane] = replace(old, **{field: packet})
 
     def publish_live_detection(self, lane, packet):
@@ -221,6 +230,7 @@ class DashboardStore:
         with self._lock:
             old = self._lanes[lane]
             if generation == old.generation:
+                self._emergency_gates[lane].reset()
                 self._lanes[lane] = replace(old, frame=None, result=None, live_result=None, accident_result=None, status=status)
 
     def set_ai(self, enabled):

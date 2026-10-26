@@ -12,11 +12,11 @@ class AlertCard(QFrame):
     dismissed = Signal(object)
     opened = Signal(object)
 
-    def __init__(self, notification, parent=None):
+    def __init__(self, notification, parent=None, *, compact=False):
         super().__init__(parent)
         self.notification = notification
         self.setObjectName('alertCard')
-        self.setMinimumHeight(160)
+        self.setMinimumHeight(88 if compact else 160)
         accent = '#ffbf69' if notification.kind == 'incident' else '#ff747c'
         self.setStyleSheet(f'''
             QFrame#alertCard {{ background: #172337; border: 1px solid #33465f;
@@ -27,8 +27,8 @@ class AlertCard(QFrame):
             QPushButton:hover {{ color: #e8eef9; }}
         ''')
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 14, 12)
-        layout.setSpacing(7)
+        layout.setContentsMargins(10, 7, 8, 7) if compact else layout.setContentsMargins(16, 12, 14, 12)
+        layout.setSpacing(2 if compact else 7)
         header = QHBoxLayout()
         icon = QLabel('!')
         icon.setFixedSize(24, 24)
@@ -37,7 +37,7 @@ class AlertCard(QFrame):
         header.addWidget(icon)
         title = QLabel(notification.title)
         title.setTextFormat(Qt.TextFormat.PlainText)
-        title.setStyleSheet('color: #eef4ff; font-size: 14px; font-weight: 600;')
+        title.setStyleSheet(f'color: #eef4ff; font-size: {13 if compact else 14}px; font-weight: 600;')
         header.addWidget(title, 1)
         close = QPushButton('×')
         close.setAccessibleName('Dismiss notification')
@@ -54,6 +54,9 @@ class AlertCard(QFrame):
         message.setTextFormat(Qt.TextFormat.PlainText)
         message.setWordWrap(True)
         layout.addWidget(message)
+        if compact:
+            message.hide()
+            self.setToolTip(notification.message)
         action = QPushButton('View camera' if notification.simulated else
                              'Review incident  →' if notification.kind == 'incident' else 'View violations  →')
         action.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -78,7 +81,7 @@ class NotificationCenter(QObject):
         self.stack.setStyleSheet('QWidget#notificationStack { background: transparent; }')
         self.layout = QVBoxLayout(self.stack)
         self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(10)
+        self.layout.setSpacing(6)
         self.stack.hide()
         self.window.installEventFilter(self)
         button.clicked.connect(self.show_history)
@@ -91,16 +94,16 @@ class NotificationCenter(QObject):
             self.unread += 1
         self.button.setText(f'Alerts ({self.unread})')
         if self.popups_enabled:
-            for notification in notifications[-3:]:
+            for notification in notifications[-2:]:
                 self._toast(notification)
         self.audio.play('incident' if any(n.kind == 'incident' for n in notifications) else 'violation')
         if self.dialog and self.dialog.isVisible():
             self._fill_history()
 
     def _toast(self, notification):
-        while len(self.cards) >= 3:
+        while len(self.cards) >= 2:
             self.dismiss(self.cards[0])
-        card = AlertCard(notification, self.stack)
+        card = AlertCard(notification, self.stack, compact=True)
         card.dismissed.connect(self.dismiss)
         card.opened.connect(self.open_requested.emit)
         self.layout.addWidget(card)
@@ -134,12 +137,12 @@ class NotificationCenter(QObject):
             self._position()
 
     def _position(self):
-        self.stack.setFixedWidth(min(410, self.window.width()-32))
+        self.stack.setFixedWidth(max(1, min(320, self.window.width()-32)))
         for card in self.cards:
             card.setFixedWidth(self.stack.width())
-            height = max(160, card.layout().totalHeightForWidth(self.stack.width()))
+            height = max(88, card.layout().totalHeightForWidth(self.stack.width()), card.sizeHint().height())
             card.setFixedHeight(height)
-        height = sum(card.height() for card in self.cards) + 10*max(0, len(self.cards)-1)
+        height = sum(card.height() for card in self.cards) + 6*max(0, len(self.cards)-1)
         self.stack.setFixedHeight(max(1, height))
         self.layout.activate()
         self.stack.move(self.window.width()-self.stack.width()-20, 62)
