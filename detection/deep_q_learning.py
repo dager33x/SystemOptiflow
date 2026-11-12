@@ -156,7 +156,10 @@ class TrafficStateBuilder:
         total = 0.0
         for det in detections:
             cls = det.get('class_name', 'car')
-            if cls not in ['emergency_vehicle', 'accident', 'pedestrian_violation']:
+            if cls not in {
+                'emergency_vehicle', 'accident', 'z_accident',
+                'pedestrian_violation', 'z_jaywalker',
+            }:
                 # VEHICLE_WEIGHTS is defined globally in this file
                 total += VEHICLE_WEIGHTS.get(cls, 1.0)
         return total
@@ -226,8 +229,13 @@ class TrafficStateBuilder:
             w_counts.append(cls.compute_weighted_count(dets))
             waits.append(float(wait_times[lane_idx]) if lane_idx < len(wait_times) else 0.0)
             em_flags.append(1.0 if any(d.get('class_name') == 'emergency_vehicle' for d in dets) else 0.0)
-            acc_flags.append(1.0 if any(d.get('class_name') == 'accident' for d in dets) else 0.0)
-            vio_flags.append(1.0 if any(d.get('class_name') == 'pedestrian_violation' for d in dets) else 0.0)
+            acc_flags.append(1.0 if any(
+                d.get('class_name') in {'accident', 'z_accident'} for d in dets
+            ) else 0.0)
+            vio_flags.append(1.0 if any(
+                d.get('class_name') in {'pedestrian_violation', 'z_jaywalker'}
+                for d in dets
+            ) else 0.0)
 
         # state = [lane_weighted_counts(4), wait_times(4), emergency(4), accident(4), violation(4), active_lane(1), elapsed_green(1)]
         features = w_counts + waits + em_flags + acc_flags + vio_flags + [float(active_lane), float(elapsed_green)]
@@ -419,8 +427,13 @@ class TrafficLightDQN:
         for i in range(NUM_LANES):
             dets = lane_detections[i] if i < len(lane_detections) else []
             all_w.append(TrafficStateBuilder.compute_weighted_count(dets))
-            all_acc.append(any(d.get('class_name') == 'accident' for d in dets))
-            all_vio.append(any(d.get('class_name') == 'pedestrian_violation' for d in dets))
+            all_acc.append(any(
+                d.get('class_name') in {'accident', 'z_accident'} for d in dets
+            ))
+            all_vio.append(any(
+                d.get('class_name') in {'pedestrian_violation', 'z_jaywalker'}
+                for d in dets
+            ))
 
         green_time = TrafficStateBuilder.relative_green_time(target_lane, all_w, all_acc, all_vio)
 

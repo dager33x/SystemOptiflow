@@ -13,7 +13,6 @@ for folder in ('assets', 'views', 'controllers', 'utils', 'detection', 'models')
 
 for file_name in (
     'best.pt',
-    'yolov8n.pt',
     'Optiflow_Dqn.pth',
     'smart_traffic_dqn.zip',
     'image_mapping.json',

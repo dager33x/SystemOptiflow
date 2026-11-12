@@ -7,6 +7,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from detection import traffic_controller as tc
+from detection.deep_q_learning import TrafficStateBuilder
 
 
 class _DummyYOLO:
@@ -44,6 +45,28 @@ class TrafficTimerLogicTests(unittest.TestCase):
         )
 
         self.assertIs(controller.yolo, detector)
+
+    def test_accident_and_jaywalker_model_classes_are_not_counted_as_vehicles(self):
+        detections = [
+            {"class_name": "z_accident"},
+            {"class_name": "z_jaywalker"},
+            {"class_name": "car"},
+        ]
+
+        self.controller.update_lane_detections(0, detections)
+
+        lane_stats = self.controller.lane_stats[0]
+        self.assertEqual(lane_stats["vehicle_count"], 1)
+        self.assertEqual(lane_stats["weighted_count"], 2.0)
+        self.assertTrue(lane_stats["accident_flag"])
+
+        state = TrafficStateBuilder.build(
+            [detections], [0.0] * 4, active_lane=0,
+            elapsed_green=0.0, buffer_locked=False,
+        )
+        self.assertEqual(state[0], 2.0)
+        self.assertEqual(state[12], 1.0)
+        self.assertEqual(state[16], 1.0)
 
     def test_green_minimum_and_red_display_cap(self):
         self.assertGreaterEqual(

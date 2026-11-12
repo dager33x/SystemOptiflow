@@ -2,35 +2,54 @@
 import logging
 import cv2
 import numpy as np
-from typing import List, Dict, Optional
+from typing import List, Dict, Sequence
 
 class YOLODetector:
-    """YOLOv8 based object detection for traffic monitoring"""
+    """Run the traffic-tuned YOLO model for all supported detections."""
     
     def __init__(self, model_name: str = "best.pt"):
         self.logger = logging.getLogger(__name__)
-        self.pretrained_model = None
-        self.custom_model = None
-        self.pretrained_model_name = "yolov8n.pt"
-        self.custom_model_name = model_name
+        self.model = None
+        self.model_name = model_name
         self.confidence_threshold = 0.25  # Lowered to 0.25 for blurry/small vehicle detection (like bicycles)
         self.emergency_confidence_threshold = 0.90
         
         # Check for CUDA availability
         try:
             import torch
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            from utils.app_config import SETTINGS
+
+            requested_device = str(
+                SETTINGS.get("inference_device", "auto")
+            ).strip().lower()
+            cuda_available = torch.cuda.is_available()
+            if requested_device == "auto":
+                self.device = "cuda" if cuda_available else "cpu"
+            elif requested_device == "cuda" and cuda_available:
+                self.device = "cuda"
+            elif requested_device == "cpu":
+                self.device = "cpu"
+            elif requested_device == "cuda":
+                raise RuntimeError(
+                    "inference_device is 'cuda' but this PyTorch installation "
+                    "does not have CUDA available"
+                )
+            else:
+                raise ValueError(
+                    "inference_device must be 'auto', 'cpu', or 'cuda'"
+                )
         except ImportError:
             self.device = "cpu"
         
-        self.pretrained_class_names = {
-            0: "person", 1: "bicycle", 2: "car", 3: "motorcycle",
-            5: "bus", 7: "truck", 8: "boat", 9: "traffic light",
-            10: "fire hydrant", 11: "stop sign", 12: "parking meter"
-        }
-        
         self.custom_class_names = {}
-        self.custom_wanted = {'emergency_vehicle', 'jeepney', 'tricycle'}
+        self.class_aliases = {
+            "accident": "z_accident",
+            "jaywalker": "z_jaywalker",
+            "z accident": "z_accident",
+            "z jaywalker": "z_jaywalker",
+            "z tricycle": "tricycle",
+            "emergency vehicle": "emergency_vehicle",
+        }
         
         self.color_map = {
             "car": (0, 255, 0),            # Green
@@ -41,13 +60,15 @@ class YOLODetector:
             "person": (255, 255, 255),     # White
             "traffic light": (0, 0, 255),  # Red (default)
             "emergency_vehicle": (255, 0, 0), # Blue
+            "z_accident": (0, 0, 255),
+            "z_jaywalker": (255, 0, 255),
             "jeepney": (128, 0, 128),      # Purple
             "tricycle": (0, 200, 255)       # Amber
         }
         self.load_models()
     
     def load_models(self) -> bool:
-        """Load YOLOv8 models"""
+        """Load the traffic model and normalize its class names."""
         try:
             from ultralytics import YOLO
             import sys
@@ -57,25 +78,23 @@ class YOLODetector:
                 sys.path.insert(0, workspace_dir)
             from utils.paths import get_resource_path
             
-            ptr_path = get_resource_path(self.pretrained_model_name)
-            cus_path = get_resource_path(self.custom_model_name)
-
-            self.pretrained_model = YOLO(ptr_path)
-            self.pretrained_model.to(self.device)
-            self.logger.info(f"YOLO pretrained model {self.pretrained_model_name} loaded successfully on {self.device}")
-            
-            self.custom_model = YOLO(cus_path)
-            self.custom_model.to(self.device)
-            class_aliases = {"z_tricycle": "tricycle"}
+            model_path = get_resource_path(self.model_name)
+            self.model = YOLO(model_path)
+            self.model.to(self.device)
             self.custom_class_names = {
-                int(class_id): class_aliases.get(
-                    str(class_name).strip().lower().replace(" ", "_"),
-                    str(class_name).strip().lower().replace(" ", "_"),
+                int(class_id): self.class_aliases.get(
+                    normalized_name,
+                    normalized_name.replace(" ", "_"),
                 )
-                for class_id, class_name in self.custom_model.names.items()
+                for class_id, class_name in self.model.names.items()
+                for normalized_name in [str(class_name).strip().lower().replace("_", " ")]
             }
-            self.logger.info(f"YOLO custom model {self.custom_model_name} loaded successfully on {self.device}")
-            self.logger.info(f"YOLO custom model classes: {self.custom_class_names}")
+            self.logger.info(
+                "YOLO traffic model %s loaded successfully on %s",
+                self.model_name,
+                self.device,
+            )
+            self.logger.info("YOLO traffic model classes: %s", self.custom_class_names)
             self.logger.info(
                 "Emergency vehicle confidence threshold: %.2f",
                 self.emergency_confidence_threshold,
@@ -86,80 +105,45 @@ class YOLODetector:
             return False
     
     def detect(self, frame: np.ndarray) -> Dict:
-        """Detect objects in frame using both models"""
-        if self.pretrained_model is None or self.custom_model is None:
-            self.logger.warning("Models not loaded, skipping detection")
-            return {"detections": [], "annotated_frame": frame}
+        """Detect all supported traffic classes in one frame."""
+        return self.detect_batch([frame])[0]
+
+    def detect_batch(self, frames: Sequence[np.ndarray]) -> List[Dict]:
+        """Detect frames together to improve throughput across multiple cameras."""
+        if not frames:
+            return []
+        if self.model is None:
+            self.logger.warning("Traffic model not loaded, skipping detection")
+            return [
+                {"detections": [], "annotated_frame": frame, "success": False}
+                for frame in frames
+            ]
         
         try:
-            # --- BLURRY VIDEO ENHANCEMENT (UNSHARP MASK) ---
-            # Optional via SETTINGS, to conserve CPU
-            try:
-                from utils.app_config import SETTINGS
-                enhancement_enabled = SETTINGS.get("enable_video_enhancement", False)
-            except ImportError:
-                enhancement_enabled = False
-                
-            if enhancement_enabled:
-                blurred = cv2.GaussianBlur(frame, (0, 0), 3)
-                eval_frame = cv2.addWeighted(frame, 1.5, blurred, -0.5, 0)
-            else:
-                eval_frame = frame
-            
-            # Downscale inference frame for speed: 416px gives ~2x faster inference vs 640px
-            # with only a small drop in accuracy for close-range traffic cameras
-            orig_h, orig_w = frame.shape[:2]
-            infer_w, infer_h = 416, 416
-            infer_frame = cv2.resize(eval_frame, (infer_w, infer_h))
-            
-            # Scale factors to convert coords from infer space → original frame space
-            x_scale = orig_w / infer_w
-            y_scale = orig_h / infer_h
-            
-            detections = []
-            
-            # --- Pretrained Model Inference ---
-            results_pre = self.pretrained_model(infer_frame, verbose=False, imgsz=416)
-            if results_pre and len(results_pre) > 0:
-                boxes = results_pre[0].boxes
-                for box in boxes:
-                    conf = float(box.conf[0])
-                    if conf > self.confidence_threshold:
-                        cls_id = int(box.cls[0])
-                        class_name = self.pretrained_class_names.get(cls_id)
-                        if class_name:
-                            # Scale coordinates back to original frame size
-                            x1 = int(box.xyxy[0][0] * x_scale)
-                            y1 = int(box.xyxy[0][1] * y_scale)
-                            x2 = int(box.xyxy[0][2] * x_scale)
-                            y2 = int(box.xyxy[0][3] * y_scale)
-                            
-                            # Do not record 'person' detections
-                            if class_name == 'person':
-                                continue
-                                
-                            detections.append({
-                                "class_id": cls_id,
-                                "class_name": class_name,
-                                "confidence": conf,
-                                "bbox": (x1, y1, x2, y2),
-                                "center": ((x1 + x2) // 2, (y1 + y2) // 2),
-                                "source": "pretrained"
-                            })
-                            
-            # --- Custom Model Inference ---
-            # Preserve the original pixels and aspect ratio for the custom model;
-            # emergency markings and equipment are easily lost at the 416px speed path.
-            results_custom = self.custom_model(eval_frame, verbose=False, imgsz=640)
-            if results_custom and len(results_custom) > 0:
-                boxes = results_custom[0].boxes
-                for box in boxes:
+            from utils.app_config import SETTINGS
+
+            enhancement_enabled = SETTINGS.get("enable_video_enhancement", False)
+            eval_frames = []
+            for frame in frames:
+                if enhancement_enabled:
+                    blurred = cv2.GaussianBlur(frame, (0, 0), 3)
+                    frame = cv2.addWeighted(frame, 1.5, blurred, -0.5, 0)
+                eval_frames.append(frame)
+
+            image_size = int(SETTINGS.get("inference_image_size", 416))
+            if image_size not in (320, 416, 640):
+                raise ValueError(
+                    "inference_image_size must be one of 320, 416, or 640"
+                )
+            results = self.model(eval_frames, verbose=False, imgsz=image_size)
+            outputs = []
+            for frame, result in zip(frames, results):
+                detections = []
+                for box in result.boxes:
                     conf = float(box.conf[0])
                     cls_id = int(box.cls[0])
                     class_name = self.custom_class_names.get(cls_id)
-                    # We specifically want the custom model for these classes:
-                    # (best.pt only has 6 classes; no z_accident/z_jaywalker in this model)
-                    if class_name not in self.custom_wanted:
+                    if class_name is None:
                         continue
 
                     threshold = self.confidence_threshold
@@ -168,7 +152,6 @@ class YOLODetector:
                     if conf <= threshold:
                         continue
 
-                    # YOLO maps boxes back to the source frame dimensions.
                     x1 = int(box.xyxy[0][0])
                     y1 = int(box.xyxy[0][1])
                     x2 = int(box.xyxy[0][2])
@@ -181,48 +164,24 @@ class YOLODetector:
                         "center": ((x1 + x2) // 2, (y1 + y2) // 2),
                         "source": "custom"
                     })
-                            
-            # --- Non-Maximum Suppression (Deduplication) ---
-            # Remove pretrained detections (like car/truck) that heavily overlap with custom detections (e.g. emergency vehicle)
-            final_detections = []
-            custom_dets = [d for d in detections if d["source"] == "custom"]
-            pre_dets = [d for d in detections if d["source"] == "pretrained"]
-            
-            final_detections.extend(custom_dets)
-            
-            for p_det in pre_dets:
-                overlap = False
-                px1, py1, px2, py2 = p_det["bbox"]
-                p_area = max(0, px2 - px1) * max(0, py2 - py1)
-                
-                for c_det in custom_dets:
-                    cx1, cy1, cx2, cy2 = c_det["bbox"]
-                    
-                    # Compute intersection
-                    ix1, iy1 = max(px1, cx1), max(py1, cy1)
-                    ix2, iy2 = min(px2, cx2), min(py2, cy2)
-                    
-                    if ix1 < ix2 and iy1 < iy2:
-                        i_area = (ix2 - ix1) * (iy2 - iy1)
-                        # If pretrained box is mostly inside custom box, or overlaps heavily (>40%)
-                        if p_area > 0 and (i_area / p_area) > 0.4:
-                            overlap = True
-                            break
-                
-                if not overlap:
-                    final_detections.append(p_det)
-            
-            annotated_frame = self.draw_detections(frame, final_detections)
-            
-            return {
-                "detections": final_detections,
-                "annotated_frame": annotated_frame,
-                "success": True
-            }
-            
+
+                outputs.append({
+                    "detections": detections,
+                    "annotated_frame": self.draw_detections(frame, detections),
+                    "success": True,
+                })
+
+            if len(outputs) != len(frames):
+                raise RuntimeError(
+                    f"Model returned {len(outputs)} results for {len(frames)} frames"
+                )
+            return outputs
         except Exception as e:
             self.logger.error(f"Detection error: {e}")
-            return {"detections": [], "annotated_frame": frame, "success": False}
+            return [
+                {"detections": [], "annotated_frame": frame, "success": False}
+                for frame in frames
+            ]
     
     def draw_detections(self, frame: np.ndarray, detections: List[Dict]) -> np.ndarray:
         """Draw detections on a frame"""
@@ -240,7 +199,9 @@ class YOLODetector:
             # Draw bounding box
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
             
-            label = f"{class_name} {conf:.2f}"
+            track_id = detection.get("track_id")
+            track_label = f" #{track_id}" if track_id is not None else ""
+            label = f"{class_name}{track_label} {conf:.2f}"
             
             # Text background for better visibility
             (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)

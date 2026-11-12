@@ -47,7 +47,7 @@ class TestSystemFeatures(unittest.TestCase):
 
     def test_08_ai_models_feature(self):
         """AI Models Readiness Feature"""
-        self.assertTrue(os.path.exists(get_resource_path("yolov8n.pt")), "YOLO model not found")
+        self.assertTrue(os.path.exists(get_resource_path("best.pt")), "Traffic YOLO model not found")
         self.assertTrue(os.path.exists(get_resource_path("Optiflow_Dqn.pth")), "DQN model not found")
 
 if __name__ == '__main__':

@@ -425,7 +425,10 @@ class TrafficLightController:
         stats["detections"] = detections
         stats["vehicle_count"] = len([
             d for d in detections
-            if d.get("class_name") != "emergency_vehicle"
+            if d.get("class_name") not in {
+                "emergency_vehicle", "z_accident", "z_jaywalker",
+                "accident", "jaywalker", "pedestrian_violation",
+            }
         ])
         stats["weighted_count"] = TrafficStateBuilder.compute_weighted_count(detections)
         has_emergency = any(d.get("class_name") == "emergency_vehicle" for d in detections)
@@ -436,7 +439,10 @@ class TrafficLightController:
         else:
             stats["emergency_first_seen"] = None
             self.emergency_exhausted_lanes.discard(lane_id)
-        stats["accident_flag"] = any(d.get("class_name") == "z_accident" for d in detections)
+        stats["accident_flag"] = any(
+            d.get("class_name") in {"accident", "z_accident"}
+            for d in detections
+        )
         stats["last_detection"] = datetime.now()
 
         all_w = [

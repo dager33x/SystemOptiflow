@@ -9,6 +9,7 @@ from datetime import datetime
 from detection.camera_manager import CameraManager
 from detection.traffic_controller import TrafficLightController
 from detection.yolo_detector import YOLODetector
+from detection.vehicle_tracker import VehicleTracker
 from views.pages import (
     DashboardPage, TrafficReportsPage, IncidentHistoryPage,
     ViolationLogsPage, SettingsPage, IssueReportsPage, AdminUsersPage
@@ -22,6 +23,15 @@ class MainController:
     def __init__(self, root, view, db=None, current_user=None, auth_controller=None, on_logout_callback=None, violation_controller=None, accident_controller=None):
         self.root = root
         self.view = view
+        self._camera_update_lock = threading.Lock()
+        self._pending_camera_updates = {}
+        self._camera_update_scheduled = False
+        self._inference_lock = threading.Lock()
+        self._inference_frames = {}
+        self._inference_results = {}
+        self._inference_last_run = {}
+        self._inference_source_versions = {}
+        self._inference_worker = None
         self.db = db
         self.current_user = current_user
         self.auth_controller = auth_controller
@@ -75,6 +85,9 @@ class MainController:
             (get_resource_path(p) for p in _model_candidates if _os.path.exists(get_resource_path(p))), None
         )
         self.yolo_detector = YOLODetector("best.pt")
+        self.vehicle_trackers = {
+            direction: VehicleTracker() for direction in self.directions
+        }
         self.traffic_controller = TrafficLightController(
             num_lanes=4,
             model_path=_selected_model,
@@ -103,7 +116,6 @@ class MainController:
                 'vehicle_count': 0,
                 'detections': [],
                 'phase_start_time': time.time(),
-                'last_ai_time': 0,
                 'cached_detections': [],
                 'current_source': 'Simulated'
             }
@@ -276,10 +288,214 @@ class MainController:
                 self.camera_managers[direction].initialize_video(video_path)
             
         self.camera_thread = threading.Thread(target=self.camera_loop, daemon=True)
+        self._inference_worker = threading.Thread(
+            target=self._camera_inference_loop,
+            daemon=True,
+            name="camera-inference",
+        )
+        self._inference_worker.start()
         self.camera_thread.start()
         
         self.logger.info("Camera feed started with DQN traffic control")
-    
+
+    def _queue_camera_update(self, frame, detection_data, direction):
+        """Queue one camera update without building up a Tk event backlog."""
+        self._queue_camera_updates({
+            direction: (frame, detection_data),
+        })
+
+    def _queue_camera_updates(self, updates):
+        """Queue a group of frames together so lanes from one batch render together."""
+        frame_updates = {
+            direction: (
+                frame.copy() if frame is not None else None,
+                detection_data,
+            )
+            for direction, (frame, detection_data) in updates.items()
+        }
+        with self._camera_update_lock:
+            self._pending_camera_updates.update(frame_updates)
+            if self._camera_update_scheduled:
+                return
+            self._camera_update_scheduled = True
+
+        try:
+            self.root.after(0, self._flush_camera_updates)
+        except Exception:
+            with self._camera_update_lock:
+                self._camera_update_scheduled = False
+            self.logger.exception("Failed to schedule camera feed update")
+
+    def _flush_camera_updates(self):
+        """Render the most recent queued frame for each lane on Tk's main thread."""
+        with self._camera_update_lock:
+            updates = self._pending_camera_updates
+            self._pending_camera_updates = {}
+            self._camera_update_scheduled = False
+
+        page = self.current_page
+        if not page or not hasattr(page, "update_camera_feed"):
+            return
+
+        for direction, (frame, detection_data) in updates.items():
+            try:
+                page.update_camera_feed(frame, detection_data, direction)
+            except Exception:
+                self.logger.exception("Failed to render camera feed for %s", direction)
+
+    def _submit_inference_frame(self, direction, frame):
+        """Replace a lane's pending inference frame with its newest camera frame."""
+        with self._inference_lock:
+            self._inference_frames[direction] = (
+                frame,
+                self._inference_source_versions.get(direction, 0),
+            )
+
+    def _reset_camera_inference(self, direction):
+        """Discard queued and completed detections when a lane's source changes."""
+        with self._inference_lock:
+            self._inference_source_versions[direction] = (
+                self._inference_source_versions.get(direction, 0) + 1
+            )
+            self._inference_frames[direction] = None
+            self._inference_results.pop(direction, None)
+            self._inference_last_run.pop(direction, None)
+            self.vehicle_trackers[direction] = VehicleTracker()
+
+    def _camera_inference_loop(self):
+        """Run YOLO off the video/UI loop, keeping at most one pending frame per lane."""
+        from utils.app_config import SETTINGS
+
+        directions = self.directions
+        next_lane = 0
+        while self.is_running:
+            now = time.monotonic()
+            has_pending_frame = False
+            with self._inference_lock:
+                for offset in range(len(directions)):
+                    lane_index = (next_lane + offset) % len(directions)
+                    candidate = directions[lane_index]
+                    min_interval = max(
+                        0.0,
+                        float(SETTINGS.get(
+                            f"ai_throttle_seconds_{candidate}",
+                            SETTINGS.get("ai_throttle_seconds", 0.0),
+                        )),
+                    )
+                    last_run = self._inference_last_run.get(candidate, 0.0)
+                    pending_item = self._inference_frames.get(candidate)
+                    if pending_item is not None and now - last_run >= min_interval:
+                        has_pending_frame = True
+                        break
+
+            if not has_pending_frame:
+                time.sleep(0.005)
+                continue
+
+            batch_wait = max(
+                0.0,
+                float(SETTINGS.get("inference_batch_wait_seconds", 0.01)),
+            )
+            if batch_wait:
+                time.sleep(batch_wait)
+
+            batch_directions = []
+            batch_frames = []
+            batch_source_versions = []
+            now = time.monotonic()
+            with self._inference_lock:
+                for offset in range(len(directions)):
+                    lane_index = (next_lane + offset) % len(directions)
+                    candidate = directions[lane_index]
+                    min_interval = max(
+                        0.0,
+                        float(SETTINGS.get(
+                            f"ai_throttle_seconds_{candidate}",
+                            SETTINGS.get("ai_throttle_seconds", 0.0),
+                        )),
+                    )
+                    last_run = self._inference_last_run.get(candidate, 0.0)
+                    pending_item = self._inference_frames.get(candidate)
+                    if pending_item is not None and now - last_run >= min_interval:
+                        frame, source_version = pending_item
+                        batch_directions.append(candidate)
+                        batch_frames.append(frame)
+                        batch_source_versions.append(source_version)
+                        self._inference_frames[candidate] = None
+                        self._inference_last_run[candidate] = now
+
+                if batch_directions:
+                    next_lane = (
+                        directions.index(batch_directions[-1]) + 1
+                    ) % len(directions)
+
+            if not batch_frames:
+                continue
+
+            try:
+                results = self.yolo_detector.detect_batch(batch_frames)
+                if len(results) != len(batch_directions):
+                    raise RuntimeError(
+                        f"YOLO returned {len(results)} results for "
+                        f"{len(batch_directions)} camera frames"
+                    )
+            except Exception:
+                self.logger.exception(
+                    "YOLO inference batch failed for %s", batch_directions
+                )
+                continue
+
+            display_updates = {}
+            with self._inference_lock:
+                for direction, source_version, frame, result in zip(
+                    batch_directions,
+                    batch_source_versions,
+                    batch_frames,
+                    results,
+                ):
+                    if not result.get("success", True):
+                        self.logger.warning("YOLO inference failed for %s", direction)
+                    if self._inference_source_versions.get(direction, 0) != source_version:
+                        continue
+
+                    detections = self.vehicle_trackers[direction].update(
+                        result.get("detections", [])
+                    )
+                    from utils.app_config import SETTINGS
+                    show_boxes = SETTINGS.get("show_bounding_boxes", True)
+                    display_detections = (
+                        detections if show_boxes else [
+                            detection for detection in detections
+                            if detection.get("class_name") == "emergency_vehicle"
+                        ]
+                    )
+                    if display_detections:
+                        annotated_frame = self.yolo_detector.draw_detections(
+                            frame, display_detections
+                        )
+                    else:
+                        annotated_frame = frame
+                    inference_result = {
+                        "detections": detections,
+                        "frame": frame,
+                        "annotated_frame": annotated_frame,
+                    }
+                    self._inference_results[direction] = inference_result
+                    lane_state = self.states[direction]
+                    display_updates[direction] = (
+                        inference_result["annotated_frame"],
+                        {
+                            "vehicle_count": lane_state.get("vehicle_count", 0),
+                            "signal_state": lane_state.get("signal_state", "RED"),
+                            "time_remaining": max(
+                                0, lane_state.get("time_remaining", 0)
+                            ),
+                        },
+                    )
+
+            if display_updates:
+                self._queue_camera_updates(display_updates)
+
     def camera_loop(self):
         """Background thread for camera processing with DQN decision making"""
         
@@ -361,6 +577,8 @@ class MainController:
                         or video_path != state.get("current_video_path", "")
                     ):
                         self.camera_managers[direction].release()
+                        self._reset_camera_inference(direction)
+                        state["cached_detections"] = []
                         if camera_source.startswith("Camera"):
                             try:
                                 cam_idx = int(camera_source.split(" ")[1])
@@ -583,41 +801,21 @@ class MainController:
                         annotated_frame = frame
                         
                         if enable_detection:
-                            # ---------------------------
-                            # PERFORMANCE OPTIMIZATION
-                            # Throttle AI to ~10 FPS (every 0.1s)
-                            # ---------------------------
-                            current_ai_time = time.time()
-                            last_ai_time = state.get('last_ai_time', 0)
-                            
-                            # Determine if we should run fresh detection
-                            # Throttle YOLO inference - gives the UI display loop
-                            # more time per cycle so video rendering stays smooth
-                            throttle_val = SETTINGS.get("ai_throttle_seconds", 0.125)
-                            should_detect = (current_ai_time - last_ai_time) > throttle_val
-                            
-                            if should_detect:
-                                # Run YOLO detection
-                                detection_result = self.yolo_detector.detect(frame)
-                                detections = detection_result.get("detections", [])
-                                annotated_frame = detection_result.get('annotated_frame', frame)
-                                
-                                # Update cache
-                                state['last_ai_time'] = current_ai_time
-                                state['cached_detections'] = detections
+                            self._submit_inference_frame(direction, frame)
+                            with self._inference_lock:
+                                inference_result = self._inference_results.get(direction)
+                                detections = (
+                                    inference_result["detections"]
+                                    if inference_result is not None
+                                    else state.get("cached_detections", [])
+                                )
+                            state["cached_detections"] = detections
+                            if show_boxes and detections:
+                                annotated_frame = self.yolo_detector.draw_detections(
+                                    frame, detections
+                                )
                             else:
-                                # Reuse cached detections but redraw on NEW frame to prevent "ghosting"
-                                # This ensures the video background is smooth (30fps) while boxes update at 10fps
-                                detections = state.get('cached_detections', [])
-                                
-                                if show_boxes and detections:
-                                    try:
-                                        annotated_frame = self.yolo_detector.draw_detections(frame, detections)
-                                    except AttributeError:
-                                        # Fallback if method missing (shouldn't happen)
-                                        annotated_frame = frame
-                                else:
-                                    annotated_frame = frame
+                                annotated_frame = frame
                             
                             if not show_boxes:
                                 annotated_frame = frame
@@ -648,7 +846,7 @@ class MainController:
                                                 
                                     # Check if any car crosses the line while RED
                                     for det in detections:
-                                        if det['class_name'] in ['car', 'truck', 'bus', 'motorcycle', 'tricycle']:
+                                        if det['class_name'] in ['car', 'truck', 'bus', 'motorcycle', 'jeepney', 'tricycle']:
                                             v_x1, v_y1, v_x2, v_y2 = det['bbox']
                                             
                                             # Check if vehicle box intersects the stop line segment
@@ -767,7 +965,12 @@ class MainController:
                                 accident_detected = frame_count >= CONFIRM_FRAMES
 
                                 # ── Visualisation ──────────────────────────────────────────
-                                if accident_candidate and candidate_d1 and candidate_d2:
+                                if (
+                                    show_boxes
+                                    and accident_candidate
+                                    and candidate_d1
+                                    and candidate_d2
+                                ):
                                     x1a, y1a, x2a, y2a = candidate_d1['bbox']
                                     x1b, y1b, x2b, y2b = candidate_d2['bbox']
                                     zone_x1 = max(0, min(x1a, x1b) - 10)
@@ -830,7 +1033,11 @@ class MainController:
                     # Store detections
                     state['detections'] = detections
                     state['vehicle_count'] = len([d for d in detections
-                                                  if d.get('class_name') not in ['emergency_vehicle']])
+                                                  if d.get('class_name') not in [
+                                                      'emergency_vehicle', 'z_accident',
+                                                      'z_jaywalker', 'accident', 'jaywalker',
+                                                      'pedestrian_violation',
+                                                  ]])
                     all_lane_counts.append(state['vehicle_count'])
 
                     # High-congestion alert (40+ vehicles)
@@ -910,14 +1117,13 @@ class MainController:
                             'time_remaining': max(0, state['time_remaining'])
                         }
                         
-                        # Create a copy of the frame to avoid race conditions
-                        frame_copy = annotated_frame.copy() if annotated_frame is not None else None
-                        
-                        # Schedule UI update on main thread
-                        self.root.after(0, lambda f=frame_copy, d=dash_data, dir=direction: 
-                            self.current_page.update_camera_feed(f, d, dir) 
-                            if self.current_page and hasattr(self.current_page, 'update_camera_feed') else None
+                        is_video_camera = camera_source.startswith("Camera") or (
+                            camera_source == "Simulated" and bool(video_path)
                         )
+                        if not (enable_detection and is_video_camera):
+                            self._queue_camera_update(
+                                annotated_frame, dash_data, direction
+                            )
                         
                 except Exception as e:
                     self.logger.error(f"Error processing camera ({direction}): {e}", exc_info=True)
@@ -1084,8 +1290,12 @@ class MainController:
             except Exception as e:
                 self.logger.error(f"Error in DQN traffic light control: {e}", exc_info=True)
             
-            # Small delay — 10 FPS UI update rate; controller observes at 1-sec cadence
-            time.sleep(0.1)
+            # Keep video refresh independent from the slower inference worker.
+            from utils.app_config import SETTINGS
+            loop_interval = max(
+                0.0, float(SETTINGS.get("camera_loop_interval_seconds", 0.05))
+            )
+            time.sleep(loop_interval)
     
     def _check_blocking_intersection(self, direction: str, lane_id: int,
                                      detections: list, frame, current_time: float,
@@ -1322,6 +1532,9 @@ class MainController:
     def stop_camera(self):
         """Stop camera feed"""
         self.is_running = False
+        inference_worker = getattr(self, "_inference_worker", None)
+        if inference_worker and inference_worker.is_alive():
+            inference_worker.join(timeout=2.0)
         for cam in self.camera_managers.values():
             cam.release()
         

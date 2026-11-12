@@ -31,7 +31,7 @@ class SettingsPage:
                      font=('Segoe UI', 24, 'bold'),
                      text_color=Colors.TEXT).pack(anchor=tk.W)
                 
-        ctk.CTkLabel(title_container, text="Manage your visual, system, and notification settings.",
+        ctk.CTkLabel(title_container, text="Manage detection display, camera, and notification settings.",
                      font=('Segoe UI', 14),
                      text_color=Colors.TEXT_MUTED).pack(anchor=tk.W, pady=(5, 0))
 
@@ -44,13 +44,13 @@ class SettingsPage:
 
         # Define Settings Groups
         visual_options = [
-            ("Show Bounding Boxes", "show_bounding_boxes"),
+            ("Show Vehicle Detection Boxes", "show_bounding_boxes"),
             ("Show Confidence Scores", "show_confidence"),
             ("Show Simulation Overlay", "show_simulation_text"),
         ]
         
         system_options = [
-            ("Enable AI Detection", "enable_detection"),
+            ("Run AI Detection (required for live counts)", "enable_detection"),
             ("Violations & Accident Simulator", "enable_sim_events"), 
             ("Camera Filter (Invert)", "dark_mode_cam"),
             ("Enhance Video (CPU Heavy)", "enable_video_enhancement"),
@@ -180,12 +180,12 @@ class SettingsPage:
         video_key = f"simulation_video_{direction}"
         current_val = SETTINGS.get(config_key, "Simulated")
         if current_val == "Simulated" and SETTINGS.get(video_key):
-            current_val = "Simulated (Video)"
+            current_val = "Live Video"
         
         def on_combo_change(new_val):
-            if new_val == "Simulated (Video)":
+            if new_val == "Live Video":
                 video_path = filedialog.askopenfilename(
-                    title=f"Choose {label_text} Simulation Video",
+                    title=f"Choose {label_text} Video",
                     filetypes=[
                         ("Video files", "*.mp4 *.avi *.mov *.mkv *.wmv"),
                         ("All files", "*.*"),
@@ -198,7 +198,7 @@ class SettingsPage:
                     print(f"Simulation video for {direction} set to {video_path}")
                 else:
                     combo.set(
-                        "Simulated (Video)" if SETTINGS.get(video_key) else
+                        "Live Video" if SETTINGS.get(video_key) else
                         SETTINGS.get(config_key, "Simulated")
                     )
                 return
@@ -212,7 +212,7 @@ class SettingsPage:
             container,
             values=[
                 "Simulated",
-                "Simulated (Video)",
+                "Live Video",
                 "Camera 0",
                 "Camera 1",
                 "Camera 2",

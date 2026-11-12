@@ -21,87 +21,28 @@ class _FakeBox:
 
 class _FakeModel:
     def __init__(self, boxes=None, names=None):
-        self.boxes = boxes
+        self.boxes = boxes or []
         self.names = names or {}
         self.frame_shape = None
         self.kwargs = None
+        self.call_count = 0
 
     def to(self, _device):
         return self
 
     def __call__(self, frame, **kwargs):
-        self.frame_shape = frame.shape
+        self.call_count += 1
+        is_batch = isinstance(frame, list)
+        self.frame_shape = (
+            [item.shape for item in frame] if is_batch else frame.shape
+        )
         self.kwargs = kwargs
-        return [SimpleNamespace(boxes=self.boxes)]
+        result_count = len(frame) if is_batch else 1
+        return [SimpleNamespace(boxes=self.boxes) for _ in range(result_count)]
 
 
 class YOLODetectorTests(unittest.TestCase):
-    def test_checkpoint_tricycle_replaces_overlapping_pretrained_truck(self):
-        frame = np.zeros((480, 800, 3), dtype=np.uint8)
-        pretrained_model = _FakeModel([
-            _FakeBox(7, 0.90, [62, 69, 182, 208]),
-        ])
-        custom_model = _FakeModel([
-            _FakeBox(8, 0.85, [120, 80, 350, 240]),
-        ])
-        detector = YOLODetector.__new__(YOLODetector)
-        detector.logger = logging.getLogger(__name__)
-        detector.pretrained_model = pretrained_model
-        detector.custom_model = custom_model
-        detector.confidence_threshold = 0.25
-        detector.emergency_confidence_threshold = 0.90
-        detector.pretrained_class_names = {7: "truck"}
-        detector.custom_class_names = {8: "tricycle"}
-        detector.custom_wanted = {"emergency_vehicle", "jeepney", "tricycle"}
-        detector.color_map = {"truck": (0, 165, 255), "tricycle": (0, 200, 255)}
-
-        result = detector.detect(frame)
-
-        self.assertEqual(
-            [(detection["class_name"], detection["source"]) for detection in result["detections"]],
-            [("tricycle", "custom")],
-        )
-
-    def test_custom_model_uses_original_frame_and_stricter_emergency_threshold(self):
-        frame = np.zeros((480, 800, 3), dtype=np.uint8)
-        pretrained_model = _FakeModel([])
-        custom_model = _FakeModel([
-            _FakeBox(2, 0.95, [20, 30, 100, 90]),
-            _FakeBox(3, 0.89, [120, 80, 350, 240]),
-            _FakeBox(3, 0.95, [120, 80, 350, 240]),
-            _FakeBox(5, 0.40, [400, 100, 600, 300]),
-        ])
-        detector = YOLODetector.__new__(YOLODetector)
-        detector.logger = logging.getLogger(__name__)
-        detector.pretrained_model = pretrained_model
-        detector.custom_model = custom_model
-        detector.confidence_threshold = 0.25
-        detector.emergency_confidence_threshold = 0.90
-        detector.pretrained_class_names = {}
-        detector.custom_class_names = {
-            2: "car",
-            3: "emergency_vehicle",
-            5: "jeepney",
-        }
-        detector.custom_wanted = {"emergency_vehicle", "jeepney", "tricycle"}
-        detector.color_map = {
-            "emergency_vehicle": (255, 0, 0),
-            "jeepney": (128, 0, 128),
-        }
-
-        result = detector.detect(frame)
-
-        self.assertEqual(custom_model.frame_shape, frame.shape)
-        self.assertEqual(custom_model.kwargs["imgsz"], 640)
-        self.assertEqual(
-            [(detection["class_name"], detection["bbox"]) for detection in result["detections"]],
-            [
-                ("emergency_vehicle", (120, 80, 350, 240)),
-                ("jeepney", (400, 100, 600, 300)),
-            ],
-        )
-
-    def test_custom_class_names_are_read_from_checkpoint(self):
+    def test_loads_only_traffic_checkpoint_and_normalizes_all_classes(self):
         checkpoint_names = {
             0: "accident",
             1: "bus",
@@ -113,21 +54,132 @@ class YOLODetectorTests(unittest.TestCase):
             7: "truck",
             8: "z_tricycle",
         }
-        pretrained_model = _FakeModel()
-        custom_model = _FakeModel(names=checkpoint_names)
+        model = _FakeModel(names=checkpoint_names)
         detector = YOLODetector.__new__(YOLODetector)
         detector.logger = logging.getLogger(__name__)
-        detector.pretrained_model_name = "yolov8n.pt"
-        detector.custom_model_name = "best.pt"
+        detector.model_name = "best.pt"
+        detector.class_aliases = {
+            "accident": "z_accident",
+            "jaywalker": "z_jaywalker",
+            "z accident": "z_accident",
+            "z jaywalker": "z_jaywalker",
+            "z tricycle": "tricycle",
+            "emergency vehicle": "emergency_vehicle",
+        }
         detector.emergency_confidence_threshold = 0.90
         detector.device = "cpu"
 
-        with patch("ultralytics.YOLO", side_effect=[pretrained_model, custom_model]):
+        with patch("ultralytics.YOLO", return_value=model) as load_model:
             self.assertTrue(detector.load_models())
 
-        self.assertEqual(detector.custom_class_names[2], "car")
-        self.assertEqual(detector.custom_class_names[3], "emergency_vehicle")
-        self.assertEqual(detector.custom_class_names[8], "tricycle")
+        load_model.assert_called_once()
+        self.assertTrue(load_model.call_args.args[0].endswith("best.pt"))
+        self.assertEqual(
+            detector.custom_class_names,
+            {
+                0: "z_accident",
+                1: "bus",
+                2: "car",
+                3: "emergency_vehicle",
+                4: "z_jaywalker",
+                5: "jeepney",
+                6: "motorcycle",
+                7: "truck",
+                8: "tricycle",
+            },
+        )
+
+    def test_inference_runs_once_and_returns_each_checkpoint_class(self):
+        frame = np.zeros((480, 800, 3), dtype=np.uint8)
+        model = _FakeModel([
+            _FakeBox(0, 0.95, [10, 20, 100, 120]),
+            _FakeBox(1, 0.80, [20, 30, 110, 130]),
+            _FakeBox(2, 0.85, [30, 40, 120, 140]),
+            _FakeBox(3, 0.95, [40, 50, 130, 150]),
+            _FakeBox(4, 0.75, [50, 60, 140, 160]),
+            _FakeBox(5, 0.80, [60, 70, 150, 170]),
+            _FakeBox(6, 0.85, [70, 80, 160, 180]),
+            _FakeBox(7, 0.80, [80, 90, 170, 190]),
+            _FakeBox(8, 0.85, [90, 100, 180, 200]),
+        ])
+        detector = YOLODetector.__new__(YOLODetector)
+        detector.logger = logging.getLogger(__name__)
+        detector.model = model
+        detector.confidence_threshold = 0.25
+        detector.emergency_confidence_threshold = 0.90
+        detector.custom_class_names = {
+            0: "z_accident",
+            1: "bus",
+            2: "car",
+            3: "emergency_vehicle",
+            4: "z_jaywalker",
+            5: "jeepney",
+            6: "motorcycle",
+            7: "truck",
+            8: "tricycle",
+        }
+        detector.color_map = {}
+
+        result = detector.detect(frame)
+
+        self.assertEqual(model.call_count, 1)
+        self.assertEqual(model.frame_shape, [frame.shape])
+        self.assertEqual(model.kwargs["imgsz"], 416)
+        self.assertEqual(
+            [detection["class_name"] for detection in result["detections"]],
+            [
+                "z_accident",
+                "bus",
+                "car",
+                "emergency_vehicle",
+                "z_jaywalker",
+                "jeepney",
+                "motorcycle",
+                "truck",
+                "tricycle",
+            ],
+        )
+
+    def test_emergency_vehicle_keeps_stricter_confidence_threshold(self):
+        frame = np.zeros((480, 800, 3), dtype=np.uint8)
+        model = _FakeModel([
+            _FakeBox(0, 0.89, [10, 20, 100, 120]),
+            _FakeBox(0, 0.95, [20, 30, 110, 130]),
+        ])
+        detector = YOLODetector.__new__(YOLODetector)
+        detector.logger = logging.getLogger(__name__)
+        detector.model = model
+        detector.confidence_threshold = 0.25
+        detector.emergency_confidence_threshold = 0.90
+        detector.custom_class_names = {0: "emergency_vehicle"}
+        detector.color_map = {}
+
+        result = detector.detect(frame)
+
+        self.assertEqual(len(result["detections"]), 1)
+        self.assertEqual(result["detections"][0]["confidence"], 0.95)
+
+    def test_batch_inference_processes_all_frames_in_one_model_call(self):
+        frame_a = np.zeros((480, 640, 3), dtype=np.uint8)
+        frame_b = np.ones((480, 640, 3), dtype=np.uint8)
+        model = _FakeModel([_FakeBox(2, 0.85, [30, 40, 120, 140])])
+        detector = YOLODetector.__new__(YOLODetector)
+        detector.logger = logging.getLogger(__name__)
+        detector.model = model
+        detector.confidence_threshold = 0.25
+        detector.emergency_confidence_threshold = 0.90
+        detector.custom_class_names = {2: "car"}
+        detector.color_map = {}
+
+        results = detector.detect_batch([frame_a, frame_b])
+
+        self.assertEqual(model.call_count, 1)
+        self.assertEqual(model.frame_shape, [frame_a.shape, frame_b.shape])
+        self.assertEqual(len(results), 2)
+        self.assertEqual(
+            [result["detections"][0]["class_name"] for result in results],
+            ["car", "car"],
+        )
 
 
 if __name__ == "__main__":

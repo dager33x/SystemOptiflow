@@ -9,7 +9,11 @@ SETTINGS = {
     "enable_detection": True,      # Run the AI model?
     "show_bounding_boxes": True,   # Draw boxes around cars?
     "show_confidence": True,       # Show how sure the AI is (e.g. 95%)?
-    "ai_throttle_seconds": 0.2,    # Optimize inference throttle (default 0.2 = ~5 FPS logic)
+    "ai_throttle_seconds": 0.0,    # Minimum interval between YOLO batches per camera
+    "inference_image_size": 416,   # Use 640 for greater detail at lower throughput
+    "inference_batch_wait_seconds": 0.01,  # Collect same-cycle frames before inference
+    "inference_device": "auto",    # auto selects CUDA when available; otherwise CPU
+    "camera_loop_interval_seconds": 0.05,  # Video/stat update loop interval
     "enable_video_enhancement": False, # Apply Unsharp mask (expensive on CPU)
     
     # Camera / Display Settings

@@ -99,7 +99,34 @@ Once everything is set up, you can start the application.
 python app.py
 ```
 
-## 5. Troubleshooting
+## 5. Camera and Detection Performance
+
+One background worker runs YOLO on batches of the newest available frames from
+each lane. Each result is displayed over the exact frame that was analyzed,
+and results from the same batch are queued together. Vehicle boxes are
+associated between detections within each camera and show a `#track_id`.
+Because association runs when YOLO returns, IDs may change after a long
+occlusion or a large jump between detections. The displayed video advances at
+the inference rate so boxes are not drawn on a different frame.
+
+Adjust the defaults in `utils/app_config.py`:
+
+| Setting | Default | Effect |
+| --- | ---: | --- |
+| `inference_image_size` | `416` | Choose `320` for speed or `640` for more detail at lower throughput. |
+| `ai_throttle_seconds` | `0.0` | Minimum time between inference batches per lane. Increase it to reduce CPU/GPU load. |
+| `inference_batch_wait_seconds` | `0.01` | Small delay to collect frames from all lanes into one model batch. |
+| `ai_throttle_seconds_north` (and south/east/west) | unset | Optional per-lane override of `ai_throttle_seconds`. |
+| `camera_loop_interval_seconds` | `0.05` | Video/stat refresh interval; lower values request more frequent updates. |
+| `inference_device` | `"auto"` | Use CUDA when the installed PyTorch supports it, or select `"cpu"` / `"cuda"`. |
+
+CUDA inference requires an NVIDIA-CUDA-enabled PyTorch installation in the same
+Python environment used to launch or build the app. Check it with
+`python -c "import torch; print(torch.cuda.is_available())"`. If it prints
+`False`, `"auto"` uses the CPU; install the matching CUDA build of PyTorch using
+the official PyTorch installation selector, then rebuild a packaged app.
+
+## 6. Troubleshooting
 
 *   **Matplotlib Error**: If you see errors related to `matplotlib` or missing DLLs, try reinstalling it:
     ```powershell
@@ -109,7 +136,7 @@ python app.py
 *   **Supabase Connection Error**: Double-check your `SUPABASE_URL` and `SUPABASE_KEY` in the `.env` file. Ensure there are no extra spaces or quotes around the values.
 *   **Camera Issues**: If the simulated camera feed does not appear, check the logs in the terminal for any OpenCV errors. The system defaults to simulation mode if no physical camera is found, but it requires the `best.pt` file.
 
-## 6. Developer Notes
+## 7. Developer Notes
 
 *   **Adding New Pages**: Create new page classes in `views/pages/` and register them in `controllers/main_controller.py`.
 *   **Modifying Traffic Logic**: check `detection/traffic_controller.py` for the traffic light timing logic.
