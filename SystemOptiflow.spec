@@ -39,6 +39,12 @@ a = Analysis(
     optimize=0,
 )
 
+# Qt on Windows uses the OS ICU API. An unrelated Poppler installation on
+# PATH may expose an ICU build with version-suffixed exports under the same
+# filename, causing QtWidgets to fail at startup. Let Windows resolve its ICU.
+a.binaries = [entry for entry in a.binaries
+              if Path(entry[0]).name.lower() not in {'icuuc.dll', 'icudt78.dll'}]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

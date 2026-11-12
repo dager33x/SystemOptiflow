@@ -5,7 +5,7 @@ from dashboard.models.stop_line import CrossingTracker
 from dashboard.models.incident_detection import IncidentDetector
 from dashboard.utils.app_config import SETTINGS
 from dashboard.models.notification import Notification
-from dashboard.models.accident_confirmation import AccidentConfirmation
+from dashboard.models.accident_confirmation import AccidentConfirmation, configured_accident_confirmation
 
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
@@ -24,12 +24,7 @@ class EventRecorder:
         self.jaywalkers = [AccidentConfirmation(SETTINGS.get('jaywalking_confidence', .65),
                            max_gap=8., clear_seconds=10.,
                            class_name='possible_jaywalking', source='violation') for _ in range(4)]
-        self.accident_models = [AccidentConfirmation(
-            SETTINGS.get('accident_model_confidence', .6),
-            SETTINGS.get('accident_model_hold_seconds', 2.5), max_gap=3., clear_seconds=30.,
-            min_frames=SETTINGS.get('accident_model_min_frames', 2),
-            immediate_confidence=None,
-            stationary_fraction=SETTINGS.get('accident_stationary_fraction', .35)) for _ in range(4)]
+        self.accident_models = [configured_accident_confirmation() for _ in range(4)]
         self.last_incident = [None] * 4
         self.last_diagnostic = [float('-inf')] * 4
         self.violation_count = 0
@@ -39,8 +34,6 @@ class EventRecorder:
                 or lane.result.generation != lane.generation):
             self.crossings[lane_id].reset()
             self.incidents[lane_id].reset()
-            self.accident_models[lane_id].reset()
-            self.last_incident[lane_id] = None
             self.tokens[lane_id] = None
             return
         token = (lane.generation, lane.result.sequence)
@@ -51,7 +44,6 @@ class EventRecorder:
         if frame is None:
             self.crossings[lane_id].reset()
             self.incidents[lane_id].reset()
-            self.accident_models[lane_id].reset()
             return
         h, w = frame.shape[:2]
         crossings = self.crossings[lane_id].observe(
@@ -88,9 +80,12 @@ class EventRecorder:
 
     def observe_accident(self, lane_id, lane, now):
         result = lane.accident_result
-        if lane.source == 'simulation' or result is None or result.generation != lane.generation:
+        if lane.source in ('simulation', 'off'):
             self.accident_tokens[lane_id] = None
+            self.accident_models[lane_id].reset()
             self.jaywalkers[lane_id].reset()
+            return
+        if result is None or result.generation != lane.generation:
             return
         token = (result.generation, result.sequence)
         if (token == self.accident_tokens[lane_id] or result.frame is None
@@ -116,18 +111,24 @@ class EventRecorder:
     def _record_incidents(self, lane_id, lane, frame, learned_detections, candidates):
         h, w = frame.shape[:2]
         previous = self.last_incident[lane_id]
-        recent = (previous is not None and previous[0] == lane.generation
+        recent = (previous is not None and previous[0] == lane.source
                   and 0 <= lane.result.captured_at-previous[1] < 30)
-        learned = self.accident_models[lane_id].observe(
+        gate = self.accident_models[lane_id]
+        previous_observation = gate.timestamp
+        learned = gate.observe(
             learned_detections,
             frame.shape, lane.result.captured_at, lane.generation,
-            allow_alert=True)
+            allow_alert=not recent)
         if lane.result.captured_at-self.last_diagnostic[lane_id] >= 5 or learned:
             self.last_diagnostic[lane_id] = lane.result.captured_at
-            regions = self.accident_models[lane_id].regions
-            LOGGER.info('Accident gate lane=%d sequence=%s regions=%d observations=%d new_alerts=%d cooldown=%s',
-                        lane_id, lane.result.sequence, len(regions),
-                        max((r['count'] for r in regions), default=0), len(learned), recent)
+            model_boxes = [d for d in learned_detections if d.get('class_name') == 'possible_accident'
+                           and d.get('source') == 'accident']
+            seed_boxes = sum(d.get('confidence', 0) >= gate.confidence for d in model_boxes)
+            gap = (0. if previous_observation is None else lane.result.captured_at-previous_observation)
+            LOGGER.info('Accident gate lane=%d sequence=%s model_boxes=%d seed_boxes=%d '
+                        'regions=%d observations=%d new_alerts=%d gap=%.1fs max_gap=%.1fs cooldown=%s',
+                        lane_id, lane.result.sequence, len(model_boxes), seed_boxes, len(gate.regions),
+                        max((r['count'] for r in gate.regions), default=0), len(learned), gap, gate.max_gap, recent)
         if learned:
             import cv2
             evidence = frame.copy()
@@ -138,12 +139,12 @@ class EventRecorder:
                         cv2.FONT_HERSHEY_SIMPLEX, .55, (0, 165, 255), 2)
             self.accidents.report_accident(lane_id, 'Moderate',
                 'Possible accident - review required. Trained accident model Model.pt detected an accident region '
-                'with repeated high-confidence observations in a stable location. '
+                'with a strong prediction corroborated by repeated localized supporting observations. '
                 f'Latest model confidence: {max(c for _, c in learned):.1%}. '
                 'Crash and severity remain unconfirmed.', evidence)
             self._notify('incident', lane_id, 'Possible accident',
                          'The trained accident model detected a persistent accident region. Review the evidence.')
-            self.last_incident[lane_id] = (lane.generation, lane.result.captured_at)
+            self.last_incident[lane_id] = (lane.source, lane.result.captured_at)
             recent = True
         for boxes in ([] if recent else candidates):
             import cv2
@@ -159,7 +160,7 @@ class EventRecorder:
                 'Motion heuristic only; crash and severity are unconfirmed.', evidence)
             self._notify('incident', lane_id, 'Possible collision',
                          'Vehicles made apparent contact and stopped. Review the camera footage; this is not a confirmed crash.')
-            self.last_incident[lane_id] = (lane.generation, lane.result.captured_at)
+            self.last_incident[lane_id] = (lane.source, lane.result.captured_at)
             break
 
     def rule_violation(self, lane_id, lane):

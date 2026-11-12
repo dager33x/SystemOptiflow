@@ -307,7 +307,6 @@ class DashboardWindow(QMainWindow):
         self.navigate(page if page in self.pages else 'dashboard')
 
     def refresh(self):
-        now = time.monotonic()
         notifications = self.controller.store.drain_notifications()
         self.notifications.receive(notifications)
         # Local persistence finishes before the event is announced. Refresh an
@@ -316,6 +315,9 @@ class DashboardWindow(QMainWindow):
         if notifications and hasattr(current_page, 'refresh_local'):
             current_page.refresh_local()
         lanes = self.controller.store.snapshot()
+        # Notifications/log refresh can take time while capture keeps running.
+        # Timestamp the acquired snapshot, not the start of the UI callback.
+        now = time.monotonic()
         if self.stack.currentWidget() is self.pages['dashboard']:
             for card, lane in zip(self.cards, lanes):
                 card.present(lane, now, self.boxes.isChecked())

@@ -10,12 +10,13 @@ from PySide6.QtWidgets import (
     QSpinBox, QCheckBox, QVBoxLayout, QHBoxLayout, QGridLayout, QInputDialog, QSizePolicy,
 )
 
-from dashboard.models.dashboard import DIRECTIONS, active_detections, accident_detections, live_detections
+from dashboard.models.dashboard import DIRECTIONS, active_detections, live_detections
+from dashboard.services.accident_display import AccidentEvidenceDisplay
 from dashboard.models.stop_line import StopLine
 from dashboard.models.detection.vehicle_classes import count_queue_vehicles
 from dashboard.services.video_sources import is_video_source
 
-COLORS = {'RED': '#ff3238', 'YELLOW': '#ffcf33', 'GREEN': '#00d084'}
+COLORS = {'RED': '#ff3238', 'YELLOW': '#ffcf33', 'GREEN': '#00d084', 'OFF': '#8796a8'}
 LANE_NAMES = ('North Gate', 'South Junction', 'East Portal', 'West Avenue')
 STYLE = '''
 QWidget { background: #0b111c; color: #e6edf5; font-family: "Segoe UI"; font-size: 12px; }
@@ -51,6 +52,7 @@ class VideoCanvas(QWidget):
         self.live_detections = self.evidence_detections = ()
         self.evidence_token = None
         self._evidence_frame = QImage()
+        self.accident_display = AccidentEvidenceDisplay()
 
     def present(self, lane, now, show_boxes):
         self.stop_line = lane.stop_line if lane.source != 'simulation' else None
@@ -65,7 +67,8 @@ class VideoCanvas(QWidget):
             self.message = lane.status if packet is None else 'No fresh frames'
             self.detections = ()
         else:
-            learned = accident_detections(lane, now) if show_boxes else ()
+            evidence_packet = self.accident_display.present(lane, now) if show_boxes else None
+            learned = evidence_packet.detections if evidence_packet is not None else ()
             traffic = ()
             if show_boxes and lane.source != 'simulation':
                 traffic = live_detections(lane, now)
@@ -73,9 +76,7 @@ class VideoCanvas(QWidget):
                     traffic = tuple(d for d in active_detections(lane, now)
                                     if d.get('class_name') not in ('possible_accident', 'possible_jaywalking'))
             self.live_detections = traffic
-            evidence_packet = None
             if learned:
-                evidence_packet = lane.accident_result or lane.result
                 self.evidence_detections = learned
             if evidence_packet is not None and self.evidence_detections and evidence_packet.frame is not None:
                 # Preserve continuous live video. Delayed boxes belong to an
@@ -422,7 +423,7 @@ class CameraCard(QFrame):
         self.badge.setStyleSheet(f'color: {COLORS[lane.signal]}; font-weight: 700;')
         self.lamp.signal = lane.signal
         self.lamp.update()
-        self.timer.setText(f'{max(0, math.ceil(lane.remaining))}s')
+        self.timer.setText('—' if lane.signal == 'OFF' else f'{max(0, math.ceil(lane.remaining))}s')
         self.count.setText(str(count_queue_vehicles(active_detections(lane, now))))
         self.count.setStyleSheet('font-size: 24px; font-weight: 700;')
         self.timer.setStyleSheet(f'color: {COLORS[lane.signal]}; font: 700 22px "Consolas";')

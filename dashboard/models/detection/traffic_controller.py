@@ -47,7 +47,7 @@ MAX_RED_DISPLAY_SECONDS = 199.0
 EMERGENCY_ATTEMPTS = 2
 EMERGENCY_ATTEMPT_SECONDS = 10.0
 EMERGENCY_PRIORITY_SECONDS = EMERGENCY_ATTEMPTS * EMERGENCY_ATTEMPT_SECONDS
-EMERGENCY_OBSERVATION_SECONDS = 2.0
+EMERGENCY_OBSERVATION_SECONDS = 1.5
 EMERGENCY_CLEAR_WARNING_SECONDS = 5.0
 
 
@@ -66,9 +66,10 @@ class TrafficLightController:
 
         self.yolo = detector if detector is not None else YOLODetector()
         self.dqn = TrafficLightDQN(state_size=22, action_size=5, hidden_size=256)
+        self.dqn_ready = False
         if use_pretrained and model_path:
             try:
-                self.dqn.load_model(model_path)
+                self.dqn_ready = bool(self.dqn.load_model(model_path))
                 self.logger.info(f"[Controller] Loaded DQN model: {model_path}")
             except Exception as e:
                 self.logger.warning(f"[Controller] Could not load model ({e}). Fresh network.")
@@ -79,6 +80,7 @@ class TrafficLightController:
             screenshot_callback=None,
         )
         self.last_rule_audit: dict = {}
+        self.lane_available = [True] * num_lanes
 
         self.active_phase = PHASE_NS
         self.active_lane = 0
@@ -86,9 +88,9 @@ class TrafficLightController:
         self.active_main_lanes = list(PHASE_MAIN_LANES[self.active_phase])
         self.secondary_lane = None
         self.secondary_state = "OFF"
-        self.current_phase = "green"
+        self.current_phase = "all_red"
         self.phase_start_time = time.time()
-        self.phase_duration = float(NORMAL_MIN_GREEN)
+        self.phase_duration = float(ALL_RED_TIME)
         self.elapsed_green = 0.0
         self.last_obs_elapsed = 0.0
         self.buffer_locked = True
@@ -143,22 +145,51 @@ class TrafficLightController:
 
     def _phase_green_duration(self, phase: str) -> float:
         lanes = PHASE_MAIN_LANES[phase]
-        weighted_count = max(self.lane_stats[lane].get("weighted_count", 0.0) for lane in lanes)
+        weighted_count = max((self.lane_stats[lane].get("weighted_count", 0.0)
+                              for lane in lanes if self.lane_available[lane]), default=0.)
         has_accident = any(self.lane_stats[lane].get("accident_flag", False) for lane in lanes)
         calculated = TrafficStateBuilder.calculate_green_time(weighted_count, has_accident, False)
         return float(max(NORMAL_MIN_GREEN, min(calculated, MAX_GREEN_NORMAL)))
 
+    def set_lane_available(self, lane, available):
+        self.lane_available[lane] = bool(available)
+        if not available:
+            self.update_lane_detections(lane, [])
+            self.lane_stats[lane]['wait_time'] = 0.
+
+    def _choose_normal_phase(self):
+        candidates = [i for i in range(self.num_lanes) if self.lane_available[i]]
+        if not candidates:
+            return self.active_phase
+        # A waiting movement cannot be starved by repeated DQN selections.
+        waiting = [i for i in candidates if self._phase_for_lane(i) != self.active_phase]
+        overdue = [i for i in waiting if self.lane_stats[i]['wait_time'] >= 60.]
+        if overdue:
+            return self._phase_for_lane(max(overdue, key=lambda i: self.lane_stats[i]['wait_time']))
+        occupied = [i for i in candidates if self.lane_stats[i]['vehicle_count'] > 0]
+        allowed = occupied or candidates
+        if self.dqn_ready:
+            try:
+                action = self.dqn.get_action(self._build_state(), training=False, allowed_actions=allowed)
+                if action in allowed:
+                    return self._phase_for_lane(action)
+            except Exception:
+                self.logger.exception('DQN decision failed; using volume-based fallback')
+        opposite = [i for i in allowed if self._phase_for_lane(i) != self.active_phase]
+        lane = max(opposite or allowed, key=lambda i: self.lane_stats[i]['weighted_count'])
+        return self._phase_for_lane(lane)
+
     def _detected_emergency_lane(self, current_time: Optional[float] = None) -> Optional[int]:
-        """Return an emergency lane only after a stable 2-second observation."""
+        """Require distinct fresh emergency observations spanning 1.5 seconds."""
         if current_time is None:
             current_time = time.time()
 
         for lane in range(self.num_lanes):
             first_seen = self.lane_stats[lane].get("emergency_first_seen")
             if (
-                self.lane_stats[lane].get("emergency_flag", False)
+                self.lane_available[lane] and self.lane_stats[lane].get("emergency_flag", False)
                 and first_seen is not None
-                and self.lane_stats[lane].get('emergency_observations', 0) >= 3
+                and self.lane_stats[lane].get('emergency_observations', 0) >= 2
                 and self.lane_stats[lane].get('emergency_last_seen', first_seen) - first_seen >= EMERGENCY_OBSERVATION_SECONDS
                 and 0 <= current_time-self.lane_stats[lane]['emergency_last_seen'] <= 2.
                 and lane not in self.emergency_exhausted_lanes
@@ -391,6 +422,8 @@ class TrafficLightController:
         }
 
     def get_lane_signal_state(self, lane_id: int, elapsed: Optional[float] = None) -> str:
+        if not self.lane_available[lane_id]:
+            return 'OFF'
         if elapsed is None:
             elapsed = self._phase_elapsed()
 
@@ -421,6 +454,8 @@ class TrafficLightController:
         return self.get_lane_signal_states()
 
     def get_lane_time_remaining(self, lane_id: int) -> float:
+        if not self.lane_available[lane_id]:
+            return 0.
         elapsed = self._phase_elapsed()
         phase_remaining = max(0.0, self.phase_duration - elapsed)
         signal = self.get_lane_signal_state(lane_id, elapsed)
@@ -444,10 +479,8 @@ class TrafficLightController:
         else:
             wait = phase_remaining
 
-        lane_phase = self._phase_for_lane(lane_id)
-        if not self.is_emergency_active and lane_phase != self._opposite_phase(self.active_phase):
-            wait += self._phase_green_duration(self._opposite_phase(self.active_phase))
-            wait += float(YELLOW_TIME + ALL_RED_TIME)
+        # Red shows time to the next signal decision. DQN may choose a different
+        # movement then; do not add speculative live-count allocations here.
         return min(MAX_RED_DISPLAY_SECONDS, max(0.0, wait))
 
     def make_decision(self, all_lane_counts: List[int], current_time: Optional[float] = None) -> Dict:
@@ -494,10 +527,10 @@ class TrafficLightController:
         # Only the fresh-observation gate above can authorize emergency green.
         # The legacy rule layer also sees cached detections at each timer tick.
         is_emergency = False
-        next_phase = self._opposite_phase(self.active_phase)
+        next_phase = self._choose_normal_phase()
         green_time = self._phase_green_duration(next_phase)
         self._commit_green_phase(next_phase, current_time, False, None, green_time)
-        mode_info = "NS/EW alternating phase"
+        mode_info = "DQN phase selection / volume-based timing" if self.dqn_ready else "Volume-based fallback"
         lane_count = sum(
             all_lane_counts[lane] if lane < len(all_lane_counts) else 0
             for lane in self.active_main_lanes
@@ -533,6 +566,17 @@ class TrafficLightController:
 
     def update_phase(self, all_lane_counts: Optional[List[int]] = None) -> Optional[Dict]:
         current_time = time.time()
+        if not any(self.lane_available):
+            self.current_phase = 'idle'
+            self.phase_duration = 0.
+            self.is_emergency_active = False
+            self.emergency_lane = self.pending_emergency_lane = None
+            self.paused_normal_state = None
+            return None
+        if self.current_phase == 'idle':
+            self.current_phase = 'all_red'
+            self.phase_start_time = current_time
+            self.phase_duration = float(ALL_RED_TIME)
         elapsed = current_time - self.phase_start_time
         self.elapsed_green = elapsed
         self.buffer_locked = self.current_phase == "green" and elapsed < float(MIN_BUFFER_TIME)
@@ -579,25 +623,11 @@ class TrafficLightController:
             )
             self.last_rule_audit = audit
 
-            if (
-                not self.is_emergency_active
-                and rule_action is not None
-                and rule_action != 4
-                and "emergency" in audit.get("rule_fired", "")
-            ):
-                if int(rule_action) in self.emergency_exhausted_lanes:
-                    if hasattr(self.rule_controller, "release_emergency_lock"):
-                        self.rule_controller.release_emergency_lock(current_time)
-                    return None
-                # Emergency priority is gated by _detected_emergency_lane(),
-                # which requires 2 seconds of stable observation. Ignore the
-                # older rule-layer immediate switch path here.
-                return None
+            # Legacy emergency recommendations cannot bypass fresh observations
+            # or prevent an expired normal phase from reaching yellow.
 
-            if not self.is_emergency_active and not self.buffer_locked:
-                # Countdown-only rule: once a green phase starts, never add
-                # seconds to its active timer during camera/emergency sync.
-                self._phase_recalibrated = True
+            # Freeze the allocation for this green phase. Fresh counts and
+            # DQN decisions determine the next phase, never rewind this timer.
 
         if elapsed < self.phase_duration:
             return None
